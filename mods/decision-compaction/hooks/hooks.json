@@ -1,0 +1,4 @@
+{
+  "description": "A session.compact hook answers a compaction with the original messages less the tool calls and results a System One decision model judged no longer needed, and hands the compaction on to the built-in summary on any failure or when too little would be removed; a turn.complete hook requests a compaction once the main conversation's context reaches the compactAtPercent option.",
+  "modules": ["./register.ts"]
+}

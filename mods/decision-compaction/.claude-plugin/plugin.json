@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "decision-compaction",
+  "version": "0.1.0",
+  "description": "Hands back the conversation itself in place of a compaction summary, less the tool calls and results a System One decision model (TypeSafe Jev, Cloudflare Clef, or Jev through OpenRouter) judges no longer needed.",
+  "author": {
+    "name": "Koichi Shiraishi"
+  },
+  "license": "Apache-2.0",
+  "userConfig": {
+    "provider": {
+      "type": "string",
+      "title": "Provider",
+      "description": "Which System One provider decides: \"typesafe\" (Jev, the default), \"cloudflare\" (Clef on Workers AI) or \"openrouter\" (Jev through the OpenRouter gateway). The conversation text and tool inputs are sent to it. Any other value sends nothing anywhere: every compaction then uses the built-in summary and says why.",
+      "default": "typesafe"
+    },
+    "model": {
+      "type": "string",
+      "title": "Model",
+      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash is the other), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest)."
+    },
+    "providerDecision": {
+      "type": "boolean",
+      "title": "Decide the provider per compaction",
+      "description": "When on, the providers that have credentials and can hold the conversation are compared, and if more than one remains a single routing question picks which decides this compaction. That question goes to Cloudflare whenever its credentials are set, with a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
+      "default": false
+    },
+    "typesafeApiKey": {
+      "type": "string",
+      "title": "TypeSafe key",
+      "description": "Stored as a secret. When empty, the TYPESAFE_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "openrouterApiKey": {
+      "type": "string",
+      "title": "OpenRouter key",
+      "description": "Stored as a secret. When empty, the OPENROUTER_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "cloudflareApiToken": {
+      "type": "string",
+      "title": "Cloudflare API token",
+      "description": "A token allowed to run Workers AI, stored as a secret. When empty, the CLOUDFLARE_API_TOKEN variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "cloudflareAccountId": {
+      "type": "string",
+      "title": "Cloudflare account ID",
+      "description": "The account Workers AI runs under. When empty, the CLOUDFLARE_ACCOUNT_ID variable is read, from the environment first and the settings env block second."
+    },
+    "keepThreshold": {
+      "type": "number",
+      "title": "Probability to keep",
+      "description": "The probability from which a tool call, or its full result, is kept. Lower keeps more.",
+      "default": 0.5,
+      "min": 0,
+      "max": 1
+    },
+    "preserveRecentMessages": {
+      "type": "number",
+      "title": "Newest messages left as they are",
+      "description": "How many of the newest messages are never changed. The first message never is.",
+      "default": 6,
+      "min": 0
+    },
+    "compactAtPercent": {
+      "type": "number",
+      "title": "Compact at context percent",
+      "description": "Context usage, in percent, at which a compaction is requested when a turn ends. 0 turns this off.",
+      "default": 60,
+      "min": 0,
+      "max": 100
+    },
+    "minReductionRatio": {
+      "type": "number",
+      "title": "Smallest reduction accepted",
+      "description": "The smallest share of the conversation's characters the decisions must remove; below it the built-in summary is used instead.",
+      "default": 0.25,
+      "min": 0,
+      "max": 1
+    },
+    "maxStateTokens": {
+      "type": "number",
+      "title": "State budget (tokens)",
+      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Held to 85% of the provider's documented limit, and to what the request budget leaves beside the questions of 16 tool calls. A fraction is rounded down.",
+      "default": 25000,
+      "min": 1
+    },
+    "maxRequestTokens": {
+      "type": "number",
+      "title": "Request budget (tokens)",
+      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Held to 85% of the provider's documented limit, which for openrouter is 27,200, below the default. A fraction is rounded down.",
+      "default": 30000,
+      "min": 1
+    },
+    "truncateHeadChars": {
+      "type": "number",
+      "title": "Characters kept of a shortened output",
+      "description": "When a call stays but its full output does not, this many of the output's first characters are kept, followed by a note on what was removed. At 0 only the note is left.",
+      "default": 300,
+      "min": 0
+    }
+  }
+}

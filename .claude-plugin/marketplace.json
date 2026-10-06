@@ -1,0 +1,23 @@
+{
+  "name": "claude-code-mods",
+  "owner": {
+    "name": "zchee",
+    "email": "zchee.io@gmail.com"
+  },
+  "description": "Opinionated Claude Code Mods plugins.",
+  "version": "0.0.1",
+  "plugins": [
+    {
+      "name": "decision-compaction",
+      "source": "./mods/decision-compaction",
+      "homepage": "https://github.com/zchee/claude-code-mods/tree/main/mods/decision-compaction",
+      "repository": "https://github.com/zchee/claude-code-mods",
+      "category": "productivity",
+      "keywords": [
+        "compaction",
+        "context",
+        "mod"
+      ]
+    }
+  ]
+}

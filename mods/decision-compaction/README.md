@@ -96,7 +96,7 @@ A turn you interrupted, and a subagent's turn, request nothing.
 | --- | --- | --- | --- |
 | `typesafe` (default) | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
 | `cloudflare` | `clef` (`clef-flash` is the other) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 65,536 tokens; 64 questions a request |
-| `openrouter` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions |
+| `openrouter` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
 
 The `provider` option takes exactly these three names. Any other value is
 not replaced by the default: nothing is sent anywhere, and every compaction
@@ -110,6 +110,12 @@ unknown value into the default without saying so).
 ids and maps them itself (`jev-latest` to `~typesafe/jev-latest`,
 `jev-1.13` to `typesafe/jev-1.13`). An id that already has an author prefix
 is used as written.
+
+OpenRouter also serves Cloudflare's Clef (`cloudflare/clef`,
+`cloudflare/clef-flash`), and passes such a request on to Cloudflare, which
+refuses one with more than 64 questions. A model other than Jev on
+`openrouter` is therefore asked at most 64 questions (32 tool calls) a
+request, as on `cloudflare`, while the token limits stay OpenRouter's.
 
 Each credential is read from its plugin option first, then from the
 environment, at the time of the compaction. The `env` block of the settings

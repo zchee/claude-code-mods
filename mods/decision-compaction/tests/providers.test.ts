@@ -158,20 +158,54 @@ describe('routeOf', () => {
 
 describe('limits', () => {
   test('success: each provider states its documented limits', () => {
-    expect(limitsOf('typesafe')).toEqual({
+    expect(limitsOf(routeOf('typesafe'))).toEqual({
       maxStateTokens: 32000,
       maxRequestTokens: 64000,
     })
-    expect(limitsOf('openrouter')).toEqual({
+    expect(limitsOf(routeOf('openrouter'))).toEqual({
       maxStateTokens: 32000,
       maxRequestTokens: 32000,
     })
-    expect(limitsOf('cloudflare')).toEqual({
+    expect(limitsOf(routeOf('cloudflare'))).toEqual({
       maxStateTokens: 65536,
       maxRequestTokens: 65536,
       maxQuestions: 64,
     })
   })
+
+  const gateway: Record<string, { model: string; maxQuestions?: number }> = {
+    'success: clef over openrouter takes at most 64 questions': {
+      model: 'cloudflare/clef',
+      maxQuestions: 64,
+    },
+    'success: clef-flash over openrouter takes at most 64 questions': {
+      model: 'cloudflare/clef-flash',
+      maxQuestions: 64,
+    },
+    'success: a model openrouter does not route to jev is held to 64 questions':
+      { model: 'someone/other-model', maxQuestions: 64 },
+    'success: jev over openrouter by its alias has no question cap': {
+      model: '~typesafe/jev-latest',
+    },
+    'success: jev over openrouter by a bare id has no question cap': {
+      model: 'jev-1.13',
+    },
+  }
+
+  for (const [name, { model, maxQuestions }] of Object.entries(gateway)) {
+    test(name, () => {
+      const expected: Record<string, number> = {
+        maxStateTokens: 32000,
+        maxRequestTokens: 32000,
+      }
+
+      if (maxQuestions !== undefined) {
+        expected.maxQuestions = maxQuestions
+      }
+
+      expect(limitsOf(routeOf('openrouter', model))).toEqual(expected)
+    })
+  }
 
   test('success: only cloudflare offers two models', () => {
     expect(modelsOf('cloudflare')).toEqual(['clef', 'clef-flash'])

@@ -18,7 +18,7 @@ import {
   untouched,
 } from '../hooks/compact'
 import type { Ask, Decision, Demand, Scores } from '../hooks/compact'
-import { limitsOf } from '../hooks/providers'
+import { limitsOf, routeOf } from '../hooks/providers'
 import { stateWithin, pairCalls } from '../hooks/state'
 import type { Call } from '../hooks/state'
 import type { Questions } from '../hooks/systemone'
@@ -192,7 +192,7 @@ describe('budgetOf', () => {
       expect(
         budgetOf(
           { maxStateTokens: want[0], maxRequestTokens: want[1] },
-          limitsOf(provider),
+          limitsOf(routeOf(provider)),
           demand ?? DEMAND,
         ),
       ).toEqual(expected)
@@ -203,7 +203,7 @@ describe('budgetOf', () => {
     const calls = callsOf(300)
     const budget = budgetOf(
       { maxStateTokens: 1_000_000, maxRequestTokens: 1_000_000 },
-      limitsOf('openrouter'),
+      limitsOf(routeOf('openrouter')),
       demandOf(calls),
     )
     const batches = batchesOf(calls.slice(0, 256), budget.stateTokens, budget)
@@ -213,6 +213,20 @@ describe('budgetOf', () => {
       'no request asks about fewer than sixteen calls',
     ).toBe(true)
     expect(batches.length <= 16).toBe(true)
+  })
+
+  test('success: clef over openrouter is asked at most 64 questions a request', () => {
+    const calls = callsOf(60)
+    const limits = limitsOf(routeOf('openrouter', 'cloudflare/clef'))
+    const budget = budgetOf(
+      { maxStateTokens: 25_000, maxRequestTokens: 30_000 },
+      limits,
+      demandOf(calls),
+    )
+    const batches = batchesOf(calls, 2_000, budget)
+
+    expect(budget.questions).toBe(64)
+    expect(batches.map(batch => batch.length)).toEqual([32, 28])
   })
 
   const refused: Record<
@@ -240,7 +254,7 @@ describe('budgetOf', () => {
       expect(() =>
         budgetOf(
           { maxStateTokens: 25_000, maxRequestTokens: request },
-          limitsOf('typesafe'),
+          limitsOf(routeOf('typesafe')),
           demand,
         ),
       ).toThrow({ message })
@@ -251,7 +265,7 @@ describe('budgetOf', () => {
     expect(
       budgetOf(
         { maxStateTokens: 25_000, maxRequestTokens: 1_033 },
-        limitsOf('typesafe'),
+        limitsOf(routeOf('typesafe')),
         DEMAND,
       ),
     ).toEqual({ stateTokens: 1, requestTokens: 1_033 })

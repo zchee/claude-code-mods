@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 
 import type { Ask } from './compact'
-import { missingOf, modelsOf, PROVIDERS } from './providers'
+import { isOpenRouterJev, missingOf, modelsOf, PROVIDERS } from './providers'
 import type { Credentials, Route } from './providers'
 import type { Call } from './state'
 import { choiceOf } from './systemone'
@@ -86,15 +86,6 @@ const PROFILE_CONTEXT =
   'assistant is working on.'
 
 /**
- * The ids OpenRouter routes to Jev: a Jev id (`jev`, `jev-latest`,
- * `jev-1.13`) either bare, which OpenRouter maps onto TypeSafe's namespace
- * before routing, or under that namespace (`typesafe/`) or its alias
- * (`~typesafe/`). The namespace alone does not make a model Jev: any other
- * model TypeSafe publishes there is a model of its own.
- */
-const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
-
-/**
  * The model family a route reaches, which is what two routes are compared
  * by: OpenRouter is a gateway, and the Jev it routes to is the same Jev
  * that TypeSafe serves directly.
@@ -105,7 +96,7 @@ function familyOf(route: Route): string {
   }
 
   if (route.provider === 'openrouter') {
-    return OPENROUTER_JEV.test(route.model) ? 'jev' : route.model
+    return isOpenRouterJev(route.model) ? 'jev' : route.model
   }
 
   return route.model

@@ -78,8 +78,7 @@ export async function run(job: Job): Promise<Result> {
   }
 
   const demand = demandOf(unpinned)
-  const budgetFor = (route: Route) =>
-    budgetOf(config, limitsOf(route.provider), demand)
+  const budgetFor = (route: Route) => budgetOf(config, limitsOf(route), demand)
   const goal = goalOf(messages, job.instructions)
   const fitted = stateWithin(messages, calls, {
     maxStateTokens: budgetFor(configured).stateTokens,

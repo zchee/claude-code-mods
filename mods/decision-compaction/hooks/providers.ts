@@ -238,13 +238,46 @@ export function providerOf(value: unknown): ProviderName | undefined {
 }
 
 /**
- * The documented limits of a provider.
+ * The ids OpenRouter routes to Jev: a Jev id (`jev`, `jev-latest`,
+ * `jev-1.13`) either bare, which OpenRouter maps onto TypeSafe's namespace
+ * before routing, or under that namespace (`typesafe/`) or its alias
+ * (`~typesafe/`). The namespace alone does not make a model Jev: any other
+ * model TypeSafe publishes there is a model of its own.
+ */
+const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
+
+/**
+ * Tells whether an OpenRouter model id reaches Jev.
  *
- * @param provider the provider
+ * @param model the model id as OpenRouter's body spells it
+ * @returns true for a Jev id
+ */
+export function isOpenRouterJev(model: string): boolean {
+  return OPENROUTER_JEV.test(model)
+}
+
+/**
+ * The limits a request over a route must keep to. OpenRouter is a gateway:
+ * a request it forwards is also held to what the model's own host accepts.
+ * Its Jev window is documented, and no question cap with it. Any other model
+ * it serves is held to Cloudflare's 64 questions as well, because Clef, the
+ * one other System One model, is served there and refuses a request with
+ * more (HTTP 422, "Dictionary should have at most 64 items").
+ *
+ * @param route the provider and the model
  * @returns its limits
  */
-export function limitsOf(provider: ProviderName): Limits {
-  return TABLE[provider].limits
+export function limitsOf(route: Route): Limits {
+  const limits = TABLE[route.provider].limits
+
+  if (route.provider === 'openrouter' && !isOpenRouterJev(route.model)) {
+    return {
+      ...limits,
+      maxQuestions: TABLE.cloudflare.limits.maxQuestions,
+    }
+  }
+
+  return limits
 }
 
 /**

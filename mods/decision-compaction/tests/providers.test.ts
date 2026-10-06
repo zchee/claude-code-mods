@@ -326,6 +326,60 @@ describe('replyFrom', () => {
       payload: { error: { code: 402, message: 'Insufficient credits' } },
       message: 'openrouter answered HTTP 402: Insufficient credits',
     },
+    'error: a refusal openrouter passes on from its host names the field': {
+      route: routeOf('openrouter', 'cloudflare/clef'),
+      status: 422,
+      payload: {
+        error: {
+          code: 422,
+          message:
+            'HTTP 422: ' +
+            JSON.stringify({
+              errors: [
+                {
+                  message:
+                    'AiError: AiError: ' +
+                    JSON.stringify({
+                      error: {
+                        type: 'invalid_request',
+                        message: 'Request body failed validation',
+                        details: {
+                          formErrors: [],
+                          fieldErrors: {
+                            questions: [
+                              'Dictionary should have at most 64 items after validation, not 114',
+                            ],
+                          },
+                        },
+                      },
+                    }) +
+                    ' (41e95187-1b83-4943-b077-73fb4676c6ea)',
+                  code: 5012,
+                },
+              ],
+              success: false,
+              result: {},
+              messages: [],
+            }),
+        },
+      },
+      message:
+        'openrouter answered HTTP 422: Request body failed validation: ' +
+        'questions: Dictionary should have at most 64 items after ' +
+        'validation, not 114',
+    },
+    'error: a reason that only repeats the status loses the repeat': {
+      route: routeOf('openrouter'),
+      status: 502,
+      payload: { error: { code: 502, message: 'HTTP 502: Bad gateway' } },
+      message: 'openrouter answered HTTP 502: Bad gateway',
+    },
+    'error: a quoted body that is not JSON is kept as written': {
+      route: routeOf('openrouter'),
+      status: 422,
+      payload: { error: { message: 'HTTP 422: {not json' } },
+      message: 'openrouter answered HTTP 422: {not json',
+    },
     'error: a plain-text error body is quoted': {
       route: routeOf('typesafe'),
       status: 529,

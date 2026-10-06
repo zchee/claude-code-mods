@@ -548,6 +548,72 @@ function reasonIn(payload: unknown): string | undefined {
 }
 
 /**
+ * The field errors of a validation failure, as `field: message` sentences:
+ * the `error.details.fieldErrors` map Workers AI answers a body it refuses
+ * with, which names what was wrong where the reason only says that it was.
+ */
+function fieldErrorsIn(payload: unknown): string | undefined {
+  const error = isRecord(payload) ? payload.error : undefined
+  const details = isRecord(error) ? error.details : undefined
+  const fields = isRecord(details) ? details.fieldErrors : undefined
+
+  if (!isRecord(fields)) {
+    return undefined
+  }
+
+  const sentences = Object.entries(fields).flatMap(([field, messages]) =>
+    Array.isArray(messages)
+      ? messages.filter(m => typeof m === 'string').map(m => `${field}: ${m}`)
+      : [],
+  )
+
+  return sentences.length > 0 ? sentences.join('; ') : undefined
+}
+
+/**
+ * How deep a reason is followed into the bodies quoted inside it.
+ */
+const REASON_DEPTH = 4
+
+/**
+ * A reason with the bodies it quotes unwrapped. A gateway passes on the
+ * failure of the host it forwarded to as text: OpenRouter's reason is
+ * `HTTP 422: ` and the host's body, whose own reason is `AiError: AiError: `
+ * and another body. Only the innermost sentence says what was refused, and
+ * it would not fit a toast line behind the wrappers, so every `HTTP nnn:`
+ * and `AiError:` prefix is dropped and a quoted body is read for its own
+ * reason and field errors.
+ */
+function innermostReason(reason: string, depth = 0): string {
+  const bare = reason.replace(/^(?:\s*(?:HTTP \d{3}|AiError):)+\s*/i, '')
+  const start = bare.indexOf('{')
+  const end = bare.lastIndexOf('}')
+
+  if (depth >= REASON_DEPTH || start !== 0 || end < start) {
+    return bare
+  }
+
+  let quoted: unknown
+
+  try {
+    quoted = JSON.parse(bare.slice(start, end + 1))
+  } catch {
+    return bare
+  }
+
+  const inner = reasonIn(quoted)
+  const fields = fieldErrorsIn(quoted)
+
+  if (inner === undefined) {
+    return fields ?? bare
+  }
+
+  const deepest = innermostReason(inner, depth + 1)
+
+  return fields === undefined ? deepest : `${deepest}: ${fields}`
+}
+
+/**
  * The reason a failed response gives, as one short line. The response body
  * is the only source: the sentence it names as its reason when it is JSON
  * of a known shape, the body itself otherwise.
@@ -561,7 +627,16 @@ function reasonOf(text: string, credentials: Credentials): string {
     payload = undefined
   }
 
-  return briefOf(reasonIn(payload) ?? text, credentials)
+  const reason = reasonIn(payload)
+  const fields = fieldErrorsIn(payload)
+  const stated =
+    reason === undefined
+      ? fields
+      : fields === undefined
+        ? innermostReason(reason)
+        : `${innermostReason(reason)}: ${fields}`
+
+  return briefOf(stated ?? text, credentials)
 }
 
 /**

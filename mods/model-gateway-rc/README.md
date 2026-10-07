@@ -1,4 +1,4 @@
-# mods-gateway-rc
+# model-gateway-rc
 
 A Claude Code mod that keeps a session on `api.anthropic.com` until Remote
 Control has registered, then routes it through a local
@@ -27,7 +27,7 @@ which must be installed. This mod only decides when the session uses it.
    wrote by mistake is undone by removing `ANTHROPIC_BASE_URL` from the
    file. model-gateway's SessionStart line saying the project is not wired
    is expected.
-3. Load this mod, for example `claude --plugin-dir mods/mods-gateway-rc`.
+3. Load this mod, for example `claude --plugin-dir mods/model-gateway-rc`.
 
 ## What it does
 
@@ -100,6 +100,6 @@ says so.
 
 ## Tests
 
-`claude plugin test mods/mods-gateway-rc` runs the tests in `tests/`
+`claude plugin test mods/model-gateway-rc` runs the tests in `tests/`
 without a session or network access: the environment, the gateway CLI, the
 health endpoint, the file system and the clock are answered from memory.

@@ -20,9 +20,9 @@
       ]
     },
     {
-      "name": "mods-gateway-rc",
-      "source": "./mods/mods-gateway-rc",
-      "homepage": "https://github.com/zchee/claude-code-mods/tree/main/mods/mods-gateway-rc",
+      "name": "model-gateway-rc",
+      "source": "./mods/model-gateway-rc",
+      "homepage": "https://github.com/zchee/claude-code-mods/tree/main/mods/model-gateway-rc",
       "repository": "https://github.com/zchee/claude-code-mods",
       "category": "productivity",
       "keywords": [

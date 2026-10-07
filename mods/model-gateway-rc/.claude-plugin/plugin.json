@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "mods-gateway-rc",
+  "name": "model-gateway-rc",
   "version": "0.1.0",
   "description": "Starts a session on api.anthropic.com so that Remote Control can register, then points it at the local Model Gateway once Remote Control has registered or on /gateway on, and back at api.anthropic.com whenever the gateway stops answering.",
   "author": {

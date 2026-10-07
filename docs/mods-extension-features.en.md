@@ -581,7 +581,6 @@ Check the `hooks:` and `calls:` lines of `claude plugin validate ./some-mod`. Lo
 | `$.session.surface` | Not mentioned | Deprecated; use `surfaces()` (d.ts:2796) |
 | `$.fs.list` result | `{ name, kind, size, isLink }` | Also `mtimeMs` (d.ts:3235) |
 | Version mods are on by default | overview: terminal v2.1.287, Desktop v2.1.286; admin: "v2.1.286 and later" | A small disagreement between the two pages. Use 2.1.287 as the floor in the terminal |
-| This repository's `mods/types/` | — | Written by 2.1.289, older than the installed 2.1.292 (it lacks `prompt.mention` and `prompt.autocomplete`) |
 
 ---
 

@@ -581,7 +581,6 @@ GitHub、git、URL、npm から取得してキャッシュにコピーされた�
 | `$.session.surface` | 記載なし | 非推奨。`surfaces()` を使う（d.ts:2796） |
 | `$.fs.list` の戻り値 | `{ name, kind, size, isLink }` | `mtimeMs` もある（d.ts:3235） |
 | mods の既定有効バージョン | overview はターミナル v2.1.287 以降・Desktop v2.1.286 以降、admin は「v2.1.286 以降」 | 2 ページ間の小さな食い違い。ターミナルでは 2.1.287 を基準にするのが安全 |
-| このリポジトリの `mods/types/` | — | 2.1.289 で生成されたもので、インストール済みの 2.1.292 より古い（`prompt.mention` と `prompt.autocomplete` がない） |
 
 ---
 

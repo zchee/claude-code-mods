@@ -15,6 +15,8 @@ A mod is a plugin that runs JavaScript or TypeScript event handlers (hooks) insi
 
 The 2.1.292 type declarations also contain an event the documentation does not mention, `prompt.autocomplete`, which adds typeahead suggestions to the prompt box.
 
+[Section 14](#14-apis-that-change-claude-codes-behavior-with-sample-code) lists the events and API calls that change Claude Code's behavior, arranged by what you want to change, with sample code for each.
+
 ### Sources
 
 | Short name | URL |
@@ -581,9 +583,602 @@ Check the `hooks:` and `calls:` lines of `claude plugin validate ./some-mod`. Lo
 | Version mods are on by default | overview: terminal v2.1.287, Desktop v2.1.286; admin: "v2.1.286 and later" | A small disagreement between the two pages. Use 2.1.287 as the floor in the terminal |
 | This repository's `mods/types/` | — | Written by 2.1.289, older than the installed 2.1.292 (it lacks `prompt.mention` and `prompt.autocomplete`) |
 
+---
+
+## 14. APIs that change Claude Code's behavior, with sample code
+
+This section takes the events and API calls from sections 3 to 5 that can **change** something (what Claude Code does, what Claude, the model, reads, or what the screen shows) and arranges them by what you want to change. Events a hook can only observe (`turn.start`, `session.measure` and others) are left out.
+
+Every sample passes `tsc --strict` against the 2.1.292 type declarations and the static analysis of `claude plugin validate --strict`. None of them was run in a live session ([Not verified](#not-verified)).
+
+### 14.1 Index
+
+| Area | What to change | Event / API | What the hook returns | Sample |
+| :- | :- | :- | :- | :- |
+| Tools | Stop a dangerous tool call | `tool.call` | `{ deny }` | 14.3 (1) |
+| Tools | Rewrite a tool's arguments | `tool.call` | `next({ ...e, argument })` | 14.3 (2) |
+| Tools | Add a note for Claude after a tool result | `tool.call` | `{ ...result, context }` | 14.3 (3) |
+| Tools | Retry a failed tool | `tool.call` | a second `next(e)` | 14.3 (4) |
+| Tools | Ask the user before a tool runs | `tool.call` + `$.ui.ask` | `next(e)` or `{ deny }` | 14.3 (5) |
+| Tools | Change the permission decision (allow / ask / deny) | `tool.check` | `{ decision, reason }` | 14.3 (6) |
+| Tools | Change a tool's description or deferred loading | `tool.describe` | `{ description, isDeferred }` | 14.3 (7) |
+| Tools | Add a tool Claude can call | `$.tool.register` + `tool.call` | `{ result }` | 14.3 (8) |
+| What Claude reads | Rewrite a prompt, add a note to it, or stop it | `prompt.submit` | `next({ ...e, text, context })`, `{ drop }` | 14.4 (1) |
+| What Claude reads | Add a section to the system prompt | `prompt.compose` | `{ sections }` | 14.4 (2) |
+| What Claude reads | Rewrite or remove an existing system prompt section | `prompt.section` | `{ text }`, `{ text: null }` | 14.4 (3) |
+| What Claude reads | Add to the context at the start of a conversation (CLAUDE.md and the like) | `prompt.context` | `{ blocks }` | 14.4 (4) |
+| What Claude reads | Rewrite or remove a reminder Claude Code adds | `prompt.attachment` | `{ text }`, `{ text: null }` | 14.4 (5) |
+| What Claude reads | Swap or refuse the file an @-mention reads | `prompt.mention` | `next({ ...e, path })`, `{ deny }` | 14.4 (6) |
+| What Claude reads | Append to a skill's body | `skill.prompt` | `{ text }` | 14.4 (7) |
+| What Claude reads | Change the attribution text of commits and PRs | `attribution.text` | `{ text }` | 14.4 (8) |
+| Prompt box | Never show the dim prompt suggestion | `prompt.suggest` | `{ isShown: false }` | 14.5 (1) |
+| Prompt box | Add typeahead suggestions (undocumented) | `prompt.autocomplete` | `{ suggestions }` | 14.5 (2) |
+| Model | Change the model or effort per request | `turn.step` | `yield* next({ ...e, model, effort })` | 14.6 (1) |
+| Model | Show one line under the answer when a turn ends | `turn.complete` | `{ ...result, text }` | 14.6 (2) |
+| Model | Interrupt a turn that runs too long | `turn.start` + `$.turn.abort` | — | 14.6 (3) |
+| Model | Confirm or refuse the user's `/model` switch | `classic.PreModelSwitch` | `{ permissionDecision }` | 14.6 (4) |
+| Subagents | Pick a subagent's model, or refuse to start it | `agent.spawn` | `next({ ...e, model })`, `{ deny }` | 14.7 (1) |
+| Subagents | Hide a subagent type from Claude | `agent.offer` | `{ isOffered: false }` | 14.7 (2) |
+| Subagents | Add a subagent type | `$.agent.register` | — | 14.7 (3) |
+| Commands | Add a slash command | `$.command.register` + `command.run` | `{ text }` | 14.8 (1) |
+| Commands | Fill in a built-in command's arguments | `command.run` | `next({ ...e, args })` | 14.8 (2) |
+| Commands | Hide a command from the list | `command.describe` | `{ ...result, isHidden: true }` | 14.8 (3) |
+| Settings | Refuse a `/config` change, or hide a row | `config.set` / `config.describe` | `{ deny }`, `{ isHidden: true }` | 14.8 (4) |
+| Session | Add compaction instructions, or stop a compaction | `session.compact` | `next({ ...e, instructions })`, `{ skip }` | 14.9 (1) |
+| Session | Keep a message from another session away from Claude | `session.receive` | `{ consumed }` | 14.9 (2) |
+| Session | Stop a message to another session | `session.send` | `{ isDelivered: false, reason }` | 14.9 (3) |
+| Session | Rewrite what the conversation log stores | `session.append` | `next({ ...e, message })` | 14.9 (4) |
+| Interface | Change how one of Claude Code's own rows (the spinner and others) looks | `ui.render` | `next({ ...e, props })` | 14.10 (1) |
+| Interface | Add your own elements to the question dialog | `ui.render` (`AskUserQuestion`) | an element tree | 14.10 (2) |
+| Other mods | Refuse to load a mod | `plugin.register` | `{ refuse }` | 14.11 (1) |
+| Other mods | Refuse another mod's API call | API call events such as `fs.write` | `{ deny }` | 14.11 (2) |
+| Other mods | Add a namespace to, or remove one from, the `$` a mod receives | `engine.create` | the API with the namespace added | section 3 |
+| Settings hooks | Return from a mod the decisions a settings hook returns | `classic.*` | fields of `ClassicResult` | 14.12 |
+| Actions | Start a turn, compact, change a setting or an environment variable, and more | `$.prompt.submit`, `$.session.compact`, `$.env.set` and others | — | 14.13 |
+
+### 14.2 Skeleton
+
+The samples below show only the **body** of the `register` function in `hooks/register.ts`. Each one works when pasted at `// sample goes here` in this skeleton:
+
+```typescript
+import type { Register } from 'claude-code'
+
+export const register: Register = (on, options) => {
+  // sample goes here
+}
+```
+
+Assumptions:
+
+- The plugin is named `example` (`name` in `.claude-plugin/plugin.json`). A tool registered with `$.tool.register` is called `mcp__example__<name>`.
+- `$.tool.register`, `$.command.register` and `$.agent.register` reject until the session binds, so they are called in a `session.start` hook.
+- Registering one event twice without a matcher makes the module fail to load. To put several samples in one mod, merge the hooks of the same event into one.
+- `$` is always written as `$.namespace.method(...)` (the static-analysis rules in section 7).
+
+### 14.3 Tool calls
+
+(1) Stop a dangerous command. Claude reads the `{ deny }` string as the tool's error result. No permission prompt appears.
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (/\brm\s+-\w*(rf|fr)/.test(e.command)) {
+    return { deny: 'rm -rf is blocked in this repository. Remove the files by name.' }
+  }
+  return next(e)
+})
+```
+
+(2) Rewrite the arguments. In auto mode, a call rewritten after the classifier reviewed it can be refused (section 9).
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (!/^git (log|diff|show)\b/.test(e.command)) return next(e)
+  return next({ ...e, command: e.command.replace(/^git /, 'git --no-pager ') })
+})
+```
+
+(3) Add a note after the tool result that only Claude reads. The user does not see it.
+
+```ts
+on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+  const result = await next(e)
+  if (result.deny !== undefined || !e.file_path.includes('/generated/')) return result
+  return {
+    ...result,
+    context: [
+      ...(result.context ?? []),
+      'This file is generated. Edit the schema under schema/ and run `pnpm gen` instead.',
+    ],
+  }
+})
+```
+
+(4) Retry once on failure. The time spent in `$.clock.sleep` counts toward the hook's time limit (10 seconds).
+
+```ts
+on('tool.call', { tool: 'WebFetch' }, async ($, e, next) => {
+  const first = await next(e)
+  if (first.isError !== true) return first
+  await $.clock.sleep(2000)
+  return next(e)
+})
+```
+
+(5) Let the user choose before the call runs. `$.ui.ask` rejects when the dialog is dismissed and under `-p`, so `.catch` returns `{ deny }` to fail closed.
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (!/\bgit\s+push\b/.test(e.command)) return next(e)
+  const answer = await $.ui.ask(`Run "${e.command}"?`, ['Push', 'Cancel'])
+  return answer === 'Push' ? next(e) : { deny: 'The user cancelled the push.' }
+}).catch(() => ({ deny: 'The push was not confirmed.' }))
+```
+
+(6) Change the permission decision. `next(e)` returns the decision that the rules, the permission mode and the settings hooks reached. This sample turns `ask` into `allow` only for read-only git commands with no shell separators. Where the built-in guard loads, a mod cannot approve a call that a `deny` rule refused (section 10).
+
+```ts
+on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+  const verdict = await next(e)
+  const { command } = e.input as { command: string }
+  if (verdict.decision === 'ask' && /^git (status|diff|log)( [^;&|`$<>()]*)?$/.test(command)) {
+    return { decision: 'allow', reason: 'read-only git command' }
+  }
+  return verdict
+})
+```
+
+(7) Change a tool's description, or whether it is deferred behind ToolSearch. A description that changes on every request defeats the prompt cache, so use a fixed string.
+
+```ts
+on('tool.describe', { tool: 'Bash' }, async ($, e, next) => {
+  const described = await next(e)
+  return {
+    ...described,
+    description: `${described.description}\n\nIn this repository run tests with \`pnpm test\`, never \`npm test\`.`,
+  }
+})
+
+on('tool.describe', { tool: /^mcp__github__/ }, async ($, e, next) => ({
+  ...(await next(e)),
+  isDeferred: false,
+}))
+```
+
+(8) Add a tool. Claude sees it as `mcp__example__word_count`, and a `tool.call` hook does the work by returning `{ result }`. A call that no hook answers fails.
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.tool.register({
+    name: 'word_count',
+    description: 'Counts the words of a text.',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+    },
+  })
+  return next(e)
+})
+
+on('tool.call', { tool: 'mcp__example__word_count' }, async ($, e) => {
+  const { text } = e as unknown as { text: string }
+  return { result: { words: text.split(/\s+/).filter(Boolean).length } }
+})
+```
+
+A hook can also answer a built-in tool's call with `{ result }`, but Claude Code validates the answer against the tool's output schema when it has one, so the result must take the tool's own shape (`claude-code-tools/index.d.ts`).
+
+### 14.4 What Claude reads
+
+(1) Rewrite a prompt, add a note to it, or stop it. A changed `text` also shows in the transcript. The user never sees `context`. The `{ drop }` string is shown to the user as the reason.
+
+```ts
+on('prompt.submit', async ($, e, next) => {
+  if (/\bAKIA[0-9A-Z]{16}\b/.test(e.text)) {
+    return { drop: 'The prompt contains an AWS access key ID. Remove it and send again.' }
+  }
+  const text = e.text.replace(/^ja:\s*/, '')
+  if (text === e.text) return next(e)
+  return next({ ...e, text, context: [...(e.context ?? []), 'Answer this prompt in Japanese.'] })
+})
+```
+
+(2) Add a section to the system prompt. Write the `id` as `<plugin>:<name>`. Use `scope: 'shared'` only for text that reads the same for every user, and `session` for text that varies by repository (every `shared` section must come before the `session` ones).
+
+```ts
+on('prompt.compose', async ($, e, next) => {
+  const { sections } = await next(e)
+  return {
+    sections: [
+      ...sections,
+      { id: 'example:review', text: 'Keep each change small enough to review in one sitting.', scope: 'session' },
+    ],
+  }
+})
+```
+
+(3) Rewrite a named section of the system prompt. The section names (`env_info_simple`, `memory` and others) are the `id`s in `prompt.compose`'s `sections`. Returning `{ text: null }` removes the section.
+
+```ts
+on('prompt.section', { name: 'env_info_simple' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: text === null ? null : `${text}\nOutbound HTTP goes through the corporate proxy.` }
+})
+```
+
+(4) Add a block to the context that comes with the first message of a conversation (the contents of CLAUDE.md and the like). It fires once per conversation.
+
+```ts
+on('prompt.context', async ($, e, next) => {
+  const result = await next(e)
+  const conventions = await $.fs.read('docs/CONVENTIONS.md').catch(() => undefined)
+  if (conventions === undefined) return result
+  return { ...result, blocks: [...result.blocks, { name: 'conventions', text: conventions }] }
+})
+```
+
+(5) Rewrite a message Claude Code adds to the conversation (a reminder and the like). `e.type` names its kind. The type declarations define the content (`e.detail`) of three kinds, `plan_mode`, `plan_mode_reentry` and `plan_mode_exit`; every other kind carries only its `text`.
+
+```ts
+on('prompt.attachment', { type: 'plan_mode' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: text === null ? null : `${text}\n\nWrite the plan in Japanese.` }
+})
+```
+
+(6) Swap the file an @-mention reads, or refuse to attach it (v2.1.290 and later).
+
+```ts
+on('prompt.mention', async ($, e, next) => {
+  if (/\.(pem|key)$/.test(e.path)) return { deny: 'private keys are never attached' }
+  if (/(^|\/)\.env$/.test(e.path)) return next({ ...e, path: `${e.path}.example` })
+  return next(e)
+})
+```
+
+(7) Append to a skill's body. The matcher's `skill` is the skill's name.
+
+```ts
+on('skill.prompt', { skill: 'commit' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: `${text}\n\nSign every commit with \`git commit --gpg-sign\`.` }
+})
+```
+
+(8) Change the attribution text added to commits and PRs. `kind` is one of `commit`, `pr`, `exemption` and `remedy`.
+
+```ts
+on('attribution.text', { kind: 'commit' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: `${text}\nReviewed-by: nobody yet` }
+})
+```
+
+### 14.5 Prompt box
+
+(1) Never show the dim suggestion in the prompt box. Returning `{ isShown: false }` without calling `next` keeps every suggestion from showing, Claude Code's own included.
+
+```ts
+on('prompt.suggest', async () => ({ isShown: false }))
+```
+
+(2) Add typeahead suggestions. This 2.1.292 event is not in the documentation (d.ts:4123, 8173). A taken suggestion replaces the token at the cursor (`e.token`). The rows appear below Claude Code's own.
+
+```ts
+on('prompt.autocomplete', async ($, e, next) => {
+  const result = await next(e)
+  if (!e.token.startsWith(':')) return result
+  const snippets = [
+    { text: 'Looks good to me.', label: ':lgtm', description: 'approval' },
+    { text: 'Please add a test that fails without this change.', label: ':test', description: 'ask for a test' },
+  ].filter((s) => s.label.startsWith(e.token))
+  return { suggestions: [...result.suggestions, ...snippets] }
+})
+```
+
+### 14.6 Model and turns
+
+(1) Change the model or the effort of each model request. A `turn.step` hook is an async generator that streams the response with `yield* next(e)` (a plain async function is a type error). A subagent's request carries `e.agentId`.
+
+```ts
+on('turn.step', async function* ($, e, next) {
+  if (e.agentId !== undefined) {
+    return yield* next({ ...e, model: 'claude-haiku-4-5-20251001' })
+  }
+  return yield* next({ ...e, effort: e.index === 0 ? 'high' : 'medium' })
+})
+```
+
+(2) Show one line under the answer at the end of a turn.
+
+```ts
+on('turn.complete', async ($, e, next) => {
+  const result = await next(e)
+  if (e.usage === undefined) return result
+  const seconds = Math.round(e.durationMs / 1000)
+  return { ...result, text: `${e.usage.output_tokens} output tokens in ${seconds}s` }
+})
+```
+
+(3) Interrupt a turn that runs longer than ten minutes. The timer comes from `$.clock` (there is no `setTimeout`) and is cancelled when the turn ends.
+
+```ts
+const timers = new Map<string, { cancel: () => void }>()
+
+on('turn.start', async ($, e, next) => {
+  const result = await next(e)
+  const timer = $.clock.after(10 * 60_000, () => {
+    $.turn.abort({ turnId: e.turnId })
+  })
+  timers.set(e.turnId, timer)
+  return result
+})
+
+on('turn.complete', async ($, e, next) => {
+  timers.get(e.turnId)?.cancel()
+  timers.delete(e.turnId)
+  return next(e)
+})
+```
+
+(4) Step into a switch of the session's model (`/model`, the Model row of `/config`, the model picker, or the SDK's `set_model`). `e` carries the models before and after, whether the prompt cache is warm, and the estimated cost of re-caching (`estimated_cache_write_usd`). This sample returns `'ask'` when discarding a warm cache would cost a dollar or more (the type accepts `ask`; whether a confirmation dialog appears was not checked). Returning `'deny'` stops the switch. No API changes the session's model directly (`$.session.model()` only reads it); the route the type declarations show is `$.command.run({ command: 'model', args: 'opus' })`, which does what the user typing `/model opus` does (not run to confirm). A switch by automatic fallback (`source: 'auto'`) raises no `PreModelSwitch`, so a mod cannot stop it and learns of it only afterwards through `classic.PostModelSwitch`.
+
+```ts
+on('classic.PreModelSwitch', async ($, e, next) => {
+  if (!e.prompt_cache_warm || e.estimated_cache_write_usd < 1) return next(e)
+  return {
+    permissionDecision: 'ask',
+    permissionDecisionReason: `Switching to ${e.to_model} re-caches about $${e.estimated_cache_write_usd.toFixed(2)} of context.`,
+  }
+})
+```
+
+### 14.7 Subagents
+
+(1) Pick a subagent's model, or refuse to start it. Starting an agent team teammate raises the same event, with `e.isTeammate` set.
+
+```ts
+on('agent.spawn', async ($, e, next) => {
+  if (e.isTeammate === true) return { deny: 'Agent teams are turned off in this repository.' }
+  if (e.subagentType === 'Explore') return next({ ...e, model: 'haiku' })
+  return next(e)
+})
+```
+
+(2) Keep a subagent type from being offered to Claude. `$.agent.spawn` can still start it.
+
+```ts
+on('agent.offer', { agent: 'general-purpose' }, async () => ({ isOffered: false }))
+```
+
+(3) Add a subagent type. It is named `<plugin>:<name>` (here `example:reviewer`) and takes the same fields as an agent file.
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.agent.register({
+    name: 'reviewer',
+    description: 'Reviews the staged diff for correctness bugs. Use before committing.',
+    prompt: 'You review `git diff --cached`. Report only defects that change behavior, with file and line.',
+    tools: ['Read', 'Grep', 'Glob', 'Bash'],
+    model: 'opus',
+  })
+  return next(e)
+})
+```
+
+### 14.8 Commands and settings
+
+(1) Add a slash command. With `immediate: true` it runs at once while Claude is working, without waiting for the turn. `{ text }` shows in the transcript, and Claude reads it too.
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.command.register({ name: 'branch', description: 'Shows the current git branch.', immediate: true })
+  return next(e)
+})
+
+on('command.run', { command: 'branch' }, async ($) => {
+  const run = await $.process.run(['git', 'branch', '--show-current'])
+  return { text: run.exitCode === 0 ? run.stdout.trim() : run.stderr.trim() }
+})
+```
+
+(2) Fill in a built-in command's arguments. This sample gives `/compact` with no arguments an instruction for the summary. When a single command is the whole prompt of a `-p` run, the hook can set the process's exit code with `{ text, exitCode }`.
+
+```ts
+on('command.run', { command: 'compact' }, async ($, e, next) => {
+  if (e.args.trim() !== '') return next(e)
+  return next({ ...e, args: 'Keep every file path, command and decision verbatim.' })
+})
+```
+
+(3) Hide a command from the list (the typeahead). A hidden command still runs when typed in full, so to stop it from running, answer its `command.run` with `{ text }`.
+
+```ts
+on('command.describe', { command: ['upgrade', 'passes'] }, async ($, e, next) => ({
+  ...(await next(e)),
+  isHidden: true,
+}))
+```
+
+(4) Refuse a `/config` change, or hide a row. The key names are the `key`s that `$.config.list()` returns.
+
+```ts
+on('config.set', { key: 'verbose' }, async ($, e, next) => {
+  if (e.value === false) return { deny: 'verbose output stays on in this repository' }
+  return next(e)
+})
+
+on('config.describe', { key: 'theme' }, async ($, e, next) => ({ ...(await next(e)), isHidden: true }))
+```
+
+### 14.9 Session
+
+(1) Add instructions to a compaction. Returning `{ skip: reason }` stops the compaction, and returning `{ messages }` uses those messages in place of the summary (this repository's `mods/decision-compaction` does the latter).
+
+```ts
+on('session.compact', async ($, e, next) => {
+  const rule = 'Keep every open task and every decision with its reason.'
+  const instructions = e.instructions === undefined ? rule : `${e.instructions}\n${rule}`
+  return next({ ...e, instructions })
+})
+```
+
+(2) Handle a message from another agent or session without passing it to Claude.
+
+```ts
+on('session.receive', async ($, e, next) => {
+  if (!/^\s*ping\s*$/i.test(e.text)) return next(e)
+  $.ui.toast('ping received')
+  return { consumed: 'ping is answered by the example mod' }
+})
+```
+
+(3) Stop a message to another session (sends from the SendMessage tool included).
+
+```ts
+on('session.send', async ($, e, next) => {
+  if (/BEGIN [A-Z ]*PRIVATE KEY/.test(e.text)) {
+    return { isDelivered: false, reason: 'the message contains a private key' }
+  }
+  return next(e)
+})
+```
+
+(4) Rewrite what the conversation log stores. It fires before each row (a prompt, a response, a tool result and so on) is stored. This sample masks AWS access key IDs in text blocks.
+
+```ts
+on('session.append', async ($, e, next) => {
+  const content = e.message.content.map((block) =>
+    block.type === 'text' && typeof block.text === 'string'
+      ? { ...block, text: block.text.replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA****') }
+      : block,
+  )
+  return next({ ...e, message: { ...e.message, content } })
+})
+```
+
+### 14.10 Replacing parts of the interface
+
+(1) Change some props of one of Claude Code's own rows. The sites and their props are in the table in section 5.
+
+```ts
+on('ui.render', { component: 'Spinner' }, async ($, e, next) =>
+  next({ ...e, props: { ...e.props, word: 'Brewing' } }),
+)
+```
+
+(2) Add your own elements above the question dialog (`AskUserQuestion`). The tree must hold Claude Code's own dialog, which `await next(e)` returns, exactly once; otherwise only Claude Code's own dialog is drawn. The sample uses JSX, so the file is named `.tsx`. The permission prompt cannot be changed.
+
+```tsx
+on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column">
+      <Text color="yellow">Claude is waiting for your answer.</Text>
+      {await next(e)}
+    </Box>
+  )
+})
+```
+
+To show something without starting a turn, use `$.ui.status` (one line under the prompt), `$.ui.toast` (a toast at the top right) or `$.ui.log` (a dim transcript line) (section 4).
+
+### 14.11 Other mods and policy
+
+A policy mod goes in `prependPlugins` so that it runs before the user's mods, on the outside of the chain (section 10).
+
+(1) Refuse to load mods that match a condition. A hook that throws fails open, so `.catch` returns `{ refuse }` to fail closed.
+
+```ts
+on('plugin.register', async ($, e, next) => {
+  if (e.tier === 'user' && e.uses.calls.some((call) => call.startsWith('process.'))) {
+    return { refuse: 'user mods may not start processes on this machine' }
+  }
+  return next(e)
+}).catch(() => ({ refuse: 'the plugin policy could not be checked' }))
+```
+
+(2) Refuse another mod's API call. Every mods API method is also an event, and `next.origin` names the calling mod and its tier.
+
+```ts
+on('fs.write', async ($, e, next) => {
+  if (next.origin.tier === 'user' && /(^|\/)\.git\/hooks\//.test(e.path)) {
+    return { deny: 'mods may not write git hooks' }
+  }
+  return next(e)
+})
+```
+
+### 14.12 Settings hook events (`classic.*`)
+
+A mod can return the decisions a settings hook (`hooks` in `settings.json`) returns. `e` is the JSON a settings hook receives on stdin, and the result takes the fields of `ClassicResult` (d.ts:1266). They map to a settings hook's JSON output as follows:
+
+| `ClassicResult` field | In a settings hook | Events it applies to |
+| :- | :- | :- |
+| `block` | `decision: "block"` with `reason` (exit code 2 from a command hook) | the event's block, veto or re-prompt |
+| `preventContinuation` / `stopReason` | `continue: false` / `stopReason` | stop the session after the event |
+| `additionalContext` | `hookSpecificOutput.additionalContext` | text handed to Claude |
+| `sessionTitle` | `hookSpecificOutput.sessionTitle` | UserPromptSubmit, SessionStart |
+| `suppressOriginalPrompt` | `hookSpecificOutput.suppressOriginalPrompt` | UserPromptSubmit, UserPromptExpansion |
+| `initialUserMessage` / `watchPaths` / `reloadSkills` | the fields of the same name in `hookSpecificOutput` | SessionStart |
+| `permissionDecision` / `permissionDecisionReason` | the fields of the same name in `hookSpecificOutput` | PreModelSwitch |
+| `decision` | `hookSpecificOutput.decision` (`behavior: 'allow' / 'deny'`) | PermissionRequest |
+| `updatedToolOutput` / `updatedMCPToolOutput` | the fields of the same name in `hookSpecificOutput` | PostToolUse |
+| `retry` | `hookSpecificOutput.retry` | PermissionDenied |
+| `displayContent` | `hookSpecificOutput.displayContent` | MessageDisplay |
+| `worktreePath` | `hookSpecificOutput.worktreePath` | WorktreeCreate |
+
+Only `classic.PreToolUse` takes a different `e`, the tool call's envelope, so `tool.call` is the plainer way to change a tool call.
+
+This sample keeps Claude working until the tests pass. A `block` on `Stop` reaches Claude as an instruction to keep going instead of stopping. When `stop_hook_active` is set, blocking again would loop forever, so the hook lets the stop through.
+
+```ts
+on('classic.Stop', async ($, e, next) => {
+  if (e.stop_hook_active) return next(e)
+  const run = await $.process.run(['pnpm', 'test'], { timeoutMs: 5 * 60_000 })
+  if (run.exitCode === 0) return next(e)
+  return { block: `pnpm test failed. Fix it before stopping:\n${run.stdout.slice(-2000)}` }
+})
+```
+
+### 14.13 Making Claude Code act through API calls
+
+These APIs make Claude Code do something when a mod calls a `$` method, rather than through what a hook returns.
+
+| API | What it does |
+| :- | :- |
+| `$.prompt.submit({ text, asUser? })` | Starts a new turn once the session is idle. By default a sentence naming the mod comes first |
+| `$.prompt.fill({ text, mode })` / `$.prompt.suggest({ text })` | Replaces, appends to or inserts into the draft in the prompt box / shows a dim suggestion |
+| `$.session.compact({ instructions? })` | Runs a compaction |
+| `$.session.append({ message })` | Adds a row (`user` or `system`) to the conversation |
+| `$.session.send({ to, text })` | Sends a message to another agent or session (delivered as the SendMessage tool delivers) |
+| `$.turn.abort({ turnId })` | Stops a running turn and its running tools |
+| `$.command.run({ command, args? })` | Runs a slash command as if the user typed it |
+| `$.config.set({ key, value })` | Changes a `/config` row |
+| `$.env.set(name, value)` | Changes an environment variable, also for the commands and MCP servers Claude Code starts afterwards |
+| `$.agent.spawn({ prompt, subagentType? })` | Starts a subagent in the background |
+| `$.tool.call({ tool, ...arguments })` | Calls a tool (through the other mods' `tool.call` hooks) |
+
+This sample compacts and then asks for a handoff note on `/handoff`, and turns off the pager for the commands that follow.
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.command.register({ name: 'handoff', description: 'Compacts, then asks Claude for a handoff note.' })
+  await $.env.set('GIT_PAGER', 'cat')
+  return next(e)
+})
+
+on('command.run', { command: 'handoff' }, async ($) => {
+  await $.session.compact({ instructions: 'Keep open tasks and decisions.' })
+  await $.prompt.submit({ text: 'Write a handoff note for the next session in HANDOFF.md.', asUser: true })
+  return {}
+})
+```
+
 ## Not verified
 
 - Drawing in the Desktop app (`Svg`, the Desktop hotkey display) was not tried on a real machine.
 - `prompt.autocomplete` was read from the type declarations only, not tried in a live session.
 - The behavior of name-only methods (`$.agent.*`, `$.audio.*`, `$.session.authorize`, `$.model.classify` and others) comes from comments in the type declarations and was not exercised.
 - Whether `cc-plugin-you-should-know` is available to a given organization has to be checked in `/plugin` → Installed → Show disabled.
+- The 40 samples in section 14 passed `tsc --strict` (TypeScript 5.9.3) against the Claude Code 2.1.292 type declarations and `claude plugin validate --strict` on 2026-10-07. Each was checked as a mod of its own; none was run in a live session. In particular, the runtime behavior of the 14.13 sample, which calls `$.session.compact` and then `$.prompt.submit` from a `command.run` hook, and of the 14.6 (1) sample, which changes `effort` in `turn.step`, is unconfirmed.

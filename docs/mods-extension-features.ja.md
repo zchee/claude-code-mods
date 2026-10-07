@@ -15,6 +15,8 @@ mod は「JavaScript/TypeScript のイベントハンドラ（hook）を Claude 
 
 2.1.292 の型定義には、ドキュメントに載っていないイベント `prompt.autocomplete`（プロンプト入力の補完候補を追加）があります。
 
+Claude Code の挙動を変えられるイベントと API を「何を変えたいか」で引ける一覧と、そのサンプルコードは [14 章](#14-claude-code-の挙動を変更できる-api-一覧とサンプルコード) にあります。
+
 ### 出典ページ
 
 | 略称 | URL |
@@ -581,9 +583,602 @@ GitHub、git、URL、npm から取得してキャッシュにコピーされた�
 | mods の既定有効バージョン | overview はターミナル v2.1.287 以降・Desktop v2.1.286 以降、admin は「v2.1.286 以降」 | 2 ページ間の小さな食い違い。ターミナルでは 2.1.287 を基準にするのが安全 |
 | このリポジトリの `mods/types/` | — | 2.1.289 で生成されたもので、インストール済みの 2.1.292 より古い（`prompt.mention` と `prompt.autocomplete` がない） |
 
+---
+
+## 14. Claude Code の挙動を変更できる API 一覧とサンプルコード
+
+3〜5 章の一覧から、Claude Code の動作、Claude（モデル）が読む内容、画面の表示のどれかを**変えられる**イベントと API だけを、「何を変えたいか」で引けるように並べ直したものです。観察しかできないイベント（`turn.start`、`session.measure` など）は除いています。
+
+サンプルはすべて 2.1.292 の型定義に対して `tsc --strict` を通し、`claude plugin validate --strict` の静的解析も通過させています。ただし、実際のセッションで動かして挙動を確かめてはいません（[未確認事項](#未確認事項)）。
+
+### 14.1 一覧
+
+| 分類 | 変えたいこと | イベント / API | hook が返すもの | サンプル |
+| :- | :- | :- | :- | :- |
+| ツール | 危険なツール呼び出しを止める | `tool.call` | `{ deny }` | 14.3 (1) |
+| ツール | ツールの引数を書き換える | `tool.call` | `next({ ...e, 引数 })` | 14.3 (2) |
+| ツール | ツール結果に Claude 向けの注記を足す | `tool.call` | `{ ...result, context }` | 14.3 (3) |
+| ツール | 失敗したツールを再試行する | `tool.call` | 2 回目の `next(e)` | 14.3 (4) |
+| ツール | 実行前にユーザーに確認する | `tool.call` + `$.ui.ask` | `next(e)` か `{ deny }` | 14.3 (5) |
+| ツール | 許可判定（allow / ask / deny）を変える | `tool.check` | `{ decision, reason }` | 14.3 (6) |
+| ツール | ツールの説明文や遅延読み込みを変える | `tool.describe` | `{ description, isDeferred }` | 14.3 (7) |
+| ツール | Claude が使えるツールを追加する | `$.tool.register` + `tool.call` | `{ result }` | 14.3 (8) |
+| Claude が読むもの | プロンプトを書き換える・注記を足す・送信を止める | `prompt.submit` | `next({ ...e, text, context })`、`{ drop }` | 14.4 (1) |
+| Claude が読むもの | システムプロンプトにセクションを足す | `prompt.compose` | `{ sections }` | 14.4 (2) |
+| Claude が読むもの | システムプロンプトの既存セクションを書き換える・消す | `prompt.section` | `{ text }`、`{ text: null }` | 14.4 (3) |
+| Claude が読むもの | 会話冒頭のコンテキスト（CLAUDE.md など）に足す | `prompt.context` | `{ blocks }` | 14.4 (4) |
+| Claude が読むもの | Claude Code が足すリマインダーを書き換える・消す | `prompt.attachment` | `{ text }`、`{ text: null }` | 14.4 (5) |
+| Claude が読むもの | @メンションで読むファイルを差し替える・拒否する | `prompt.mention` | `next({ ...e, path })`、`{ deny }` | 14.4 (6) |
+| Claude が読むもの | skill の本文に追記する | `skill.prompt` | `{ text }` | 14.4 (7) |
+| Claude が読むもの | コミットや PR の attribution 文を変える | `attribution.text` | `{ text }` | 14.4 (8) |
+| 入力欄 | 薄い提案（prompt suggestion）を出さない | `prompt.suggest` | `{ isShown: false }` | 14.5 (1) |
+| 入力欄 | 補完候補を追加する（ドキュメント未記載） | `prompt.autocomplete` | `{ suggestions }` | 14.5 (2) |
+| モデル | リクエストごとにモデルや effort を変える | `turn.step` | `yield* next({ ...e, model, effort })` | 14.6 (1) |
+| モデル | ターン終了時に回答の下へ 1 行出す | `turn.complete` | `{ ...result, text }` | 14.6 (2) |
+| モデル | 長すぎるターンを中断する | `turn.start` + `$.turn.abort` | — | 14.6 (3) |
+| モデル | ユーザーの `/model` 切り替えを確認・拒否する | `classic.PreModelSwitch` | `{ permissionDecision }` | 14.6 (4) |
+| サブエージェント | サブエージェントのモデルを選ぶ・起動を拒否する | `agent.spawn` | `next({ ...e, model })`、`{ deny }` | 14.7 (1) |
+| サブエージェント | サブエージェント型を Claude から隠す | `agent.offer` | `{ isOffered: false }` | 14.7 (2) |
+| サブエージェント | サブエージェント型を追加する | `$.agent.register` | — | 14.7 (3) |
+| コマンド | スラッシュコマンドを追加する | `$.command.register` + `command.run` | `{ text }` | 14.8 (1) |
+| コマンド | 組み込みコマンドの引数を補う | `command.run` | `next({ ...e, args })` | 14.8 (2) |
+| コマンド | コマンドを一覧から隠す | `command.describe` | `{ ...result, isHidden: true }` | 14.8 (3) |
+| 設定 | `/config` の変更を拒否する・行を隠す | `config.set` / `config.describe` | `{ deny }`、`{ isHidden: true }` | 14.8 (4) |
+| セッション | compaction の指示を足す・止める | `session.compact` | `next({ ...e, instructions })`、`{ skip }` | 14.9 (1) |
+| セッション | 他セッションからのメッセージを Claude に渡さない | `session.receive` | `{ consumed }` | 14.9 (2) |
+| セッション | 他セッションへの送信を止める | `session.send` | `{ isDelivered: false, reason }` | 14.9 (3) |
+| セッション | 会話ログに保存する内容を書き換える | `session.append` | `next({ ...e, message })` | 14.9 (4) |
+| UI | Claude Code 自身の行（スピナーなど）の表示を変える | `ui.render` | `next({ ...e, props })` | 14.10 (1) |
+| UI | 質問ダイアログに自分の表示を足す | `ui.render`（`AskUserQuestion`） | 要素ツリー | 14.10 (2) |
+| 他の mod | mod の読み込みを拒否する | `plugin.register` | `{ refuse }` | 14.11 (1) |
+| 他の mod | 他の mod の API 呼び出しを拒否する | `fs.write` などの API 呼び出しイベント | `{ deny }` | 14.11 (2) |
+| 他の mod | mod に渡す `$` に名前空間を足す・取り除く | `engine.create` | 名前空間を足した API | 3 章 |
+| 設定フック | 設定フックと同じ判定を mod から返す | `classic.*` | `ClassicResult` のフィールド | 14.12 |
+| 操作 | ターンを始める、compaction する、設定や環境変数を変えるなど | `$.prompt.submit`、`$.session.compact`、`$.env.set` ほか | — | 14.13 |
+
+### 14.2 雛形
+
+以降のサンプルは、`hooks/register.ts` の `register` 関数の**中身**だけを示します。そのまま次の雛形の `// ここにサンプル` に貼れば動く形にしてあります。
+
+```typescript
+import type { Register } from 'claude-code'
+
+export const register: Register = (on, options) => {
+  // ここにサンプル
+}
+```
+
+前提:
+
+- プラグイン名は `example` とします（`.claude-plugin/plugin.json` の `name`）。`$.tool.register` で登録したツールは `mcp__example__<name>` になります。
+- `$.tool.register`、`$.command.register`、`$.agent.register` はセッションに結び付く前は reject されるので、`session.start` の hook の中で呼びます。
+- 同じイベントを matcher なしで 2 回 `on` すると読み込みが失敗します。複数のサンプルを 1 つの mod にまとめるときは、同じイベントの hook を 1 つにまとめてください。
+- `$` は必ず `$.名前空間.メソッド(...)` の形で書きます（7 章の静的解析の制約）。
+
+### 14.3 ツール実行
+
+(1) 危険なコマンドを止める。`{ deny }` の文字列は、ツールのエラー結果として Claude が読みます。権限プロンプトは出ません。
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (/\brm\s+-\w*(rf|fr)/.test(e.command)) {
+    return { deny: 'rm -rf is blocked in this repository. Remove the files by name.' }
+  }
+  return next(e)
+})
+```
+
+(2) 引数を書き換える。auto モードでは、分類器の審査後に書き換えた呼び出しが拒否されることがあります（9 章）。
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (!/^git (log|diff|show)\b/.test(e.command)) return next(e)
+  return next({ ...e, command: e.command.replace(/^git /, 'git --no-pager ') })
+})
+```
+
+(3) ツール結果の後に、Claude だけが読む注記を足す。ユーザーには表示されません。
+
+```ts
+on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+  const result = await next(e)
+  if (result.deny !== undefined || !e.file_path.includes('/generated/')) return result
+  return {
+    ...result,
+    context: [
+      ...(result.context ?? []),
+      'This file is generated. Edit the schema under schema/ and run `pnpm gen` instead.',
+    ],
+  }
+})
+```
+
+(4) 失敗したら 1 回だけ再試行する。`$.clock.sleep` の待ち時間は hook の制限時間（10 秒）に含まれます。
+
+```ts
+on('tool.call', { tool: 'WebFetch' }, async ($, e, next) => {
+  const first = await next(e)
+  if (first.isError !== true) return first
+  await $.clock.sleep(2000)
+  return next(e)
+})
+```
+
+(5) 実行前にユーザーに選ばせる。`$.ui.ask` はダイアログを閉じられたときと `-p` では reject するので、`.catch` で `{ deny }` を返して fail closed にします。
+
+```ts
+on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  if (!/\bgit\s+push\b/.test(e.command)) return next(e)
+  const answer = await $.ui.ask(`Run "${e.command}"?`, ['Push', 'Cancel'])
+  return answer === 'Push' ? next(e) : { deny: 'The user cancelled the push.' }
+}).catch(() => ({ deny: 'The push was not confirmed.' }))
+```
+
+(6) 許可判定を変える。`next(e)` が返すのはルール・権限モード・設定フックが出した判定です。この例は、シェルの区切り文字を含まない読み取り専用の git コマンドだけ `ask` を `allow` に変えます。組み込みガードが読み込まれる環境では、`deny` ルールで拒否された呼び出しは mod から承認できません（10 章）。
+
+```ts
+on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+  const verdict = await next(e)
+  const { command } = e.input as { command: string }
+  if (verdict.decision === 'ask' && /^git (status|diff|log)( [^;&|`$<>()]*)?$/.test(command)) {
+    return { decision: 'allow', reason: 'read-only git command' }
+  }
+  return verdict
+})
+```
+
+(7) ツールの説明文を変える、遅延読み込み（ToolSearch の後ろに回すか）を変える。説明文を毎回変えるとプロンプトキャッシュが効かなくなるので、固定の文字列にします。
+
+```ts
+on('tool.describe', { tool: 'Bash' }, async ($, e, next) => {
+  const described = await next(e)
+  return {
+    ...described,
+    description: `${described.description}\n\nIn this repository run tests with \`pnpm test\`, never \`npm test\`.`,
+  }
+})
+
+on('tool.describe', { tool: /^mcp__github__/ }, async ($, e, next) => ({
+  ...(await next(e)),
+  isDeferred: false,
+}))
+```
+
+(8) ツールを追加する。Claude からは `mcp__example__word_count` として見え、処理は `tool.call` の hook が `{ result }` を返して行います。どの hook も答えない呼び出しは失敗します。
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.tool.register({
+    name: 'word_count',
+    description: 'Counts the words of a text.',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+    },
+  })
+  return next(e)
+})
+
+on('tool.call', { tool: 'mcp__example__word_count' }, async ($, e) => {
+  const { text } = e as unknown as { text: string }
+  return { result: { words: text.split(/\s+/).filter(Boolean).length } }
+})
+```
+
+組み込みツールの呼び出しにも `{ result }` で答えられますが、そのツールに出力スキーマがあれば Claude Code が検証するので、ツールごとの結果の形（`claude-code-tools/index.d.ts`）に合わせる必要があります。
+
+### 14.4 Claude が読むもの
+
+(1) プロンプトの書き換え、注記の追加、送信の中止。`text` を変えると transcript にも反映されます。`context` はユーザーには表示されません。`{ drop }` の文字列は理由としてユーザーに表示されます。
+
+```ts
+on('prompt.submit', async ($, e, next) => {
+  if (/\bAKIA[0-9A-Z]{16}\b/.test(e.text)) {
+    return { drop: 'The prompt contains an AWS access key ID. Remove it and send again.' }
+  }
+  const text = e.text.replace(/^ja:\s*/, '')
+  if (text === e.text) return next(e)
+  return next({ ...e, text, context: [...(e.context ?? []), 'Answer this prompt in Japanese.'] })
+})
+```
+
+(2) システムプロンプトにセクションを足す。`id` は `<plugin>:<名前>` の形にします。`scope: 'shared'` は全ユーザーで同じ文面のときだけ使い、リポジトリごとに変わる文面は `session` にします（`shared` のセクションは `session` より前に並べる必要があります）。
+
+```ts
+on('prompt.compose', async ($, e, next) => {
+  const { sections } = await next(e)
+  return {
+    sections: [
+      ...sections,
+      { id: 'example:review', text: 'Keep each change small enough to review in one sitting.', scope: 'session' },
+    ],
+  }
+})
+```
+
+(3) システムプロンプトの名前付きセクションを書き換える。セクション名（`env_info_simple`、`memory` など）は `prompt.compose` の `sections` の `id` で確かめられます。`{ text: null }` を返すとセクションが消えます。
+
+```ts
+on('prompt.section', { name: 'env_info_simple' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: text === null ? null : `${text}\nOutbound HTTP goes through the corporate proxy.` }
+})
+```
+
+(4) 会話の最初のメッセージに付くコンテキスト（CLAUDE.md の内容など）にブロックを足す。会話ごとに 1 回だけ発火します。
+
+```ts
+on('prompt.context', async ($, e, next) => {
+  const result = await next(e)
+  const conventions = await $.fs.read('docs/CONVENTIONS.md').catch(() => undefined)
+  if (conventions === undefined) return result
+  return { ...result, blocks: [...result.blocks, { name: 'conventions', text: conventions }] }
+})
+```
+
+(5) Claude Code が会話に足すメッセージ（リマインダーなど）を書き換える。`e.type` が種類です。型定義で中身（`e.detail`）が定義されている種類は `plan_mode`、`plan_mode_reentry`、`plan_mode_exit` の 3 つで、それ以外は `text` だけを持ちます。
+
+```ts
+on('prompt.attachment', { type: 'plan_mode' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: text === null ? null : `${text}\n\nWrite the plan in Japanese.` }
+})
+```
+
+(6) @メンションされたファイルを差し替える、または添付を拒否する（v2.1.290 以降）。
+
+```ts
+on('prompt.mention', async ($, e, next) => {
+  if (/\.(pem|key)$/.test(e.path)) return { deny: 'private keys are never attached' }
+  if (/(^|\/)\.env$/.test(e.path)) return next({ ...e, path: `${e.path}.example` })
+  return next(e)
+})
+```
+
+(7) skill の本文に追記する。matcher の `skill` は skill 名です。
+
+```ts
+on('skill.prompt', { skill: 'commit' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: `${text}\n\nSign every commit with \`git commit --gpg-sign\`.` }
+})
+```
+
+(8) コミットや PR に付く attribution 文を変える。`kind` は `commit`、`pr`、`exemption`、`remedy` のどれかです。
+
+```ts
+on('attribution.text', { kind: 'commit' }, async ($, e, next) => {
+  const { text } = await next(e)
+  return { text: `${text}\nReviewed-by: nobody yet` }
+})
+```
+
+### 14.5 入力欄
+
+(1) 入力欄に薄く出る提案を出さない。`next` を呼ばずに `{ isShown: false }` を返すと、Claude Code 自身の提案も含めて表示されません。
+
+```ts
+on('prompt.suggest', async () => ({ isShown: false }))
+```
+
+(2) 入力補完の候補を追加する。ドキュメントに載っていない 2.1.292 のイベントで（d.ts:4123, 8173）、カーソル位置のトークン（`e.token`）が候補で置き換わります。候補は Claude Code 自身の候補の下に並びます。
+
+```ts
+on('prompt.autocomplete', async ($, e, next) => {
+  const result = await next(e)
+  if (!e.token.startsWith(':')) return result
+  const snippets = [
+    { text: 'Looks good to me.', label: ':lgtm', description: 'approval' },
+    { text: 'Please add a test that fails without this change.', label: ':test', description: 'ask for a test' },
+  ].filter((s) => s.label.startsWith(e.token))
+  return { suggestions: [...result.suggestions, ...snippets] }
+})
+```
+
+### 14.6 モデルとターン
+
+(1) モデルへの 1 リクエストごとにモデルや effort を変える。`turn.step` の hook は async generator で書き、`yield* next(e)` で応答のストリームを流します（普通の async 関数は型エラーになります）。サブエージェントのリクエストには `e.agentId` があります。
+
+```ts
+on('turn.step', async function* ($, e, next) {
+  if (e.agentId !== undefined) {
+    return yield* next({ ...e, model: 'claude-haiku-4-5-20251001' })
+  }
+  return yield* next({ ...e, effort: e.index === 0 ? 'high' : 'medium' })
+})
+```
+
+(2) ターンの最後に、回答の下へ 1 行表示する。
+
+```ts
+on('turn.complete', async ($, e, next) => {
+  const result = await next(e)
+  if (e.usage === undefined) return result
+  const seconds = Math.round(e.durationMs / 1000)
+  return { ...result, text: `${e.usage.output_tokens} output tokens in ${seconds}s` }
+})
+```
+
+(3) 10 分を超えたターンを中断する。タイマーは `$.clock` で作り（`setTimeout` はない）、ターンが終わったら止めます。
+
+```ts
+const timers = new Map<string, { cancel: () => void }>()
+
+on('turn.start', async ($, e, next) => {
+  const result = await next(e)
+  const timer = $.clock.after(10 * 60_000, () => {
+    $.turn.abort({ turnId: e.turnId })
+  })
+  timers.set(e.turnId, timer)
+  return result
+})
+
+on('turn.complete', async ($, e, next) => {
+  timers.get(e.turnId)?.cancel()
+  timers.delete(e.turnId)
+  return next(e)
+})
+```
+
+(4) セッションのモデル切り替え（`/model`、`/config` の Model 行、モデルピッカー、SDK の `set_model`）に介入する。`e` には切り替え前後のモデル、プロンプトキャッシュが温まっているか、再キャッシュの推定費用（`estimated_cache_write_usd`）が入ります。この例は、温まったキャッシュを捨てる費用が 1 ドル以上のときに `'ask'` を返します（型は `ask` を受け付けますが、確認ダイアログが出るかは確かめていません）。`'deny'` を返せば切り替え自体を止められます。mod からセッション全体のモデルを直接変える API はなく（`$.session.model()` は読み取り専用）、`$.command.run({ command: 'model', args: 'opus' })` でユーザーが `/model opus` と打ったのと同じ操作をするのが型定義から読み取れる経路です（実行しては確かめていません）。自動フォールバックによる切り替え（`source: 'auto'`）は `PreModelSwitch` を発火しないので止められず、`classic.PostModelSwitch` で事後に知ることだけができます。
+
+```ts
+on('classic.PreModelSwitch', async ($, e, next) => {
+  if (!e.prompt_cache_warm || e.estimated_cache_write_usd < 1) return next(e)
+  return {
+    permissionDecision: 'ask',
+    permissionDecisionReason: `Switching to ${e.to_model} re-caches about $${e.estimated_cache_write_usd.toFixed(2)} of context.`,
+  }
+})
+```
+
+### 14.7 サブエージェント
+
+(1) サブエージェントのモデルを選ぶ、または起動を拒否する。agent team の teammate の起動も同じイベントで、`e.isTeammate` が付きます。
+
+```ts
+on('agent.spawn', async ($, e, next) => {
+  if (e.isTeammate === true) return { deny: 'Agent teams are turned off in this repository.' }
+  if (e.subagentType === 'Explore') return next({ ...e, model: 'haiku' })
+  return next(e)
+})
+```
+
+(2) サブエージェント型を Claude に見せない。`$.agent.spawn` からは引き続き起動できます。
+
+```ts
+on('agent.offer', { agent: 'general-purpose' }, async () => ({ isOffered: false }))
+```
+
+(3) サブエージェント型を追加する。名前は `<plugin>:<name>`（ここでは `example:reviewer`）になり、指定できるフィールドは agent ファイルと同じです。
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.agent.register({
+    name: 'reviewer',
+    description: 'Reviews the staged diff for correctness bugs. Use before committing.',
+    prompt: 'You review `git diff --cached`. Report only defects that change behavior, with file and line.',
+    tools: ['Read', 'Grep', 'Glob', 'Bash'],
+    model: 'opus',
+  })
+  return next(e)
+})
+```
+
+### 14.8 コマンドと設定
+
+(1) スラッシュコマンドを追加する。`immediate: true` にすると、Claude の作業中でもターンを待たずに実行されます。`{ text }` は transcript に表示され、Claude も読みます。
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.command.register({ name: 'branch', description: 'Shows the current git branch.', immediate: true })
+  return next(e)
+})
+
+on('command.run', { command: 'branch' }, async ($) => {
+  const run = await $.process.run(['git', 'branch', '--show-current'])
+  return { text: run.exitCode === 0 ? run.stdout.trim() : run.stderr.trim() }
+})
+```
+
+(2) 組み込みコマンドの引数を補う。この例は、引数なしの `/compact` に要約の指示を付けます。`-p` で 1 コマンドだけ実行したときの終了コードは `{ text, exitCode }` で返せます。
+
+```ts
+on('command.run', { command: 'compact' }, async ($, e, next) => {
+  if (e.args.trim() !== '') return next(e)
+  return next({ ...e, args: 'Keep every file path, command and decision verbatim.' })
+})
+```
+
+(3) コマンドを一覧（typeahead）から隠す。隠しても名前を打てば実行できるので、実行を止めるには `command.run` で `{ text }` を返します。
+
+```ts
+on('command.describe', { command: ['upgrade', 'passes'] }, async ($, e, next) => ({
+  ...(await next(e)),
+  isHidden: true,
+}))
+```
+
+(4) `/config` の変更を拒否する、行を隠す。キー名は `$.config.list()` の `key` で確かめられます。
+
+```ts
+on('config.set', { key: 'verbose' }, async ($, e, next) => {
+  if (e.value === false) return { deny: 'verbose output stays on in this repository' }
+  return next(e)
+})
+
+on('config.describe', { key: 'theme' }, async ($, e, next) => ({ ...(await next(e)), isHidden: true }))
+```
+
+### 14.9 セッション
+
+(1) compaction に指示を足す。`{ skip: 理由 }` を返すと compaction 自体が止まり、`{ messages }` を返すと要約の代わりにそのメッセージ列が使われます（後者の実装例はこのリポジトリの `mods/decision-compaction`）。
+
+```ts
+on('session.compact', async ($, e, next) => {
+  const rule = 'Keep every open task and every decision with its reason.'
+  const instructions = e.instructions === undefined ? rule : `${e.instructions}\n${rule}`
+  return next({ ...e, instructions })
+})
+```
+
+(2) 他のエージェントやセッションから届いたメッセージを、Claude に渡さずに処理する。
+
+```ts
+on('session.receive', async ($, e, next) => {
+  if (!/^\s*ping\s*$/i.test(e.text)) return next(e)
+  $.ui.toast('ping received')
+  return { consumed: 'ping is answered by the example mod' }
+})
+```
+
+(3) 他のセッションへの送信を止める（SendMessage ツールからの送信も含む）。
+
+```ts
+on('session.send', async ($, e, next) => {
+  if (/BEGIN [A-Z ]*PRIVATE KEY/.test(e.text)) {
+    return { isDelivered: false, reason: 'the message contains a private key' }
+  }
+  return next(e)
+})
+```
+
+(4) 会話ログに保存する内容を書き換える。プロンプト、応答、ツール結果などの各行が保存される前に発火します。この例はテキストブロック中の AWS アクセスキー ID を伏せ字にします。
+
+```ts
+on('session.append', async ($, e, next) => {
+  const content = e.message.content.map((block) =>
+    block.type === 'text' && typeof block.text === 'string'
+      ? { ...block, text: block.text.replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA****') }
+      : block,
+  )
+  return next({ ...e, message: { ...e.message, content } })
+})
+```
+
+### 14.10 UI の差し替え
+
+(1) Claude Code 自身の行の props を一部だけ変える。描ける場所と props は 5 章の表のとおりです。
+
+```ts
+on('ui.render', { component: 'Spinner' }, async ($, e, next) =>
+  next({ ...e, props: { ...e.props, word: 'Brewing' } }),
+)
+```
+
+(2) 質問ダイアログ（`AskUserQuestion`）の上に自分の表示を足す。`await next(e)` が返す Claude Code 自身のダイアログをちょうど 1 回含める必要があり、満たさない場合は Claude Code 自身のダイアログだけが描かれます。JSX を使うのでファイル名は `.tsx` にします。権限プロンプトは変更できません。
+
+```tsx
+on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column">
+      <Text color="yellow">Claude is waiting for your answer.</Text>
+      {await next(e)}
+    </Box>
+  )
+})
+```
+
+ターンを始めずに表示だけしたい場合は、`$.ui.status`（プロンプト下の 1 行）、`$.ui.toast`（右上のトースト）、`$.ui.log`（transcript の薄い行）を使います（4 章）。
+
+### 14.11 他の mod とポリシー
+
+ポリシー mod は、`prependPlugins` に入れてユーザーの mod より前（チェーンの外側）で動かします（10 章）。
+
+(1) 条件に合う mod の読み込みを拒否する。hook が throw すると fail open になるので、`.catch` で `{ refuse }` を返して fail closed にします。
+
+```ts
+on('plugin.register', async ($, e, next) => {
+  if (e.tier === 'user' && e.uses.calls.some((call) => call.startsWith('process.'))) {
+    return { refuse: 'user mods may not start processes on this machine' }
+  }
+  return next(e)
+}).catch(() => ({ refuse: 'the plugin policy could not be checked' }))
+```
+
+(2) 他の mod の API 呼び出しを拒否する。mods API のメソッドはそれぞれイベントでもあり、`next.origin` で呼び出し元の mod と tier がわかります。
+
+```ts
+on('fs.write', async ($, e, next) => {
+  if (next.origin.tier === 'user' && /(^|\/)\.git\/hooks\//.test(e.path)) {
+    return { deny: 'mods may not write git hooks' }
+  }
+  return next(e)
+})
+```
+
+### 14.12 設定フックイベント（`classic.*`）
+
+設定フック（`settings.json` の `hooks`）と同じ判定を mod から返せます。`e` は設定フックが stdin で受け取る JSON と同じで、返す値は `ClassicResult`（d.ts:1266）のフィールドです。設定フックの JSON 出力との対応は次のとおりです。
+
+| `ClassicResult` のフィールド | 設定フックでの書き方 | 効くイベント |
+| :- | :- | :- |
+| `block` | `decision: "block"` と `reason`（コマンドフックの終了コード 2） | イベントごとのブロック・拒否・再プロンプト |
+| `preventContinuation` / `stopReason` | `continue: false` / `stopReason` | そのイベントの後でセッションを止める |
+| `additionalContext` | `hookSpecificOutput.additionalContext` | Claude に渡すテキスト |
+| `sessionTitle` | `hookSpecificOutput.sessionTitle` | UserPromptSubmit、SessionStart |
+| `suppressOriginalPrompt` | `hookSpecificOutput.suppressOriginalPrompt` | UserPromptSubmit、UserPromptExpansion |
+| `initialUserMessage` / `watchPaths` / `reloadSkills` | `hookSpecificOutput` の同名フィールド | SessionStart |
+| `permissionDecision` / `permissionDecisionReason` | `hookSpecificOutput` の同名フィールド | PreModelSwitch |
+| `decision` | `hookSpecificOutput.decision`（`behavior: 'allow' / 'deny'`） | PermissionRequest |
+| `updatedToolOutput` / `updatedMCPToolOutput` | `hookSpecificOutput` の同名フィールド | PostToolUse |
+| `retry` | `hookSpecificOutput.retry` | PermissionDenied |
+| `displayContent` | `hookSpecificOutput.displayContent` | MessageDisplay |
+| `worktreePath` | `hookSpecificOutput.worktreePath` | WorktreeCreate |
+
+`classic.PreToolUse` だけは `e` がツール呼び出しの envelope になるので、ツール呼び出しの変更には `tool.call` を使うほうが素直です。
+
+次の例は、テストが通るまで Claude に作業を続けさせます。`Stop` の `block` は「止まらずに続ける」指示として Claude に渡ります。`stop_hook_active` が立っているときに再び `block` すると、終わらないループになるので素通しします。
+
+```ts
+on('classic.Stop', async ($, e, next) => {
+  if (e.stop_hook_active) return next(e)
+  const run = await $.process.run(['pnpm', 'test'], { timeoutMs: 5 * 60_000 })
+  if (run.exitCode === 0) return next(e)
+  return { block: `pnpm test failed. Fix it before stopping:\n${run.stdout.slice(-2000)}` }
+})
+```
+
+### 14.13 API 呼び出しで Claude Code を動かす
+
+hook の結果ではなく、`$` のメソッドを呼ぶことで Claude Code に何かをさせる API です。
+
+| API | すること |
+| :- | :- |
+| `$.prompt.submit({ text, asUser? })` | アイドル時に新しいターンを始める。既定では mod 名を名乗る一文が前に付く |
+| `$.prompt.fill({ text, mode })` / `$.prompt.suggest({ text })` | 入力欄の下書きを置き換え・追記・挿入する / 薄い提案を出す |
+| `$.session.compact({ instructions? })` | compaction を実行する |
+| `$.session.append({ message })` | 会話に行（`user` か `system`）を足す |
+| `$.session.send({ to, text })` | 他のエージェントやセッションにメッセージを送る（SendMessage ツールと同じ配送） |
+| `$.turn.abort({ turnId })` | 実行中のターンと実行中のツールを止める |
+| `$.command.run({ command, args? })` | スラッシュコマンドをユーザーが打ったのと同じように実行する |
+| `$.config.set({ key, value })` | `/config` の行を変える |
+| `$.env.set(name, value)` | 環境変数を変える。以後 Claude Code が起動するコマンドと MCP サーバーにも効く |
+| `$.agent.spawn({ prompt, subagentType? })` | サブエージェントをバックグラウンドで起動する |
+| `$.tool.call({ tool, ...引数 })` | ツールを呼ぶ（他の mod の `tool.call` hook を通る） |
+
+次の例は、`/handoff` で compaction してから引き継ぎメモを書かせ、以後のコマンドでページャーを使わないようにします。
+
+```ts
+on('session.start', async ($, e, next) => {
+  await $.command.register({ name: 'handoff', description: 'Compacts, then asks Claude for a handoff note.' })
+  await $.env.set('GIT_PAGER', 'cat')
+  return next(e)
+})
+
+on('command.run', { command: 'handoff' }, async ($) => {
+  await $.session.compact({ instructions: 'Keep open tasks and decisions.' })
+  await $.prompt.submit({ text: 'Write a handoff note for the next session in HANDOFF.md.', asUser: true })
+  return {}
+})
+```
+
 ## 未確認事項
 
 - Desktop アプリでの描画（`Svg`、Desktop 版の hotkey 表示など）は実機で確かめていません。
 - `prompt.autocomplete` は型定義を読んだだけで、実際のセッションでの挙動は試していません。
 - 「名前のみ」としたメソッド（`$.agent.*`、`$.audio.*`、`$.session.authorize`、`$.model.classify` など）の細かな挙動は型定義のコメントに基づいており、実行して確かめてはいません。
 - `cc-plugin-you-should-know` が自分の組織で使えるかどうかは、`/plugin` → Installed → Show disabled で確認する必要があります。
+- 14 章のサンプル 40 件は、2026-10-07 に Claude Code 2.1.292 の型定義に対する `tsc --strict`（TypeScript 5.9.3）と `claude plugin validate --strict` を通しています。各サンプルを 1 つの mod として組み立てて確かめたもので、実際のセッションで動かしてはいません。特に、`command.run` の hook から `$.session.compact` と `$.prompt.submit` を続けて呼ぶ 14.13 の例と、`turn.step` で `effort` を変える 14.6 (1) の例は、実行時の挙動を確かめていません。

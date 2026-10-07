@@ -1,14 +1,27 @@
 {
   "name": "claude-code-mods",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opinionated Claude Code Mods plugins.",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "mods"
+  ],
+  "homepage": "https://github.com/zchee/claude-code-mods#readme",
+  "bugs": {
+    "url": "https://github.com/zchee/claude-code-mods/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zchee/claude-code-mods.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Koichi Shiraishi <zchee.io@gmail.com>",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
@@ -16,6 +29,5 @@
       "onFail": "download"
     }
   },
-  "packageManager": "pnpm@12.9.1",
-  "type": "module"
+  "packageManager": "pnpm@12.9.1"
 }

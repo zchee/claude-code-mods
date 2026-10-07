@@ -5,7 +5,7 @@
     "email": "zchee.io@gmail.com"
   },
   "description": "Opinionated Claude Code Mods plugins.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "plugins": [
     {
       "name": "decision-compaction",

@@ -1,0 +1,4 @@
+{
+  "description": "A session.start hook registers /gateway and starts a two-second check: until Remote Control registers this process it watches the bridge pointer, then it sets Model Gateway's env block on the running process, leaves the gateway after two unreachable health checks and returns after two reachable ones.",
+  "modules": ["./register.ts"]
+}

@@ -25,6 +25,7 @@
     "test": "bash scripts/each-mod.bash claude plugin test",
     "typecheck": "tsc -p mods",
     "types:sync": "bash scripts/sync-types.bash",
+    "types:update": "bash scripts/update-types.bash",
     "validate": "claude plugin validate --strict . && bash scripts/each-mod.bash claude plugin validate --strict"
   },
   "devDependencies": {

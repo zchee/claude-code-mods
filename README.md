@@ -69,7 +69,8 @@ pnpm run check   # validate + typecheck + test, every mod
 | `pnpm run validate` | `claude plugin validate --strict` on the marketplace and on every mod. |
 | `pnpm run typecheck` | `tsc -p mods`: every mod's hooks and tests against the plugin API snapshot in `mods/types`. |
 | `pnpm run test` | `claude plugin test` on every mod. Tests answer HTTP, the clock, files and settings from memory and never reach a network. |
-| `pnpm run types:sync` | Refreshes `mods/types` from the declarations the installed Claude Code writes when it loads a mod. |
+| `pnpm run types:update` | After a Claude Code upgrade: loads every mod so the installed version writes fresh declarations, runs `types:sync`, and updates the version in this README. |
+| `pnpm run types:sync` | Only the copy step: refreshes `mods/types` from the declarations a mod already loaded by the installed Claude Code holds. |
 | `pnpm run live:decision-compaction` | Sends one synthetic request to every decision provider whose key is in the environment. Prints no secret. |
 
 `scripts/each-mod.bash` runs a command once per folder under `mods/` that
@@ -81,8 +82,8 @@ Claude Code writes the type declarations for its plugin API only when it
 loads a mod, into that mod's git-ignored `.claude-plugin/types/`. The copy
 in `mods/types/` lets `tsc -p mods` check every mod without starting
 Claude Code, and names the version it came from (2.1.292 today). After
-upgrading Claude Code, load one mod with `--plugin-dir`, run
-`pnpm run types:sync`, and commit the new snapshot with whatever it breaks.
+upgrading Claude Code, run `pnpm run types:update`, then `pnpm run check`,
+and commit the new snapshot with whatever it breaks.
 
 ### Layout
 
@@ -93,7 +94,8 @@ mods/<mod>/hooks/                 hooks.json and the TypeScript modules
 mods/<mod>/tests/                 claude plugin test suites
 mods/types/                       plugin API declarations (snapshot)
 mods/tsconfig.json                one tsc project over every mod
-scripts/                          each-mod.bash, sync-types.bash, live smoke
+scripts/                          each-mod.bash, sync-types.bash,
+                                  update-types.bash, live smoke
 docs/                             what a mod can extend (en, ja)
 ```
 

@@ -2,8 +2,6 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { envBlockOf } from '../hooks/register'
-
 const GATEWAY = 'http://127.0.0.1:18764'
 const SESSION = 'session-1'
 const PID = 4242
@@ -44,6 +42,10 @@ type World = {
   isRcListed: boolean
   commands: { command: string; baseUrl: string | undefined }[]
   duringRc: (() => Promise<void>) | undefined
+  sets: string[]
+  isHanging: boolean
+  envExitCode: number
+  envStdout: string
 }
 
 function worldOf(on: On, env: Record<string, string> = {}): World {
@@ -61,19 +63,25 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     isRcListed: true,
     commands: [],
     duringRc: undefined,
+    sets: [],
+    isHanging: false,
+    envExitCode: 0,
+    envStdout: ENV_STDOUT,
   }
   on('env.get', async ($, e) => ({ value: world.env.get(e.name) }))
   on('env.set', async ($, e) => {
+    world.sets.push(e.name)
     if (e.value === undefined) world.env.delete(e.name)
     else world.env.set(e.name, e.value)
     return { value: undefined }
   })
   on('process.run', async ($, e) => {
     world.runs.push([...e.argv])
-    const stdout = e.argv.includes('env') ? ENV_STDOUT : ''
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const isEnv = e.argv.includes('env')
+    return { value: { exitCode: isEnv ? world.envExitCode : 0, stdout: isEnv ? world.envStdout : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('http.fetch', async () => {
+    if (world.isHanging) await new Promise(() => {})
     if (!world.isReachable) return { deny: 'connect ECONNREFUSED 127.0.0.1:18764' }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: world.isOk }) } }
   })
@@ -111,16 +119,7 @@ async function gateway($: Engine, args: string): Promise<string | undefined> {
 }
 
 function wiredEnvOf(world: World): Record<string, string | undefined> {
-  return {
-    ANTHROPIC_BASE_URL: world.env.get('ANTHROPIC_BASE_URL'),
-    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: world.env.get('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'),
-    CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: world.env.get('CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK'),
-    ENABLE_TOOL_SEARCH: world.env.get('ENABLE_TOOL_SEARCH'),
-    CLAUDE_CODE_MAX_OUTPUT_TOKENS: world.env.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS'),
-    ANTHROPIC_DEFAULT_OPUS_MODEL: world.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL'),
-    ANTHROPIC_DEFAULT_SONNET_MODEL: world.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
-    ANTHROPIC_DEFAULT_FABLE_MODEL: world.env.get('ANTHROPIC_DEFAULT_FABLE_MODEL'),
-  }
+  return Object.fromEntries(Object.keys(WIRED).map((key) => [key, world.env.get(key)]))
 }
 
 const WIRED = {
@@ -133,20 +132,6 @@ const WIRED = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5[1m]',
   ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1[1m]',
 }
-
-describe('envBlockOf', () => {
-  test('reads the env object out of the advice around it', () => {
-    expect(envBlockOf(ENV_STDOUT)).toEqual(WIRED)
-  })
-
-  test('answers undefined when no JSON object starts a line', () => {
-    expect(envBlockOf('the gateway is not installed\n')).toBeUndefined()
-  })
-
-  test('answers undefined on malformed JSON', () => {
-    expect(envBlockOf('{\n  "env": {\n}\n')).toBeUndefined()
-  })
-})
 
 describe('Remote Control detection', () => {
   test('wires every gateway variable once the bridge pointer names this process', async ($, on) => {
@@ -184,6 +169,20 @@ describe('Remote Control detection', () => {
     await clock.advance(6000)
     expect(world.env.get('ANTHROPIC_BASE_URL')).toBe('https://llm.example.com')
     expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('counts a session already pointed at the gateway as wired, and off then clears only the base URL', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on, { ANTHROPIC_BASE_URL: GATEWAY, CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000' })
+    await startSession($)
+
+    await clock.advance(6000)
+    expect(await gateway($, 'status')).toMatch(/^on:/)
+    expect(world.runs.filter((argv) => argv.includes('ensure')).length, 'wired from the start: nothing to ensure').toBe(0)
+
+    expect(await gateway($, 'off')).toBe('requests now go to api.anthropic.com')
+    expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
+    expect(world.env.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS'), 'no snapshot to restore: the rest is left as it was').toBe('64000')
   })
 })
 
@@ -249,6 +248,23 @@ describe('health watchdog', () => {
     expect(ensures()).toBe(afterUnwire + 1)
   })
 
+  test('counts a check that gets no answer within three seconds as unreachable', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+    await gateway($, 'on')
+
+    world.isHanging = true
+    await clock.advance(2000)
+    await clock.advance(3000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'one timed-out check is not enough').toBe(GATEWAY)
+
+    await clock.advance(1000)
+    await clock.advance(3000)
+    expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
+    expect(world.toasts.at(-1)).toMatch(/stopped answering; requests now go to api\.anthropic\.com/)
+  })
+
   test('keeps a degraded gateway wired and says so once', async ($, on) => {
     const clock = mock.clock(on)
     const world = worldOf(on)
@@ -273,6 +289,43 @@ describe('/gateway', () => {
     expect(await gateway($, 'on')).toMatch(/is not answering; requests stay on api\.anthropic\.com/)
     expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
   })
+
+  test('on sets ANTHROPIC_BASE_URL after every other gateway variable', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+    await gateway($, 'on')
+
+    expect([...world.sets].sort()).toEqual(Object.keys(WIRED).sort())
+    expect(world.sets.indexOf('ANTHROPIC_BASE_URL')).toBe(world.sets.length - 1)
+  })
+
+  const unreadable = {
+    'exits non-zero': { exitCode: 1, stdout: ENV_STDOUT },
+    'prints no env block': { exitCode: 0, stdout: 'the gateway is not installed\n' },
+    'prints a malformed env block': { exitCode: 0, stdout: '{\n  "env": {\n}\n' },
+  }
+  for (const [name, run] of Object.entries(unreadable)) {
+    test(`on wires the fixed values and the default gateway, pins unchanged, when \`env\` ${name}`, async ($, on) => {
+      mock.clock(on)
+      const world = worldOf(on, { ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5' })
+      world.envExitCode = run.exitCode
+      world.envStdout = run.stdout
+      await startSession($)
+
+      expect(await gateway($, 'on')).toMatch(/pins unchanged$/)
+      expect(wiredEnvOf(world)).toEqual({
+        ANTHROPIC_BASE_URL: GATEWAY,
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
+        ENABLE_TOOL_SEARCH: 'true',
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: undefined,
+        ANTHROPIC_DEFAULT_FABLE_MODEL: undefined,
+      })
+    })
+  }
 
   test('off stays off through gateway recovery and the bridge pointer', async ($, on) => {
     const clock = mock.clock(on)

@@ -2,9 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18764'
 
-/**
- * How often the bridge pointer and the gateway's health are checked.
- */
+/** How often the bridge pointer and the gateway's health are checked. */
 const TICK_MS = 2000
 
 /**
@@ -28,7 +26,8 @@ const SUCCESSES_TO_REWIRE = 2
 const ENSURE_INTERVAL_MS = 30_000
 
 /**
- * The fixed part of model-gateway's env block, used when `env` prints none.
+ * The fixed part of model-gateway's env block: always the base layer, which
+ * the block `env` prints overrides key by key.
  */
 const STATIC_ENV = {
   CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
@@ -52,9 +51,7 @@ type GatewayEnv = {
   ANTHROPIC_DEFAULT_FABLE_MODEL?: string
 }
 
-/**
- * The values the session had before wiring, restored by `unwire`.
- */
+/** The values the session had before wiring, restored by `unwire`. */
 type Snapshot = Record<keyof GatewayEnv, string | undefined>
 
 /**
@@ -88,7 +85,7 @@ async function cliOf($: EngineInterface): Promise<string> {
  * Reads the env block from `model-gateway.js env`, which prints it as the
  * one JSON object whose braces start a line, among lines of advice.
  */
-export function envBlockOf(stdout: string): Partial<GatewayEnv> | undefined {
+function envBlockOf(stdout: string): Partial<GatewayEnv> | undefined {
   const match = /^\{\n[\s\S]*?\n\}$/m.exec(stdout)
   if (match === null) return undefined
   try {
@@ -116,9 +113,19 @@ async function gatewayEnvOf($: EngineInterface): Promise<GatewayEnv> {
 }
 
 /**
+ * The gateway URL model-gateway would wire, read without starting anything,
+ * so that a session already wired through settings is recognized as such.
+ */
+async function gatewayUrlOf($: EngineInterface): Promise<string> {
+  return gatewayEnvOf($).then((env) => env.ANTHROPIC_BASE_URL, () => DEFAULT_GATEWAY)
+}
+
+/**
  * Asks the shim's health endpoint. `reachable` is whether anything answered
  * in time; `ok` is the gateway's own verdict, false when only the proxy
- * behind it is down, which still lets Claude models through.
+ * behind it is down, which still lets Claude models through. The sleep that
+ * bounds the wait is aborted once either side wins, so that no host wait
+ * outlives the check.
  */
 async function probe($: EngineInterface, gateway: string): Promise<{ reachable: boolean; ok: boolean }> {
   const answer = $.http.fetch(`${gateway}/healthz`).then(
@@ -131,8 +138,14 @@ async function probe($: EngineInterface, gateway: string): Promise<{ reachable: 
     },
     () => ({ reachable: false, ok: false }),
   )
-  const timeout = $.clock.sleep(PROBE_TIMEOUT_MS).then(() => ({ reachable: false, ok: false }))
-  return Promise.race([answer, timeout])
+  const timer = new AbortController()
+  const timeout = $.clock.sleep(PROBE_TIMEOUT_MS, { signal: timer.signal }).then(() => ({ reachable: false, ok: false }))
+  try {
+    return await Promise.race([answer, timeout])
+  } finally {
+    timer.abort()
+    timeout.catch(() => {})
+  }
 }
 
 async function ensureGateway($: EngineInterface): Promise<void> {
@@ -167,7 +180,6 @@ async function applyEnv($: EngineInterface, env: GatewayEnv | Snapshot): Promise
   if ('ANTHROPIC_DEFAULT_FABLE_MODEL' in env) await $.env.set('ANTHROPIC_DEFAULT_FABLE_MODEL', env.ANTHROPIC_DEFAULT_FABLE_MODEL)
   await $.env.set('ANTHROPIC_BASE_URL', env.ANTHROPIC_BASE_URL)
 }
-
 
 /**
  * Points the session at the gateway once its shim answers; leaves the
@@ -298,7 +310,7 @@ async function remoteControlThroughFirstParty($: EngineInterface): Promise<void>
       return
     }
     await $.command.run({ command: 'remote-control' })
-  } catch (error: unknown) {
+  } catch (error) {
     $.ui.toast(`gateway: /remote-control failed: ${String(error)}`)
   } finally {
     state.rcHold = false
@@ -364,14 +376,4 @@ export const register: Register = (on) => {
     }
     return { text: statusOf() }
   })
-}
-
-/**
- * The gateway URL model-gateway would wire, read without starting anything,
- * so that a session already wired through settings is recognized as such.
- */
-async function gatewayUrlOf($: EngineInterface): Promise<string> {
-  const run = await $.process.run(['node', await cliOf($), 'env'], { timeoutMs: 30_000 }).catch(() => undefined)
-  const block = run !== undefined && run.exitCode === 0 ? envBlockOf(run.stdout) : undefined
-  return block?.ANTHROPIC_BASE_URL ?? DEFAULT_GATEWAY
 }

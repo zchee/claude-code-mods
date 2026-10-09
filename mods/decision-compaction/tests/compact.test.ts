@@ -18,9 +18,17 @@ import {
   untouched,
 } from '../hooks/compact'
 import type { Ask, Decision, Demand, Scores } from '../hooks/compact'
-import { limitsOf, routeOf } from '../hooks/providers'
-import { stateWithin, pairCalls } from '../hooks/state'
+import { OPENAI } from '../hooks/openai'
+import {
+  bytesBesideOf,
+  exchangeOf,
+  limitsOf,
+  routeOf,
+  wireOf,
+} from '../hooks/providers'
+import { estimatedTokensOf, stateWithin, pairCalls } from '../hooks/state'
 import type { Call } from '../hooks/state'
+import { BARE, bytesOf } from '../hooks/systemone'
 import type { Questions } from '../hooks/systemone'
 import { answering, callOf, calling, said, sessionOf } from './fixtures'
 
@@ -80,26 +88,58 @@ describe('demandOf', () => {
   })
 
   test('success: no calls need nothing', () => {
-    expect(demandOf([])).toEqual({
+    expect(demandOf([], BARE)).toEqual({
       longestQuestion: 0,
       batchCalls: 0,
       batchTokens: 0,
+      batchBytes: 0,
     })
   })
 
   test('success: fewer calls than a batch are all counted', () => {
     // Calls with one-digit ids ask questions of exactly the same size.
-    const one = demandOf(callsOf(1))
-    const five = demandOf(callsOf(5))
+    const one = demandOf(callsOf(1), BARE)
+    const five = demandOf(callsOf(5), BARE)
 
     expect(one.batchCalls).toBe(1)
     expect(one.longestQuestion > 20).toBe(true)
     expect(one.batchTokens > one.longestQuestion).toBe(true)
+    expect(one.batchBytes > one.batchTokens).toBe(true)
     expect(five).toEqual({
       longestQuestion: one.longestQuestion,
       batchCalls: 5,
       batchTokens: one.batchTokens * 5,
+      batchBytes: one.batchBytes * 5,
     })
+  })
+
+  test('success: the bytes set aside are those of the calls one request may hold under its question cap', () => {
+    // Calls with two-digit ids ask questions of exactly the same size.
+    const calls = Array.from({ length: 20 }, (_, index) => callOf(index + 10))
+    const one = demandOf(calls.slice(0, 1), BARE)
+    const capped = demandOf(calls, BARE, 8)
+    const open = demandOf(calls, BARE)
+
+    expect(capped.batchCalls).toBe(16)
+    expect(capped.batchTokens).toBe(one.batchTokens * 16)
+    expect(capped.batchBytes, 'eight questions are four calls').toBe(
+      one.batchBytes * 4,
+    )
+    expect(open.batchBytes).toBe(one.batchBytes * 16)
+    expect(demandOf(calls.slice(0, 3), BARE, 8).batchBytes).toBe(
+      one.batchBytes * 3,
+    )
+  })
+
+  test('success: the calls whose questions take the most bytes are the ones set aside', () => {
+    // A tool name beyond ASCII takes three bytes a character and one
+    // estimated token each, so it weighs more in bytes than in tokens.
+    const wide = callOf(9, { tool: '読み込み'.repeat(8) })
+    const mixed = demandOf([...callsOf(8), wide], BARE, 4)
+
+    expect(mixed.batchBytes).toBe(
+      demandOf([wide], BARE).batchBytes + demandOf(callsOf(1), BARE).batchBytes,
+    )
   })
 
   test('success: of more calls than a batch the sixteen with the longest questions are counted', () => {
@@ -107,13 +147,16 @@ describe('demandOf', () => {
     const long = Array.from({ length: 16 }, (_, index) =>
       callOf(index + 41, { tool: 'mcp__a_server__a_tool_with_a_long_name' }),
     )
-    const each = demandOf(long.slice(0, 1)).batchTokens
-    const mixed = demandOf([...short.slice(0, 20), ...long, ...short.slice(20)])
+    const each = demandOf(long.slice(0, 1), BARE).batchTokens
+    const mixed = demandOf(
+      [...short.slice(0, 20), ...long, ...short.slice(20)],
+      BARE,
+    )
 
-    expect(each > demandOf(short.slice(0, 1)).batchTokens).toBe(true)
+    expect(each > demandOf(short.slice(0, 1), BARE).batchTokens).toBe(true)
     expect(mixed.batchCalls).toBe(16)
     expect(mixed.batchTokens).toBe(each * 16)
-    expect(demandOf(short).batchTokens < mixed.batchTokens).toBe(true)
+    expect(demandOf(short, BARE).batchTokens < mixed.batchTokens).toBe(true)
   })
 })
 
@@ -122,6 +165,7 @@ describe('budgetOf', () => {
     longestQuestion: 40,
     batchCalls: 16,
     batchTokens: 1_000,
+    batchBytes: 0,
   }
 
   const budgets: Record<
@@ -174,13 +218,23 @@ describe('budgetOf', () => {
     'success: a larger batch takes more from the state': {
       want: [26_000, 26_000],
       provider: 'typesafe',
-      demand: { longestQuestion: 90, batchCalls: 16, batchTokens: 2_880 },
+      demand: {
+        longestQuestion: 90,
+        batchCalls: 16,
+        batchTokens: 2_880,
+        batchBytes: 0,
+      },
       expected: { stateTokens: 23_088, requestTokens: 26_000 },
     },
     'success: with one candidate only its two questions are set aside': {
       want: [26_000, 26_000],
       provider: 'typesafe',
-      demand: { longestQuestion: 70, batchCalls: 1, batchTokens: 130 },
+      demand: {
+        longestQuestion: 70,
+        batchCalls: 1,
+        batchTokens: 130,
+        batchBytes: 0,
+      },
       expected: { stateTokens: 25_838, requestTokens: 26_000 },
     },
   }
@@ -204,9 +258,14 @@ describe('budgetOf', () => {
     const budget = budgetOf(
       { maxStateTokens: 1_000_000, maxRequestTokens: 1_000_000 },
       limitsOf(routeOf('openrouter')),
-      demandOf(calls),
+      demandOf(calls, BARE),
     )
-    const batches = batchesOf(calls.slice(0, 256), budget.stateTokens, budget)
+    const batches = batchesOf(
+      calls.slice(0, 256),
+      budget.stateTokens,
+      budget,
+      BARE,
+    )
 
     expect(
       batches.slice(0, -1).every(batch => batch.length >= 16),
@@ -221,9 +280,9 @@ describe('budgetOf', () => {
     const budget = budgetOf(
       { maxStateTokens: 25_000, maxRequestTokens: 30_000 },
       limits,
-      demandOf(calls),
+      demandOf(calls, BARE),
     )
-    const batches = batchesOf(calls, 2_000, budget)
+    const batches = batchesOf(calls, 2_000, budget, BARE)
 
     expect(budget.questions).toBe(64)
     expect(batches.map(batch => batch.length)).toEqual([32, 28])
@@ -242,7 +301,12 @@ describe('budgetOf', () => {
     },
     'error: the refusal names a single call as one': {
       request: 100,
-      demand: { longestQuestion: 70, batchCalls: 1, batchTokens: 130 },
+      demand: {
+        longestQuestion: 70,
+        batchCalls: 1,
+        batchTokens: 130,
+        batchBytes: 0,
+      },
       message:
         'a request of 100 tokens has no room for a state beside the ' +
         'questions of 1 call, which take about 130',
@@ -274,7 +338,12 @@ describe('budgetOf', () => {
 
 describe('batchesOf', () => {
   test('success: a 64-question cap holds 32 calls a batch', () => {
-    const batches = batchesOf(callsOf(70), 25_000, { ...AMPLE, questions: 64 })
+    const batches = batchesOf(
+      callsOf(70),
+      25_000,
+      { ...AMPLE, questions: 64 },
+      BARE,
+    )
 
     expect(batches.map(batch => batch.length)).toEqual([32, 32, 6])
 
@@ -291,7 +360,7 @@ describe('batchesOf', () => {
 
   test('success: with no question cap one batch holds every call', () => {
     expect(
-      batchesOf(callsOf(70), 25_000, AMPLE).map(batch => batch.length),
+      batchesOf(callsOf(70), 25_000, AMPLE, BARE).map(batch => batch.length),
     ).toEqual([70])
   })
 
@@ -304,10 +373,12 @@ describe('batchesOf', () => {
     // The smallest request budget that admits a single call gives that size.
     for (;;) {
       try {
-        batchesOf(calls.slice(0, 1), state, {
-          stateTokens: state,
-          requestTokens: request,
-        })
+        batchesOf(
+          calls.slice(0, 1),
+          state,
+          { stateTokens: state, requestTokens: request },
+          BARE,
+        )
         break
       } catch {
         request++
@@ -317,10 +388,12 @@ describe('batchesOf', () => {
     const envelope = 32
     const each = request - state - envelope
     const sizes = (room: number) =>
-      batchesOf(calls, state, {
-        stateTokens: state,
-        requestTokens: state + envelope + room,
-      }).map(batch => batch.length)
+      batchesOf(
+        calls,
+        state,
+        { stateTokens: state, requestTokens: state + envelope + room },
+        BARE,
+      ).map(batch => batch.length)
 
     expect(each > 20).toBe(true)
     expect(sizes(each)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1])
@@ -331,17 +404,24 @@ describe('batchesOf', () => {
   })
 
   test('success: the tighter of the two limits decides', () => {
-    const batches = batchesOf(callsOf(10), 25_000, { ...AMPLE, questions: 6 })
+    const batches = batchesOf(
+      callsOf(10),
+      25_000,
+      { ...AMPLE, questions: 6 },
+      BARE,
+    )
 
     expect(batches.map(batch => batch.length)).toEqual([3, 3, 3, 1])
   })
 
   test('error: no question fits beside a state that fills the request', () => {
     expect(() =>
-      batchesOf(callsOf(2), 29_990, {
-        stateTokens: 29_990,
-        requestTokens: 30_000,
-      }),
+      batchesOf(
+        callsOf(2),
+        29_990,
+        { stateTokens: 29_990, requestTokens: 30_000 },
+        BARE,
+      ),
     ).toThrow({
       message:
         'no question fits beside the state: the state takes about 29990 of ' +
@@ -351,7 +431,7 @@ describe('batchesOf', () => {
 
   test("error: a cap below one call's two questions is refused", () => {
     expect(() =>
-      batchesOf(callsOf(2), 100, { ...AMPLE, questions: 1 }),
+      batchesOf(callsOf(2), 100, { ...AMPLE, questions: 1 }, BARE),
     ).toThrow({
       message:
         'a request may hold 1 questions, fewer than the 2 one call needs',
@@ -359,12 +439,12 @@ describe('batchesOf', () => {
   })
 
   test('success: no calls make no batch', () => {
-    expect(batchesOf([], 100, AMPLE)).toEqual([])
+    expect(batchesOf([], 100, AMPLE, BARE)).toEqual([])
   })
 
   test('success: sixteen requests are the most a compaction is split into', () => {
     expect(
-      batchesOf(callsOf(32), 100, { ...AMPLE, questions: 4 }).map(
+      batchesOf(callsOf(32), 100, { ...AMPLE, questions: 4 }, BARE).map(
         batch => batch.length,
       ),
     ).toEqual(Array.from({ length: 16 }, () => 2))
@@ -372,7 +452,7 @@ describe('batchesOf', () => {
 
   test('error: a split into seventeen requests is refused, naming the count', () => {
     expect(() =>
-      batchesOf(callsOf(33), 100, { ...AMPLE, questions: 4 }),
+      batchesOf(callsOf(33), 100, { ...AMPLE, questions: 4 }, BARE),
     ).toThrow({
       message:
         'asking about 33 tool calls would take 17 requests, and one ' +
@@ -384,13 +464,15 @@ describe('batchesOf', () => {
     // Room for the questions of one call at a time: every call would carry
     // the whole state in a request of its own.
     const calls = callsOf(300)
-    const one = demandOf(calls.slice(-1)).batchTokens
+    const one = demandOf(calls.slice(-1), BARE).batchTokens
 
     expect(() =>
-      batchesOf(calls, 25_000, {
-        stateTokens: 25_000,
-        requestTokens: 25_000 + 32 + one,
-      }),
+      batchesOf(
+        calls,
+        25_000,
+        { stateTokens: 25_000, requestTokens: 25_000 + 32 + one },
+        BARE,
+      ),
     ).toThrow({
       message:
         'asking about 300 tool calls would take 300 requests, and one ' +
@@ -739,6 +821,7 @@ describe('compact', () => {
       maxStateTokens: 25_000,
       preserveRecentMessages: recent,
       goal: 'fix the test',
+      wire: BARE,
     })
 
     return { messages, calls, fitted }
@@ -756,6 +839,7 @@ describe('compact', () => {
     )
     const outcome = await compact(messages, calls, fitted, ask, {
       budget: { stateTokens: 25_000, requestTokens: 30_000, questions: 2 },
+      wire: BARE,
       keepThreshold: 0.5,
       truncateHeadChars: 300,
     })
@@ -801,6 +885,7 @@ describe('compact', () => {
     const { messages, calls, fitted } = prepared(2)
     const outcome = await compact(messages, calls, fitted, fakeAsk({}).ask, {
       budget: { stateTokens: 25_000, requestTokens: 30_000 },
+      wire: BARE,
       keepThreshold: 0.5,
       truncateHeadChars: 300,
     })
@@ -817,6 +902,7 @@ describe('compact', () => {
     await expect(
       compact(messages, calls, fitted, ask, {
         budget: { stateTokens: 25_000, requestTokens: 30_000 },
+        wire: BARE,
         keepThreshold: 0.5,
         truncateHeadChars: 300,
       }),
@@ -832,6 +918,7 @@ describe('compact', () => {
     }
     const settings = {
       budget: { stateTokens: 25_000, requestTokens: 30_000 },
+      wire: BARE,
       keepThreshold: 0.5,
     }
     // The results are 5000, 4000 and 3000 characters long, and a result is
@@ -894,6 +981,7 @@ describe('compact', () => {
       maxStateTokens: 25_000,
       preserveRecentMessages: 0,
       goal: '',
+      wire: BARE,
     })
 
     return {
@@ -902,6 +990,7 @@ describe('compact', () => {
       fitted,
       settings: {
         budget: { stateTokens: 25_000, requestTokens: 30_000, questions: 2 },
+        wire: BARE,
         keepThreshold: 0.5,
         truncateHeadChars: 300,
       },
@@ -1084,6 +1173,7 @@ describe('compact', () => {
       maxStateTokens: 25_000,
       preserveRecentMessages: 2,
       goal: '',
+      wire: BARE,
     })
     const { ask, asked } = fakeAsk({
       call_t1: 0.1,
@@ -1095,6 +1185,7 @@ describe('compact', () => {
     })
     const outcome = await compact(messages, calls, fitted, ask, {
       budget: { stateTokens: 25_000, requestTokens: 30_000 },
+      wire: BARE,
       keepThreshold: 0.5,
       truncateHeadChars: 300,
     })
@@ -1126,5 +1217,191 @@ describe('compact', () => {
         'compaction sends at most 16',
     })
     expect(asked).toEqual([])
+  })
+})
+
+describe('sizes in the OpenAI wire format', () => {
+  test('success: the same questions are estimated larger in the OpenAI form', () => {
+    const calls = callsOf(5)
+    const bare = demandOf(calls, BARE)
+    const openai = demandOf(calls, OPENAI)
+
+    expect(openai.batchTokens > bare.batchTokens).toBe(true)
+    expect(openai.longestQuestion > bare.longestQuestion).toBe(true)
+  })
+
+  test('success: a request held to the same limits leaves the OpenAI form less room for the state', () => {
+    const calls = callsOf(5)
+    const want = { maxStateTokens: 1_000_000, maxRequestTokens: 1_000_000 }
+    const limits = limitsOf(routeOf('openai'))
+
+    expect(
+      budgetOf(want, limits, demandOf(calls, OPENAI)).stateTokens <
+        budgetOf(want, limits, demandOf(calls, BARE)).stateTokens,
+    ).toBe(true)
+  })
+
+  test('success: the state escaped inside input is estimated larger, and fitted to that size', () => {
+    const messages = sessionOf()
+    const calls = pairCalls(messages, 2)
+    const fit = (maxStateTokens: number, wire: typeof BARE) =>
+      stateWithin(messages, calls, {
+        maxStateTokens,
+        preserveRecentMessages: 2,
+        goal: 'fix the test',
+        wire,
+      })
+    const bare = fit(25_000, BARE)
+    const openai = fit(25_000, OPENAI)
+
+    expect(openai.state).toEqual(bare.state)
+    expect(openai.tokens > bare.tokens).toBe(true)
+
+    const tight = fit(bare.tokens, OPENAI)
+
+    expect(
+      tight.stage,
+      'a budget the bare state just fits is too small escaped',
+    ).not.toBe('whole')
+    expect(tight.tokens <= bare.tokens).toBe(true)
+  })
+})
+
+describe('a cap on the request body in bytes', () => {
+  // Twelve thousand CJK characters: about as many tokens, far fewer
+  // characters than 32 KiB, but three UTF-8 bytes each.
+  const CJK = { goal: '日本語の文章'.repeat(2000) }
+
+  test('success: a state that fits the tokens but not 32 KiB is measured in bytes', () => {
+    const json = JSON.stringify(CJK)
+    const route = routeOf('decisionapi-net')
+
+    expect(estimatedTokensOf(json) < 25_000).toBe(true)
+    expect(json.length < 32_768, 'its length alone would pass').toBe(true)
+    expect(bytesBesideOf(route, CJK) > 32_768).toBe(true)
+    expect(bytesBesideOf(route, CJK)).toBe(
+      bytesOf(`{"model":"jev-latest","state":${json},"questions":}`),
+    )
+  })
+
+  test('error: such a state leaves no question room under the byte cap', () => {
+    const state = bytesBesideOf(routeOf('decisionapi-net'), CJK)
+
+    expect(() =>
+      batchesOf(
+        callsOf(2),
+        estimatedTokensOf(JSON.stringify(CJK)),
+        { ...AMPLE, bytes: { limit: 32_768, state } },
+        BARE,
+      ),
+    ).toThrow({
+      message:
+        `no question fits beside the state: the request takes ${state} ` +
+        'of the 32768 bytes it may hold before any question',
+    })
+  })
+
+  test('success: the bytes left beside the state split the calls into batches', () => {
+    const calls = callsOf(9)
+    const one = Object.entries(questionsOf(calls[0] as Call)).reduce(
+      (sum, [id, question]) =>
+        sum + bytesOf(BARE.questionJsonOf(id, question)) + 1,
+      0,
+    )
+    const sizes = (room: number) =>
+      batchesOf(
+        calls,
+        100,
+        { ...AMPLE, bytes: { limit: 20_000 + room, state: 20_000 } },
+        BARE,
+      ).map(batch => batch.length)
+
+    expect(sizes(one)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1])
+    expect(sizes(one * 3)).toEqual([3, 3, 3])
+    expect(sizes(one * 4 - 1)).toEqual([3, 3, 3])
+  })
+})
+
+describe('what OpenAI counts for each question', () => {
+  test('success: each question is estimated with the 148 tokens OpenAI was measured to add', () => {
+    const calls = callsOf(16)
+    const bare = demandOf(calls, BARE)
+    const openai = demandOf(calls, OPENAI)
+
+    expect(openai.batchTokens >= 32 * 148).toBe(true)
+    expect(openai.batchTokens - bare.batchTokens >= 32 * 148).toBe(true)
+    expect(openai.longestQuestion >= 148).toBe(true)
+  })
+})
+
+describe('the bytes a body is counted at', () => {
+  // Each question is counted with a comma after it, the last one included,
+  // and a question of a map with braces of its own: a list body is counted
+  // one byte over, a map body two bytes a question less one.
+  const state = { goal: 'fix the parser', conversation: [] }
+  const ALL = {
+    typesafeApiKey: 'test-typesafe-key',
+    decisionsApiKey: 'test-decisions-key',
+    decisionapiApiKey: 'test-decisionapi-key',
+    openaiApiKey: 'test-openai-key',
+  }
+
+  for (const provider of [
+    'typesafe',
+    'decisions-api-dev',
+    'decisionapi-net',
+    'openai',
+  ] as const) {
+    test(`success: ${provider} is counted at or over the body it sends, by at most two bytes a question`, () => {
+      const route = routeOf(provider)
+      const wire = wireOf(route)
+
+      for (let count = 1; count <= 4; count++) {
+        // Calls t7 to t10: ids of one and of two digits, so a
+        // real id is both shorter and longer than an alias.
+        const calls = Array.from({ length: count }, (_, index) =>
+          callOf(index + 7),
+        )
+        const questions: Questions = Object.fromEntries(
+          calls.flatMap(call => Object.entries(questionsOf(call))),
+        )
+        const counted =
+          bytesBesideOf(route, state) +
+          Object.entries(questions).reduce(
+            (sum, [id, question]) =>
+              sum + bytesOf(wire.questionJsonOf(id, question)) + 1,
+            0,
+          )
+        const sent = bytesOf(
+          exchangeOf(route, ALL, state, questions).init.body,
+        )
+        const asked = count * 2
+
+        expect(
+          counted >= sent,
+          `${asked} questions: counted ${counted}, sent ${sent}`,
+        ).toBe(true)
+        expect(
+          counted - sent <= asked * 2,
+          `${asked} questions: counted ${counted}, sent ${sent}`,
+        ).toBe(true)
+      }
+    })
+  }
+
+  test('success: decisions-api.dev counts a question at the longest alias it may send, whatever its own id', () => {
+    const wire = wireOf(routeOf('decisions-api-dev'))
+    const [question] = Object.values(questionsOf(callOf(1)))
+
+    expect(question).toBeDefined()
+
+    if (question !== undefined) {
+      expect(wire.questionJsonOf('call_t1', question)).toBe(
+        BARE.questionJsonOf('q7', question),
+      )
+      expect(wire.questionJsonOf('r', question)).toBe(
+        BARE.questionJsonOf('q7', question),
+      )
+    }
   })
 })

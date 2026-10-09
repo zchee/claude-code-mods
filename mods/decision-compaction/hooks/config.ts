@@ -21,6 +21,17 @@ export type Config = {
    */
   model?: string
   providerDecision: boolean
+  /**
+   * The providers the provider decision may pick besides the configured
+   * one, in `PROVIDERS` order.
+   */
+  decisionProviders: readonly ProviderName[]
+  /**
+   * The names in `decisionProviders` that are no provider, as given; absent
+   * when there are none. They are dropped, not refused: leaving a name out
+   * can only narrow where the conversation is sent.
+   */
+  unknownProviders?: string[]
   keepThreshold: number
   preserveRecentMessages: number
   compactAtPercent: number
@@ -37,6 +48,7 @@ export type Config = {
 export const DEFAULTS = {
   provider: 'typesafe',
   providerDecision: false,
+  decisionProviders: PROVIDERS,
   keepThreshold: 0.5,
   preserveRecentMessages: 6,
   compactAtPercent: 60,
@@ -60,6 +72,56 @@ function within(
     typeof value === 'number' && Number.isFinite(value) ? value : fallback
 
   return Math.min(high, Math.max(low, number))
+}
+
+/**
+ * Reads the `decisionProviders` option: a list, or the names in one text
+ * separated by commas. Unset, it is every provider. The host fills in the
+ * manifest's default for a field that was never set, so an empty text is a
+ * field the person cleared, and like an empty list it names no provider:
+ * only the configured one is then eligible. Names are matched as `provider`
+ * is, exactly; a value of any other type names no provider.
+ */
+function decisionProvidersOf(value: unknown): {
+  named: readonly ProviderName[]
+  unknown: string[]
+} {
+  if (value === undefined || value === null) {
+    return { named: DEFAULTS.decisionProviders, unknown: [] }
+  }
+
+  const given = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [value]
+  const names = given
+    .map(name =>
+      typeof name === 'string' ? name.trim() : String(JSON.stringify(name)),
+    )
+    .filter(name => name !== '')
+
+  return {
+    named: PROVIDERS.filter(provider => names.includes(provider)),
+    unknown: [...new Set(names.filter(name => providerOf(name) === undefined))],
+  }
+}
+
+/**
+ * The providers a compaction may send anything to: the configured one, and
+ * with the provider decision on also those `decisionProviders` names, in
+ * `PROVIDERS` order. Everything that reads a credential or offers a route
+ * goes by this one list.
+ *
+ * @param config the configuration
+ * @returns the providers
+ */
+export function eligibleOf(config: Config): ProviderName[] {
+  return PROVIDERS.filter(
+    provider =>
+      provider === config.provider ||
+      (config.providerDecision && config.decisionProviders.includes(provider)),
+  )
 }
 
 /**
@@ -90,9 +152,11 @@ function isUnset(value: unknown): boolean {
  */
 export function configOf(options: PluginOptions): Config {
   const named = providerOf(options.provider)
+  const deciding = decisionProvidersOf(options.decisionProviders)
   const config: Config = {
     provider: named ?? DEFAULTS.provider,
     providerDecision: options.providerDecision === true,
+    decisionProviders: deciding.named,
     keepThreshold: within(options.keepThreshold, DEFAULTS.keepThreshold, 0, 1),
     preserveRecentMessages: Math.floor(
       within(
@@ -139,6 +203,10 @@ export function configOf(options: PluginOptions): Config {
         ? `${headOf(given, REASON_CHARS)}…`
         : given) +
       `, which is none of ${PROVIDERS.join(', ')}`
+  }
+
+  if (deciding.unknown.length > 0) {
+    config.unknownProviders = deciding.unknown
   }
 
   if (typeof options.model === 'string' && options.model.trim() !== '') {

@@ -1,8 +1,14 @@
 import type { SessionMessage } from 'claude-code'
 
 import type { Ask } from './compact'
-import { isOpenRouterJev, missingOf, modelsOf, PROVIDERS } from './providers'
-import type { Credentials, Route } from './providers'
+import {
+  briefOf,
+  familyOf,
+  gatewayOf,
+  missingOf,
+  modelsOf,
+} from './providers'
+import type { Credentials, ProviderName, Route } from './providers'
 import type { Call } from './state'
 import { choiceOf } from './systemone'
 import type { ChoiceQuestion } from './systemone'
@@ -73,6 +79,15 @@ const ABOUT: Record<string, string> = {
     "Jev, TypeSafe's flagship System One model. It reads text only, and " +
     'English is its primary training language: TypeSafe reports lower ' +
     'accuracy on other languages, CJK scripts included.',
+  openjev:
+    'OpenJev, DiffusionGemma 26B-A4B made into a System One model; it ' +
+    'reads a distribution for every answer in one denoising step.',
+  'pplx-decider':
+    "Perplexity's 27B decision model. It reads text and images and " +
+    'returns typed answers with probabilities.',
+  'gpt-6-luna':
+    'GPT-6 Luna, which OpenAI describes as its most efficient model for ' +
+    'focused, high-volume tasks, served through its Decisions API.',
 }
 
 const PROFILE_CONTEXT =
@@ -84,23 +99,6 @@ const PROFILE_CONTEXT =
   'called how often, the share of calls that ended in an error, and the ' +
   'share of the conversation text that is not ASCII. `goal` is what the ' +
   'assistant is working on.'
-
-/**
- * The model family a route reaches, which is what two routes are compared
- * by: OpenRouter is a gateway, and the Jev it routes to is the same Jev
- * that TypeSafe serves directly.
- */
-function familyOf(route: Route): string {
-  if (route.provider === 'typesafe') {
-    return 'jev'
-  }
-
-  if (route.provider === 'openrouter') {
-    return isOpenRouterJev(route.model) ? 'jev' : route.model
-  }
-
-  return route.model
-}
 
 /**
  * A route as a line of text shows it.
@@ -118,8 +116,8 @@ function keyOf(route: Route): string {
 
 function aboutOf(route: Route): string {
   const known = ABOUT[familyOf(route)]
-  const via =
-    route.provider === 'openrouter' ? ' Reached through OpenRouter.' : ''
+  const gateway = gatewayOf(route.provider)
+  const via = gateway === undefined ? '' : ` Reached through ${gateway}.`
 
   return known === undefined
     ? `The model ${route.model} at ${route.provider}; nothing is documented ` +
@@ -147,13 +145,17 @@ function refusalOf(
 /**
  * Lists the routes that can take the job.
  *
- * Every provider is considered with each model it offers; the configured
- * provider with the configured model. A route is left out when a credential
- * it needs is unset or the fitted state exceeds its documented limit. Of two
- * routes to the same model family the gateway is left out of the choice, so
- * a model is offered once and reached directly whenever it can be.
+ * Every eligible provider is considered with each model it offers; the
+ * configured provider with the configured model in place of its default. A
+ * route is left out when a credential it needs is unset or the fitted state
+ * exceeds its documented limit. A model family is offered once: over the
+ * route that reaches it directly whenever there is one, else over the
+ * first gateway to it in `PROVIDERS` order, and every other route to it is
+ * left out of the choice.
  *
  * @param configured the route the options name
+ * @param eligible the providers that may be sent anything, in `PROVIDERS`
+ * order
  * @param credentials the resolved credentials
  * @param sizeRefusalOf the check of the fitted state against a route's limits
  * @returns the candidates, for every route not offered the reason, and
@@ -161,17 +163,19 @@ function refusalOf(
  */
 export function candidatesOf(
   configured: Route,
+  eligible: readonly ProviderName[],
   credentials: Credentials,
   sizeRefusalOf: SizeCheck,
 ): { candidates: Candidate[]; refused: string[]; isConfiguredUsable: boolean } {
   const usable: Route[] = []
   const refused: string[] = []
 
-  for (const provider of PROVIDERS) {
+  for (const provider of eligible) {
+    const offered = modelsOf(provider)
     const models =
-      provider === configured.provider && provider !== 'cloudflare'
+      provider === configured.provider && !offered.includes(configured.model)
         ? [configured.model]
-        : modelsOf(provider)
+        : offered
 
     for (const model of models) {
       const route = { provider, model }
@@ -185,21 +189,23 @@ export function candidatesOf(
     }
   }
 
-  const direct = new Map<string, Route>()
+  const offered = new Map<string, Route>()
 
-  for (const route of usable) {
-    if (route.provider !== 'openrouter' && !direct.has(familyOf(route))) {
-      direct.set(familyOf(route), route)
+  for (const route of [
+    ...usable.filter(route => gatewayOf(route.provider) === undefined),
+    ...usable.filter(route => gatewayOf(route.provider) !== undefined),
+  ]) {
+    if (!offered.has(familyOf(route))) {
+      offered.set(familyOf(route), route)
     }
   }
 
   const candidates: Candidate[] = []
 
   for (const route of usable) {
-    const same =
-      route.provider === 'openrouter' ? direct.get(familyOf(route)) : undefined
+    const same = offered.get(familyOf(route))
 
-    if (same !== undefined) {
+    if (same !== undefined && same !== route) {
       refused.push(`${labelOf(route)}: the same model as ${labelOf(same)}`)
       continue
     }
@@ -309,8 +315,10 @@ export function routeQuestionOf(
  * First by what code can check: `candidatesOf` leaves out every route that
  * cannot take the job. Only when two or more remain is a model asked, with
  * one `choice` question over the job's profile, on the fastest route there
- * is: Cloudflare's Clef-flash when Cloudflare is configured, the configured
- * route otherwise. With one candidate or a failed routing request the
+ * is: Cloudflare's Clef-flash when Cloudflare is eligible and configured,
+ * the configured route otherwise. The question carries a profile with the
+ * person's prompts in it, so it goes to no provider outside the eligible
+ * ones. With one candidate or a failed routing request the
  * configured route is used, so the decision can never make a compaction
  * fail that would have worked without it; the exception is a configured
  * route that cannot take the job at all, where the one that can is used.
@@ -324,6 +332,8 @@ export function routeQuestionOf(
  * change.
  *
  * @param configured the route the options name
+ * @param eligible the providers that may be sent anything, in `PROVIDERS`
+ * order
  * @param credentials the resolved credentials
  * @param sizeRefusalOf the check of the fitted state against a route's limits
  * @param profile the job's profile
@@ -333,6 +343,7 @@ export function routeQuestionOf(
  */
 export async function chooseRoute(
   configured: Route,
+  eligible: readonly ProviderName[],
   credentials: Credentials,
   sizeRefusalOf: SizeCheck,
   profile: Profile,
@@ -340,6 +351,7 @@ export async function chooseRoute(
 ): Promise<Routed> {
   const { candidates, refused, isConfiguredUsable } = candidatesOf(
     configured,
+    eligible,
     credentials,
     sizeRefusalOf,
   )
@@ -370,6 +382,7 @@ export async function chooseRoute(
   }
 
   const asked: Route =
+    eligible.includes('cloudflare') &&
     missingOf('cloudflare', credentials).length === 0
       ? { provider: 'cloudflare', model: 'clef-flash' }
       : configured
@@ -399,11 +412,18 @@ export async function chooseRoute(
       why: `${labelOf(asked)} picked ${labelOf(chosen.route)}${sure}`,
     }
   } catch (error) {
+    // The reason may quote a provider's text, and it reaches the report
+    // line, so it is quoted like any other: redacted and on one short line.
+    const reason = briefOf(
+      error instanceof Error ? error.message : String(error),
+      credentials,
+    )
+
     return {
       route: configured,
-      why: `the routing request failed (${
-        error instanceof Error ? error.message : String(error)
-      }); using the configured ${labelOf(configured)}`,
+      why:
+        `the routing request failed (${reason}); using the configured ` +
+        labelOf(configured),
     }
   }
 }

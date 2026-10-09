@@ -10,6 +10,7 @@ import type {
 import { mock } from 'claude-code/testing'
 import type { MockClock, Plugin } from 'claude-code/testing'
 
+import type { ProviderName } from '../hooks/providers'
 import type { Call } from '../hooks/state'
 
 /**
@@ -22,10 +23,47 @@ export const ENV = {
   CLOUDFLARE_ACCOUNT_ID: 'test-account',
 } as const
 
+/**
+ * The keys of the five providers added after the first three, as obvious
+ * fakes as the others.
+ */
+export const ADDED_ENV = {
+  CODIV_API_KEY: 'test-codiv-key',
+  PERPLEXITY_API_KEY: 'test-perplexity-key',
+  DECISIONS_API_KEY: 'test-decisions-key',
+  DECISIONAPI_API_KEY: 'test-decisionapi-key',
+  OPENAI_API_KEY: 'test-openai-key',
+} as const
+
+/**
+ * Every credential variable the mod reads, each with a value.
+ */
+export const ALL_ENV = { ...ENV, ...ADDED_ENV } as const
+
 export const TYPESAFE_URL = 'https://api.typesafe.ai/v1/systemone'
 export const OPENROUTER_URL = 'https://openrouter.ai/api/v1/systemone'
 export const CLOUDFLARE_URL =
   'https://api.cloudflare.com/client/v4/accounts/test-account/ai/run/@cf/cloudflare/'
+export const CODIV_URL = 'https://api.codiv.ai/v1/systemone'
+export const PERPLEXITY_URL = 'https://api.perplexity.ai/v1/decisions'
+export const DECISIONS_URL = 'https://decisions-api.dev/v1/systemone'
+export const DECISIONAPI_URL = 'https://decisionapi.net/v1/systemone'
+export const OPENAI_URL = 'https://api.openai.com/v1/decisions'
+
+/**
+ * Where each provider other than Cloudflare is called, and the variable its
+ * bearer comes from. Cloudflare's URL carries the account and the model, so
+ * it is matched by its prefix instead.
+ */
+const ENDPOINTS: readonly [string, ProviderName, string][] = [
+  [TYPESAFE_URL, 'typesafe', ENV.TYPESAFE_API_KEY],
+  [OPENROUTER_URL, 'openrouter', ENV.OPENROUTER_API_KEY],
+  [CODIV_URL, 'codiv', ADDED_ENV.CODIV_API_KEY],
+  [PERPLEXITY_URL, 'perplexity', ADDED_ENV.PERPLEXITY_API_KEY],
+  [DECISIONS_URL, 'decisions-api-dev', ADDED_ENV.DECISIONS_API_KEY],
+  [DECISIONAPI_URL, 'decisionapi-net', ADDED_ENV.DECISIONAPI_API_KEY],
+  [OPENAI_URL, 'openai', ADDED_ENV.OPENAI_API_KEY],
+]
 
 /**
  * What the stub standing for the engine's own compaction answers with.
@@ -46,14 +84,17 @@ export type AskedQuestion = {
 }
 
 /**
- * One request the fake provider received, decoded.
+ * One request the fake provider received, decoded. A request in OpenAI's
+ * form is read back into the System One shape, so that a test asks the same
+ * of every provider; `body` keeps it as it was sent.
  */
 export type Seen = {
   url: string
-  provider: 'typesafe' | 'openrouter' | 'cloudflare'
+  provider: ProviderName
   model: string
   state: unknown
   questions: Record<string, AskedQuestion>
+  body: Record<string, unknown>
 }
 
 /**
@@ -130,6 +171,10 @@ export type World = {
    */
   settingsReads: number
   /**
+   * The name of every variable `$.env.get` was asked for, in order.
+   */
+  envReads: string[]
+  /**
    * How many requests were handed to the host, answered or not.
    */
   fetches: number
@@ -176,6 +221,19 @@ function recordingWaits(on: On, waits: Wait[]): On {
 
 const QUESTION_ID = /^[A-Za-z0-9_.-]{1,100}$/
 
+/**
+ * The question ids decisions-api.dev accepts, as it answered HTTP 400 for a
+ * dotted and a 100-character id.
+ */
+const DECISIONS_QUESTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
+
+/**
+ * What the two Decisions resellers refuse a request over, as each documents
+ * and answered HTTP 400 for.
+ */
+const RESELLER_QUESTIONS = 8
+const RESELLER_BYTES = 32_768
+
 function jsonResponse(status: number, payload: unknown): HttpResponse {
   return {
     status,
@@ -192,6 +250,79 @@ export function responseOf(status: number, payload: unknown): HttpResponse {
   return jsonResponse(status, payload)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Reads the questions of an OpenAI body back into the System One map by id,
+ * or says what is wrong with them. The checks are the ones OpenAI answered
+ * HTTP 400 for when it was probed: `input` must be text and `questions` a
+ * list.
+ */
+function openAIQuestionsOf(
+  body: Record<string, unknown>,
+): { state: unknown; questions: Record<string, AskedQuestion> } | string {
+  if (typeof body.input !== 'string') {
+    return "openai: Invalid type for 'input': expected a string"
+  }
+
+  if (!Array.isArray(body.questions)) {
+    return "openai: Invalid type for 'questions': expected an array"
+  }
+
+  const questions: Record<string, AskedQuestion> = {}
+
+  for (const question of body.questions as unknown[]) {
+    if (
+      !isRecord(question) ||
+      typeof question.name !== 'string' ||
+      typeof question.instructions !== 'string'
+    ) {
+      return 'openai: a question without a name or instructions'
+    }
+
+    if (question.name in questions) {
+      return `openai: the question name ${question.name} is repeated`
+    }
+
+    if (question.type === 'predicate') {
+      questions[question.name] = {
+        type: 'noul',
+        instructions: question.instructions,
+      }
+    } else if (question.type === 'choice' && Array.isArray(question.choices)) {
+      const criteria: Record<string, unknown> = {}
+
+      for (const choice of question.choices as unknown[]) {
+        if (!isRecord(choice) || typeof choice.value !== 'string') {
+          return `openai: a choice of ${question.name} has no value`
+        }
+
+        criteria[choice.value] = choice.description ?? null
+      }
+
+      questions[question.name] = {
+        type: 'choice',
+        instructions: question.instructions,
+        criteria,
+      }
+    } else {
+      return `openai: the question ${question.name} is of no known type`
+    }
+  }
+
+  let state: unknown
+
+  try {
+    state = JSON.parse(body.input)
+  } catch {
+    return 'openai: the input is not the JSON of a state'
+  }
+
+  return { state, questions }
+}
+
 /**
  * Checks a request the way the real endpoints would and decodes it, or says
  * what is wrong with it.
@@ -201,13 +332,11 @@ function decode(e: Args<'http.fetch'>): Seen | string {
   let provider: Seen['provider']
   let bearer: string
   let urlModel: string | undefined
+  const endpoint = ENDPOINTS.find(([url]) => url === e.url)
 
-  if (e.url === TYPESAFE_URL) {
-    provider = 'typesafe'
-    bearer = ENV.TYPESAFE_API_KEY
-  } else if (e.url === OPENROUTER_URL) {
-    provider = 'openrouter'
-    bearer = ENV.OPENROUTER_API_KEY
+  if (endpoint !== undefined) {
+    provider = endpoint[1]
+    bearer = endpoint[2]
   } else if (e.url.startsWith(CLOUDFLARE_URL)) {
     provider = 'cloudflare'
     bearer = ENV.CLOUDFLARE_API_TOKEN
@@ -228,7 +357,7 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     return `${provider}: content-type is ${String(headers['content-type'])}`
   }
 
-  let body: { model?: unknown; state?: unknown; questions?: unknown }
+  let body: Record<string, unknown>
 
   try {
     body = JSON.parse(e.init.body ?? '')
@@ -240,15 +369,34 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     return `${provider}: no model`
   }
 
-  if (body.state === undefined) {
-    return `${provider}: no state`
+  let state = body.state
+  let questions: Record<string, AskedQuestion>
+
+  if (provider === 'openai') {
+    if ('state' in body) {
+      return 'openai: the body has a state field, which OpenAI does not take'
+    }
+
+    const read = openAIQuestionsOf(body)
+
+    if (typeof read === 'string') {
+      return read
+    }
+
+    state = read.state
+    questions = read.questions
+  } else {
+    if (body.state === undefined) {
+      return `${provider}: no state`
+    }
+
+    if (!isRecord(body.questions)) {
+      return `${provider}: no questions`
+    }
+
+    questions = body.questions as Record<string, AskedQuestion>
   }
 
-  if (typeof body.questions !== 'object' || body.questions === null) {
-    return `${provider}: no questions`
-  }
-
-  const questions = body.questions as Record<string, AskedQuestion>
   const ids = Object.keys(questions)
 
   if (ids.length === 0) {
@@ -269,6 +417,30 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     }
   }
 
+  if (provider === 'decisions-api-dev' || provider === 'decisionapi-net') {
+    if (ids.length > RESELLER_QUESTIONS) {
+      return `${provider}: ${ids.length} questions, more than 8`
+    }
+
+    const bytes = new TextEncoder().encode(e.init.body ?? '').length
+
+    if (bytes > RESELLER_BYTES) {
+      return `${provider}: a body of ${bytes} bytes, more than 32 KiB`
+    }
+  }
+
+  if (provider === 'perplexity' && ids.length > 128) {
+    return `perplexity: ${ids.length} questions, more than 128`
+  }
+
+  if (provider === 'decisions-api-dev') {
+    const refused = ids.find(id => !DECISIONS_QUESTION_ID.test(id))
+
+    if (refused !== undefined) {
+      return `decisions-api-dev: question id ${refused} is not valid there`
+    }
+  }
+
   const badId = ids.find(id => !QUESTION_ID.test(id))
 
   if (badId !== undefined) {
@@ -279,8 +451,9 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     url: e.url,
     provider,
     model: body.model,
-    state: body.state,
+    state,
     questions,
+    body,
   }
 }
 
@@ -306,6 +479,58 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
   }
 
   const usage = { input_tokens: 1234, output_tokens: 20 }
+
+  // The shapes below follow what each provider answered when it was probed.
+  if (seen.provider === 'openai') {
+    return jsonResponse(200, {
+      model: seen.model,
+      answers: Object.entries(seen.questions).map(([name, question]) => {
+        const said = answer(name, question, seen)
+
+        return question.type === 'choice'
+          ? {
+              type: 'choice',
+              name,
+              choice: said,
+              probabilities: [{ value: String(said), probability: 1 }],
+              confidence: 0.75,
+            }
+          : { type: 'predicate', name, probability: said }
+      }),
+      usage: {
+        ...usage,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: usage.input_tokens + usage.output_tokens,
+      },
+    })
+  }
+
+  if (seen.provider === 'decisions-api-dev') {
+    return jsonResponse(200, {
+      code: 0,
+      message: 'ok',
+      data: {
+        result: { model: 'typesafe/jev-1.13-20260917', answers, usage },
+      },
+    })
+  }
+
+  if (seen.provider === 'decisionapi-net') {
+    return jsonResponse(200, {
+      code: 0,
+      message: 'ok',
+      data: { result: { answers, usage, elapsedMs: 1448 }, creditsUsed: 1 },
+    })
+  }
+
+  if (seen.provider === 'codiv') {
+    return jsonResponse(200, { model: 'openjev-0.1', answers, usage })
+  }
+
+  if (seen.provider === 'perplexity') {
+    return jsonResponse(200, { model: seen.model, answers, usage })
+  }
 
   if (seen.provider === 'cloudflare') {
     return jsonResponse(200, {
@@ -348,6 +573,7 @@ export function worldOf(on: On, setup: Setup = {}): World {
     lines: [],
     builtIn: [],
     settingsReads: 0,
+    envReads: [],
     fetches: 0,
     waits,
     clock: mock.clock(recordingWaits(on, waits)),
@@ -355,13 +581,17 @@ export function worldOf(on: On, setup: Setup = {}): World {
   const answer = setup.answer ?? (() => 0.9)
   let usageReads = 0
 
-  if (setup.envFails === undefined) {
-    mock.env(on, setup.env ?? {})
-  } else {
-    const reason = setup.envFails
+  on('env.get', ($, e) => {
+    world.envReads.push(e.name)
 
-    on('env.get', () => ({ deny: reason }))
-  }
+    if (setup.envFails !== undefined) {
+      return { deny: setup.envFails }
+    }
+
+    const env: Readonly<Record<string, string>> = setup.env ?? {}
+
+    return { value: Object.hasOwn(env, e.name) ? env[e.name] : undefined }
+  })
 
   on('settings.read', () => {
     world.settingsReads++

@@ -1,18 +1,21 @@
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import { reductionOf } from './compact'
-import { configOf } from './config'
+import { configOf, eligibleOf } from './config'
 import {
   briefOf,
+  credentialsFor,
   credentialsOf,
   environmentOf,
   PROVIDERS,
+  REASON_CHARS,
   redacted,
   unresolvedOf,
 } from './providers'
 import type { Credentials, Environment, ProviderName } from './providers'
 import { decisionLinesOf, percentOf, summaryOf } from './report'
 import { run } from './run'
+import { headOf } from './state'
 import { armOf, isCompactionDue, settle } from './trigger'
 
 /**
@@ -28,6 +31,27 @@ const PAUSE_RESERVE_MS = 1500
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Says which names of the `decisionProviders` option are no provider. Each
+ * is quoted, and quoted only in part when long, as the `provider` option
+ * is: the field may hold anything that was pasted into it.
+ */
+function unknownLineOf(names: readonly string[]): string {
+  const quoted = names.map(name => {
+    const given = JSON.stringify(name)
+
+    return given.length > REASON_CHARS
+      ? `${headOf(given, REASON_CHARS)}…`
+      : given
+  })
+
+  return (
+    `the decisionProviders option names ${quoted.join(', ')}, ` +
+    `${names.length === 1 ? 'which is' : 'which are'} none of ` +
+    `${PROVIDERS.join(', ')}; ignored`
+  )
 }
 
 /**
@@ -51,6 +75,11 @@ async function readEnvironment(
     OPENROUTER_API_KEY: await $.env.get('OPENROUTER_API_KEY'),
     CLOUDFLARE_API_TOKEN: await $.env.get('CLOUDFLARE_API_TOKEN'),
     CLOUDFLARE_ACCOUNT_ID: await $.env.get('CLOUDFLARE_ACCOUNT_ID'),
+    CODIV_API_KEY: await $.env.get('CODIV_API_KEY'),
+    PERPLEXITY_API_KEY: await $.env.get('PERPLEXITY_API_KEY'),
+    DECISIONS_API_KEY: await $.env.get('DECISIONS_API_KEY'),
+    DECISIONAPI_API_KEY: await $.env.get('DECISIONAPI_API_KEY'),
+    OPENAI_API_KEY: await $.env.get('OPENAI_API_KEY'),
   }
 
   if (unresolvedOf(providers, options, read).length === 0) {
@@ -112,9 +141,7 @@ function tell(
  */
 export const register: Register = (on, options) => {
   const config = configOf(options)
-  const providers: readonly ProviderName[] = config.providerDecision
-    ? PROVIDERS
-    : [config.provider]
+  const providers: readonly ProviderName[] = eligibleOf(config)
 
   on('session.compact', async ($, e, next) => {
     // A precompute installs nothing and its result is used only if the
@@ -154,6 +181,10 @@ export const register: Register = (on, options) => {
 
       credentials = credentialsOf(options, environment)
 
+      if (config.unknownProviders !== undefined) {
+        log($, unknownLineOf(config.unknownProviders), credentials)
+      }
+
       if (problem !== undefined) {
         log(
           $,
@@ -167,7 +198,11 @@ export const register: Register = (on, options) => {
         messages: e.messages,
         instructions: e.instructions,
         config,
-        credentials,
+        // Only the providers the person allows may be sent anything, so
+        // only their credentials go on. Every line shown is still redacted
+        // with all that was resolved: a key of another provider is no less
+        // a secret.
+        credentials: credentialsFor(providers, credentials),
         ports: {
           fetch: (url, init) => $.http.fetch(url, init),
           pause: async (ms, signal) => {

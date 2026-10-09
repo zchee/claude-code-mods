@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { Ask } from '../hooks/compact'
-import type { Credentials, Route } from '../hooks/providers'
+import { PROVIDERS } from '../hooks/providers'
+import type { Credentials, ProviderName, Route } from '../hooks/providers'
 import {
   candidatesOf,
   chooseRoute,
@@ -31,6 +32,16 @@ const CLOUDFLARE_KEYS: Credentials = {
 }
 
 const FITS = () => undefined
+
+/**
+ * The providers the mod served before the five resellers and vendors were
+ * added: narrowed to them, every choice is what it was then.
+ */
+const ORIGINAL: readonly ProviderName[] = [
+  'typesafe',
+  'cloudflare',
+  'openrouter',
+]
 
 const PROFILE: Profile = {
   context: 'c',
@@ -207,7 +218,7 @@ describe('candidatesOf', () => {
     { configured, credentials, keys, refused, usable },
   ] of Object.entries(offered)) {
     test(name, () => {
-      const found = candidatesOf(configured, credentials, FITS)
+      const found = candidatesOf(configured, ORIGINAL, credentials, FITS)
 
       expect(found.candidates.map(candidate => candidate.key)).toEqual(keys)
       expect(found.refused).toEqual(refused)
@@ -218,6 +229,7 @@ describe('candidatesOf', () => {
   test('success: a route the state does not fit is left out with the reason', () => {
     const found = candidatesOf(
       TYPESAFE,
+      ORIGINAL,
       { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
       route =>
         route.provider === 'typesafe'
@@ -238,6 +250,7 @@ describe('candidatesOf', () => {
   test('success: each candidate is described by what is documented about its model', () => {
     const { candidates } = candidatesOf(
       CLEF,
+      ORIGINAL,
       { ...CLOUDFLARE_KEYS, ...OPENROUTER_KEY },
       FITS,
     )
@@ -263,6 +276,7 @@ describe('candidatesOf', () => {
   test('success: a bare jev id on the gateway is described as jev', () => {
     const { candidates } = candidatesOf(
       { provider: 'openrouter', model: 'jev-latest' },
+      ORIGINAL,
       OPENROUTER_KEY,
       FITS,
     )
@@ -338,6 +352,7 @@ describe('chooseRoute', () => {
     const { asked, askOn } = askingFor('unused')
     const routed = await chooseRoute(
       TYPESAFE,
+      ORIGINAL,
       TYPESAFE_KEY,
       FITS,
       PROFILE,
@@ -358,6 +373,7 @@ describe('chooseRoute', () => {
     await expect(
       chooseRoute(
         TYPESAFE,
+        ORIGINAL,
         CLOUDFLARE_KEYS,
         route =>
           route.provider === 'cloudflare'
@@ -381,6 +397,7 @@ describe('chooseRoute', () => {
     const { asked, askOn } = askingFor('unused')
     const routed = await chooseRoute(
       OPENROUTER,
+      ORIGINAL,
       { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
       FITS,
       PROFILE,
@@ -408,6 +425,7 @@ describe('chooseRoute', () => {
     const { asked, askOn } = askingFor('unused')
     const routed = await chooseRoute(
       TYPESAFE,
+      ORIGINAL,
       OPENROUTER_KEY,
       FITS,
       PROFILE,
@@ -427,6 +445,7 @@ describe('chooseRoute', () => {
     const { asked, askOn } = askingFor('cloudflare.clef')
     const routed = await chooseRoute(
       TYPESAFE,
+      ORIGINAL,
       { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
       FITS,
       PROFILE,
@@ -453,6 +472,7 @@ describe('chooseRoute', () => {
     const { askOn } = askingFor('typesafe.jev-latest')
     const routed = await chooseRoute(
       TYPESAFE,
+      ORIGINAL,
       { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
       FITS,
       PROFILE,
@@ -467,6 +487,14 @@ describe('chooseRoute', () => {
       pick: new Error('cloudflare answered HTTP 429: slow down'),
       reason: 'cloudflare answered HTTP 429: slow down',
     },
+    'error: a failed routing request is quoted on one short line without control characters or a key':
+      {
+        pick: new Error(
+          'cloudflare answered HTTP 500: \u001b[2J' +
+            `${CLOUDFLARE_KEYS.cloudflareApiToken ?? ''}\n${'z'.repeat(400)}`,
+        ),
+        reason: `cloudflare answered HTTP 500: [2J[redacted] ${'z'.repeat(116)}…`,
+      },
     'error: a pick outside the candidates falls back to the configured route': {
       pick: 'openai.gpt',
       reason: 'no offered option was answered for route',
@@ -478,6 +506,7 @@ describe('chooseRoute', () => {
       const { asked, askOn } = askingFor(pick)
       const routed = await chooseRoute(
         TYPESAFE,
+        ORIGINAL,
         { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
         FITS,
         PROFILE,
@@ -493,7 +522,7 @@ describe('chooseRoute', () => {
   }
 
   test('success: the question offers exactly the candidates', () => {
-    const { candidates } = candidatesOf(CLEF, CLOUDFLARE_KEYS, FITS)
+    const { candidates } = candidatesOf(CLEF, ORIGINAL, CLOUDFLARE_KEYS, FITS)
     const question = routeQuestionOf(candidates)
 
     expect(question.type).toBe('choice')
@@ -502,5 +531,202 @@ describe('chooseRoute', () => {
       'cloudflare.clef-flash',
     ])
     expect(labelOf(CLEF_FLASH)).toBe('cloudflare/clef-flash')
+  })
+})
+
+const ADDED_KEYS: Credentials = {
+  codivApiKey: 'test-codiv-key',
+  perplexityApiKey: 'test-perplexity-key',
+  decisionsApiKey: 'test-decisions-key',
+  decisionapiApiKey: 'test-decisionapi-key',
+  openaiApiKey: 'test-openai-key',
+}
+
+const ALL_KEYS: Credentials = {
+  ...TYPESAFE_KEY,
+  ...OPENROUTER_KEY,
+  ...CLOUDFLARE_KEYS,
+  ...ADDED_KEYS,
+}
+
+describe('candidatesOf, over every provider', () => {
+  test('success: with every key set each model is offered once, and the jev gateways give way to typesafe', () => {
+    const found = candidatesOf(TYPESAFE, PROVIDERS, ALL_KEYS, FITS)
+
+    expect(found.candidates.map(candidate => candidate.key)).toEqual([
+      'typesafe.jev-latest',
+      'cloudflare.clef',
+      'cloudflare.clef-flash',
+      'codiv.openjev-latest',
+      'perplexity.pplx-decider-v1.1-27b',
+      'openai.gpt-6-luna',
+    ])
+    expect(found.refused).toEqual([
+      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
+      'decisions-api-dev/jev-latest: the same model as typesafe/jev-latest',
+      'decisionapi-net/jev-latest: the same model as typesafe/jev-latest',
+    ])
+    expect(found.isConfiguredUsable).toBe(true)
+  })
+
+  test('success: without typesafe the first gateway to jev is the one offered', () => {
+    const found = candidatesOf(
+      OPENROUTER,
+      ['openrouter', 'decisions-api-dev', 'decisionapi-net'],
+      ALL_KEYS,
+      FITS,
+    )
+
+    expect(found.candidates.map(candidate => candidate.key)).toEqual([
+      'openrouter.-typesafe-jev-latest',
+    ])
+    expect(found.refused).toEqual([
+      'decisions-api-dev/jev-latest: the same model as ' +
+        'openrouter/~typesafe/jev-latest',
+      'decisionapi-net/jev-latest: the same model as ' +
+        'openrouter/~typesafe/jev-latest',
+    ])
+  })
+
+  test('success: with typesafe among them the direct route to jev wins', () => {
+    const found = candidatesOf(
+      OPENROUTER,
+      ['typesafe', 'openrouter', 'decisions-api-dev', 'decisionapi-net'],
+      ALL_KEYS,
+      FITS,
+    )
+
+    expect(found.candidates.map(candidate => candidate.key)).toEqual([
+      'typesafe.jev-latest',
+    ])
+    expect(found.refused).toEqual([
+      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
+      'decisions-api-dev/jev-latest: the same model as typesafe/jev-latest',
+      'decisionapi-net/jev-latest: the same model as typesafe/jev-latest',
+    ])
+    expect(
+      found.isConfiguredUsable,
+      'the configured gateway can still take the job',
+    ).toBe(true)
+  })
+
+  test('success: a gateway the first is refused for gives way to the next', () => {
+    const found = candidatesOf(
+      { provider: 'decisionapi-net', model: 'jev-latest' },
+      ['openrouter', 'decisions-api-dev', 'decisionapi-net'],
+      { decisionsApiKey: 'test-decisions-key', ...ADDED_KEYS },
+      FITS,
+    )
+
+    expect(found.candidates.map(candidate => candidate.key)).toEqual([
+      'decisions-api-dev.jev-latest',
+    ])
+    expect(found.refused).toEqual([
+      'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
+      'decisionapi-net/jev-latest: the same model as decisions-api-dev/jev-latest',
+    ])
+  })
+
+  test('success: a provider left out of the eligible ones is not considered, keys or not', () => {
+    const found = candidatesOf(TYPESAFE, ['typesafe', 'openai'], ALL_KEYS, FITS)
+
+    expect(found.candidates.map(candidate => candidate.key)).toEqual([
+      'typesafe.jev-latest',
+      'openai.gpt-6-luna',
+    ])
+    expect(found.refused).toEqual([])
+  })
+
+  test('success: a jev reseller is described as jev reached through it, a model of its own by its own line', () => {
+    const { candidates } = candidatesOf(
+      { provider: 'codiv', model: 'openjev-latest' },
+      ['codiv', 'decisions-api-dev'],
+      ALL_KEYS,
+      FITS,
+    )
+    const about = Object.fromEntries(
+      candidates.map(candidate => [candidate.key, candidate.about]),
+    )
+
+    expect(about['decisions-api-dev.jev-latest']).toContain(
+      "TypeSafe's flagship",
+    )
+    expect(
+      about['decisions-api-dev.jev-latest']?.endsWith(
+        'Reached through decisions-api.dev.',
+      ),
+    ).toBe(true)
+    expect(about['codiv.openjev-latest']).toBe(
+      'OpenJev, DiffusionGemma 26B-A4B made into a System One model; it ' +
+        'reads a distribution for every answer in one denoising step.',
+    )
+  })
+})
+
+describe('chooseRoute, over every provider', () => {
+  test('success: with every provider eligible the routing question still goes to clef-flash', async () => {
+    const { asked, askOn } = askingFor('openai.gpt-6-luna')
+    const routed = await chooseRoute(
+      TYPESAFE,
+      PROVIDERS,
+      ALL_KEYS,
+      FITS,
+      PROFILE,
+      askOn,
+    )
+
+    expect(asked.map(question => question.route)).toEqual([CLEF_FLASH])
+    expect(routed).toEqual({
+      route: { provider: 'openai', model: 'gpt-6-luna' },
+      why: 'cloudflare/clef-flash picked openai/gpt-6-luna, confidence 0.81',
+    })
+  })
+
+  test('success: cloudflare left out of the eligible ones is not asked, whatever its keys', async () => {
+    const { asked, askOn } = askingFor('openai.gpt-6-luna')
+    const routed = await chooseRoute(
+      TYPESAFE,
+      ['typesafe', 'openai'],
+      ALL_KEYS,
+      FITS,
+      PROFILE,
+      askOn,
+    )
+
+    expect(
+      asked.map(question => question.route),
+      'the profile goes to the configured route only',
+    ).toEqual([TYPESAFE])
+    expect(Object.keys(asked[0]?.questions.route?.criteria ?? {})).toEqual([
+      'typesafe.jev-latest',
+      'openai.gpt-6-luna',
+    ])
+    expect(routed.why).toBe(
+      'typesafe/jev-latest picked openai/gpt-6-luna, confidence 0.81',
+    )
+  })
+})
+
+describe('what the routing question says of the added models', () => {
+  test('success: each model of its own is described by its published line', () => {
+    const { candidates } = candidatesOf(
+      { provider: 'perplexity', model: 'pplx-decider-v1-27b' },
+      ['perplexity', 'openai'],
+      ALL_KEYS,
+      FITS,
+    )
+
+    expect(
+      Object.fromEntries(
+        candidates.map(candidate => [candidate.key, candidate.about]),
+      ),
+    ).toEqual({
+      'perplexity.pplx-decider-v1-27b':
+        "Perplexity's 27B decision model. It reads text and images and " +
+        'returns typed answers with probabilities.',
+      'openai.gpt-6-luna':
+        'GPT-6 Luna, which OpenAI describes as its most efficient model ' +
+        'for focused, high-volume tasks, served through its Decisions API.',
+    })
   })
 })

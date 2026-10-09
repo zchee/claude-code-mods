@@ -4,12 +4,19 @@ import { describe, expect, test } from 'claude-code/testing'
 import { estimatedTokensOf } from '../hooks/state'
 import type { State } from '../hooks/state'
 import {
+  ADDED_ENV,
+  ALL_ENV,
   answering,
   calling,
   CLOUDFLARE_URL,
+  CODIV_URL,
+  DECISIONAPI_URL,
+  DECISIONS_URL,
   ENGINE_MESSAGES,
   ENV,
+  OPENAI_URL,
   OPENROUTER_URL,
+  PERPLEXITY_URL,
   readsOf,
   responseOf,
   said,
@@ -20,7 +27,7 @@ import {
   withOutcomes,
   worldOf,
 } from './fixtures'
-import type { Setup, World } from './fixtures'
+import type { Answerer, Setup, World } from './fixtures'
 
 /**
  * Two recent messages pinned: of the session's four calls, three are asked
@@ -37,6 +44,24 @@ const DECIDED = scoring({ t1: [0.9, 0.1], t2: [0.1, 0.1], t3: [0.9, 0.9] })
  * The handles of the session once `DECIDED` is applied: the Read's result
  * is rebuilt, the Bash call and its result are gone.
  */
+/**
+ * `DECIDED`, read off what a question asks instead of its id: a provider
+ * that names questions by their place sends ids that say nothing of the
+ * call.
+ */
+const DECIDED_BY_TEXT: Answerer = (id, question, seen) => {
+  const call = /tool call (\S+) \(/.exec(question.instructions)?.[1]
+  const kind = question.instructions.startsWith('Does the complete output')
+    ? 'result'
+    : 'call'
+
+  return DECIDED(
+    call === undefined ? id : `${kind}_${call}`,
+    question,
+    seen,
+  )
+}
+
 const DECIDED_HANDLES = [
   'h0',
   'h1',
@@ -67,6 +92,56 @@ const CUT_READ =
   `${'r'.repeat(300)}\n[decision-compaction removed 4700 more characters of ` +
   'this tool output; run the tool again if they are needed]'
 
+/**
+ * Why each of the five providers added after the first three is ruled out
+ * when none of their keys is set, in the order they are considered.
+ */
+const ADDED_UNSET =
+  'codiv/openjev-latest: CODIV_API_KEY unset; ' +
+  'perplexity/pplx-decider-v1.1-27b: PERPLEXITY_API_KEY unset; ' +
+  'decisions-api-dev/jev-latest: DECISIONS_API_KEY unset; ' +
+  'decisionapi-net/jev-latest: DECISIONAPI_API_KEY unset; ' +
+  'openai/gpt-6-luna: OPENAI_API_KEY unset'
+
+/**
+ * Ordinary English prose of about `chars` characters: words of a few
+ * letters a space apart, which the token estimate counts at far fewer
+ * tokens than bytes.
+ */
+function proseOf(chars: number): string {
+  const sentences = [
+    'The parser reads each line of the file and checks whether the next ' +
+      'word starts a new statement or continues the one before it.',
+    'When the test fails, the assistant looks at the stack trace first and ' +
+      'then opens the module that raised the error.',
+    'Most of the time the problem is a missing import or a typo in a name ' +
+      'that the compiler did not catch.',
+    'After the change the whole suite runs again, and the result is ' +
+      'compared with the one from before the edit.',
+  ]
+  let text = ''
+
+  for (let at = 0; text.length < chars; at++) {
+    text += `${sentences[at % sentences.length]} `
+  }
+
+  return text.trim()
+}
+
+/**
+ * `sessionOf` with `count` old assistant messages of `chars` characters of
+ * English prose each after its first message, handled `p1`, `p2`, …: a
+ * session that talks more than it calls tools.
+ */
+function englishSessionOf(count: number, chars: number): SessionMessage[] {
+  const [first, ...rest] = sessionOf()
+  const prose = Array.from({ length: count }, (_, at) =>
+    calling(proseOf(chars), [], `p${at + 1}`),
+  )
+
+  return first === undefined ? rest : [first, ...prose, ...rest]
+}
+
 function handlesOf(messages: readonly SessionMessage[] | undefined) {
   return messages?.map(message => message.handle)
 }
@@ -81,6 +156,7 @@ function expectNoSecret(world: World) {
       ENV.TYPESAFE_API_KEY,
       ENV.OPENROUTER_API_KEY,
       ENV.CLOUDFLARE_API_TOKEN,
+      ...Object.values(ADDED_ENV),
       'bearer',
     ]) {
       expect(
@@ -1010,7 +1086,9 @@ describe('the bounds on one compaction', () => {
       expect(world.settingsReads, 'not even a credential is looked for').toBe(0)
       expect(world.toasts).toEqual([
         'built-in summary used instead: the provider option is ' +
-          '"cloud-flare", which is none of typesafe, cloudflare, openrouter',
+          '"cloud-flare", which is none of typesafe, cloudflare, ' +
+          'openrouter, codiv, perplexity, decisions-api-dev, ' +
+          'decisionapi-net, openai',
       ])
     },
   )
@@ -1082,8 +1160,9 @@ describe('provider decision', () => {
         'provider decision: one model is available (cloudflare/clef: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and ' +
-          'CLOUDFLARE_ACCOUNT_ID unset; openrouter/~typesafe/jev-latest: ' +
-          'the same model as typesafe/jev-latest); using the configured ' +
+          `CLOUDFLARE_ACCOUNT_ID unset; ${ADDED_UNSET}; ` +
+          'openrouter/~typesafe/jev-latest: the same model as ' +
+          'typesafe/jev-latest); using the configured ' +
           'openrouter/~typesafe/jev-latest',
       )
     },
@@ -1264,8 +1343,8 @@ describe('provider decision', () => {
         'provider decision: one route is available (cloudflare/clef: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
-          'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset); ' +
-          'using the configured typesafe/jev-latest',
+          'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset; ' +
+          `${ADDED_UNSET}); using the configured typesafe/jev-latest`,
       )
       expect(
         world.settingsReads,
@@ -1312,6 +1391,71 @@ describe('provider decision', () => {
   )
 
   test(
+    'success: narrowed to the original three providers, the choice and its routing question are what they always were',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: 'typesafe,cloudflare,openrouter',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ENV,
+        answer: (id, question, seen) =>
+          id === 'route' ? 'typesafe.jev-latest' : DECIDED(id, question, seen),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => [seen.url, seen.model])).toEqual([
+        [`${CLOUDFLARE_URL}clef-flash`, 'clef-flash'],
+        [TYPESAFE_URL, 'jev-latest'],
+      ])
+      expect(Object.keys(routing?.questions ?? {})).toEqual(['route'])
+      expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
+        'typesafe.jev-latest',
+        'cloudflare.clef',
+        'cloudflare.clef-flash',
+      ])
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.lines[0]).toBe(
+        'provider decision: cloudflare/clef-flash picked typesafe/jev-latest, confidence 0.75',
+      )
+    },
+  )
+
+  test(
+    'success: narrowed to the original three providers, what is ruled out is what it always was',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: 'typesafe,cloudflare,openrouter',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: { TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY },
+        answer: DECIDED,
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
+      expect(world.lines[0]).toBe(
+        'provider decision: one route is available (cloudflare/clef: ' +
+          'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
+          'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+          'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset); ' +
+          'using the configured typesafe/jev-latest',
+      )
+    },
+  )
+
+  test(
     'success: with the decision off only the configured provider is ever asked',
     { options: OPTIONS },
     async ($, on) => {
@@ -1343,7 +1487,8 @@ describe('provider decision', () => {
           'typesafe/jev-latest: TYPESAFE_API_KEY unset; ' +
           'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
-          'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
+          'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset; ' +
+          ADDED_UNSET,
       ])
     },
   )
@@ -1381,6 +1526,618 @@ describe('provider decision', () => {
         world.lines.some(line => line.startsWith('provider decision')),
         'the cut-off routing question decides no route',
       ).toBe(false)
+    },
+  )
+})
+
+describe('the providers added after the first three', () => {
+  const asked: Record<
+    string,
+    { provider: string; url: string; model: string; reports: string }
+  > = {
+    'success: codiv decides a compaction with its own model': {
+      provider: 'codiv',
+      url: CODIV_URL,
+      model: 'openjev-latest',
+      reports: 'codiv/openjev-latest in 1 request',
+    },
+    'success: perplexity decides a compaction with its decider': {
+      provider: 'perplexity',
+      url: PERPLEXITY_URL,
+      model: 'pplx-decider-v1.1-27b',
+      reports: 'perplexity/pplx-decider-v1.1-27b in 1 request',
+    },
+    'success: decisions-api.dev decides a compaction asked by place and its envelope is read':
+      {
+        provider: 'decisions-api-dev',
+        url: DECISIONS_URL,
+        model: 'jev-latest',
+        reports: 'decisions-api-dev/jev-latest in 1 request',
+      },
+    'success: decisionapi.net decides a compaction and its envelope is read': {
+      provider: 'decisionapi-net',
+      url: DECISIONAPI_URL,
+      model: 'jev-latest',
+      reports: 'decisionapi-net/jev-latest in 1 request',
+    },
+    'success: openai decides a compaction asked in its own form': {
+      provider: 'openai',
+      url: OPENAI_URL,
+      model: 'gpt-6-luna',
+      reports: 'openai/gpt-6-luna in 1 request',
+    },
+  }
+
+  for (const [name, { provider, url, model, reports }] of Object.entries(
+    asked,
+  )) {
+    test(name, { options: { ...OPTIONS, provider } }, async ($, on) => {
+      const world = worldOf(on, { env: ALL_ENV, answer: DECIDED_BY_TEXT })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+      const [seen] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(
+        world.requests.map(request => [request.url, request.model]),
+      ).toEqual([[url, model]])
+      expect(Object.keys(seen?.questions ?? {})).toEqual(
+        provider === 'decisions-api-dev'
+          ? ['q0', 'q1', 'q2', 'q3', 'q4', 'q5']
+          : [
+              'call_t1',
+              'result_t1',
+              'call_t2',
+              'result_t2',
+              'call_t3',
+              'result_t3',
+            ],
+      )
+      expect(Array.isArray(seen?.body.questions)).toBe(provider === 'openai')
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.builtIn).toEqual([])
+      expect(world.toasts).toHaveLength(1)
+      expect(world.toasts[0]).toContain(reports)
+      expect(world.toasts[0]).toContain('1234 input tokens counted')
+      expectNoSecret(world)
+    })
+  }
+
+  test(
+    'error: an envelope reporting failure falls back, naming the provider and its reason without the key',
+    { options: { ...OPTIONS, provider: 'decisions-api-dev' } },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        intercept: () =>
+          responseOf(200, {
+            code: 402,
+            message: `insufficient credits for ${ADDED_ENV.DECISIONS_API_KEY}`,
+          }),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.toasts).toEqual([
+        'built-in summary used instead: decisions-api-dev: the response ' +
+          'envelope reports failure: insufficient credits for [redacted]',
+      ])
+      expectNoSecret(world)
+    },
+  )
+
+  test(
+    'error: an openai answer in a shape it no longer has falls back, naming the field',
+    { options: { ...OPTIONS, provider: 'openai' } },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        intercept: seen =>
+          responseOf(200, {
+            model: seen.model,
+            answers: [{ kind: 'predicate', name: 'call_t1', probability: 1 }],
+          }),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.toasts).toEqual([
+        'built-in summary used instead: openai: answers[0].type is ' +
+          'missing, neither predicate nor choice',
+      ])
+    },
+  )
+
+  test(
+    'success: every credential variable is read through the engine, each by its own name',
+    { options: OPTIONS },
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, answer: DECIDED })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      expect([...world.envReads].sort()).toEqual([
+        'CLOUDFLARE_ACCOUNT_ID',
+        'CLOUDFLARE_API_TOKEN',
+        'CODIV_API_KEY',
+        'DECISIONAPI_API_KEY',
+        'DECISIONS_API_KEY',
+        'OPENAI_API_KEY',
+        'OPENROUTER_API_KEY',
+        'PERPLEXITY_API_KEY',
+        'TYPESAFE_API_KEY',
+      ])
+    },
+  )
+
+  test(
+    'success: with the decision off and every key set only the configured provider is sent anything',
+    { options: { ...OPTIONS, provider: 'openai' } },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        answer: DECIDED,
+        intercept: () =>
+          responseOf(401, {
+            error: {
+              message:
+                `upstream echoed ${ENV.TYPESAFE_API_KEY} and ` +
+                ADDED_ENV.OPENAI_API_KEY,
+            },
+          }),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.requests.map(seen => seen.url)).toEqual([OPENAI_URL])
+      expect(out.messages).toEqual([SUMMARY])
+      expect(
+        world.toasts,
+        'a key of a provider not in play is still a secret',
+      ).toEqual([
+        'built-in summary used instead: openai answered HTTP 401: ' +
+          'upstream echoed [redacted] and [redacted]',
+      ])
+      expectNoSecret(world)
+    },
+  )
+
+  for (const [provider, url] of [
+    ['decisions-api-dev', DECISIONS_URL],
+    ['decisionapi-net', DECISIONAPI_URL],
+  ] as const) {
+    test(
+      `success: ${provider} takes about 40 KB of English conversation, the state shrunk to its 32 KiB body`,
+      { options: { ...OPTIONS, provider, minReductionRatio: 0 } },
+      async ($, on) => {
+        const world = worldOf(on, { env: ALL_ENV, answer: DECIDED_BY_TEXT })
+        const messages = englishSessionOf(20, 2000)
+        const sent = messages.reduce(
+          (chars, message) => chars + message.text.length,
+          0,
+        )
+        const out = await $.session.compact({ trigger: 'manual', messages })
+
+        expect(sent > 40_000, `${sent} characters of text`).toBe(true)
+        expect(world.problems).toEqual([])
+        expect(world.requests.map(seen => seen.url)).toEqual([url])
+        expect(handlesOf(out.messages)).toEqual([
+          'h0',
+          ...Array.from({ length: 20 }, (_, at) => `p${at + 1}`),
+          ...DECIDED_HANDLES.slice(1),
+        ])
+        expect(world.builtIn).toEqual([])
+        expect(world.toasts).toHaveLength(1)
+        expect(
+          world.toasts[0]?.includes('(whole)'),
+          `the state was reduced: ${world.toasts[0]}`,
+        ).toBe(false)
+      },
+    )
+  }
+
+  test(
+    'success: decisions-api.dev asks about more calls than eight questions hold in several requests, each named from q0',
+    { options: { provider: 'decisions-api-dev', preserveRecentMessages: 0 } },
+    async ($, on) => {
+      // Odd calls are kept whole and even ones dropped, read off the text of
+      // the question, since its id names only its place in the request.
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        answer: (_id, question) =>
+          Number(/tool call t(\d+) /.exec(question.instructions)?.[1]) % 2 ===
+          1
+            ? 0.9
+            : 0.1,
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: readsOf(6),
+      })
+
+      expect(world.problems).toEqual([])
+      expect(
+        world.requests.map(seen => Object.keys(seen.questions)),
+      ).toEqual([
+        ['q0', 'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7'],
+        ['q0', 'q1', 'q2', 'q3'],
+      ])
+      expect(
+        world.requests.map(seen =>
+          Object.values(seen.questions).map(
+            question => /tool call (t\d+) /.exec(question.instructions)?.[1],
+          ),
+        ),
+      ).toEqual([
+        ['t1', 't1', 't2', 't2', 't3', 't3', 't4', 't4'],
+        ['t5', 't5', 't6', 't6'],
+      ])
+      expect(handlesOf(out.messages)).toEqual([
+        'first',
+        'call1',
+        'result1',
+        'call3',
+        'result3',
+        'call5',
+        'result5',
+        'last',
+      ])
+      expect(world.builtIn).toEqual([])
+      expect(world.toasts[0]).toContain('in 2 requests')
+    },
+  )
+})
+
+describe('provider decision over every provider', () => {
+  const DECIDING = { ...OPTIONS, providerDecision: true }
+
+  test(
+    'success: by default every provider with a key is offered once per model and the routing question goes to clef-flash',
+    { options: DECIDING },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        answer: (id, question, seen) =>
+          id === 'route' ? 'openai.gpt-6-luna' : DECIDED(id, question, seen),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+      const [routing, deciding] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => seen.url)).toEqual([
+        `${CLOUDFLARE_URL}clef-flash`,
+        OPENAI_URL,
+      ])
+      expect(
+        Object.keys(routing?.questions.route?.criteria ?? {}),
+        'the three gateways to jev are left out for typesafe',
+      ).toEqual([
+        'typesafe.jev-latest',
+        'cloudflare.clef',
+        'cloudflare.clef-flash',
+        'codiv.openjev-latest',
+        'perplexity.pplx-decider-v1.1-27b',
+        'openai.gpt-6-luna',
+      ])
+      expect(Object.keys(deciding?.questions ?? {})).toHaveLength(6)
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.lines[0]).toBe(
+        'provider decision: cloudflare/clef-flash picked openai/gpt-6-luna, confidence 0.75',
+      )
+      expect(world.toasts[0]).toContain('openai/gpt-6-luna in 1 request')
+      expectNoSecret(world)
+    },
+  )
+
+  test(
+    'success: cloudflare left out of decisionProviders is never sent the routing question',
+    { options: { ...DECIDING, decisionProviders: 'typesafe,openai' } },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        answer: (id, question, seen) =>
+          id === 'route' ? 'typesafe.jev-latest' : DECIDED(id, question, seen),
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => seen.url)).toEqual([
+        TYPESAFE_URL,
+        TYPESAFE_URL,
+      ])
+      expect(Object.keys(routing?.questions ?? {})).toEqual(['route'])
+      expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
+        'typesafe.jev-latest',
+        'openai.gpt-6-luna',
+      ])
+      expect(world.lines[0]).toBe(
+        'provider decision: typesafe/jev-latest picked typesafe/jev-latest, confidence 0.75',
+      )
+    },
+  )
+
+  test(
+    'success: with openai configured and no cloudflare key the routing question goes to openai in its own form',
+    {
+      options: {
+        ...DECIDING,
+        provider: 'openai',
+        decisionProviders: 'typesafe',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY,
+          OPENAI_API_KEY: ADDED_ENV.OPENAI_API_KEY,
+        },
+        answer: (id, question, seen) =>
+          id === 'route' ? 'typesafe.jev-latest' : DECIDED(id, question, seen),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => seen.url)).toEqual([
+        OPENAI_URL,
+        TYPESAFE_URL,
+      ])
+      expect(routing?.body.questions).toEqual([
+        {
+          name: 'route',
+          type: 'choice',
+          instructions: expect.stringContaining('Which decision model'),
+          choices: [
+            {
+              value: 'typesafe.jev-latest',
+              description: expect.stringContaining("TypeSafe's flagship"),
+            },
+            {
+              value: 'openai.gpt-6-luna',
+              description:
+                'GPT-6 Luna, which OpenAI describes as its most efficient ' +
+                'model for focused, high-volume tasks, served through its ' +
+                'Decisions API.',
+            },
+          ],
+        },
+      ])
+      expect(typeof routing?.body.input).toBe('string')
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.lines[0]).toBe(
+        'provider decision: openai/gpt-6-luna picked typesafe/jev-latest, confidence 0.75',
+      )
+    },
+  )
+
+  test(
+    'success: of three gateways to jev the first is offered and the line says which it stands for',
+    {
+      options: {
+        ...DECIDING,
+        provider: 'openrouter',
+        decisionProviders: 'openrouter,decisions-api-dev,decisionapi-net',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          OPENROUTER_API_KEY: ENV.OPENROUTER_API_KEY,
+          DECISIONS_API_KEY: ADDED_ENV.DECISIONS_API_KEY,
+          DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
+        },
+        answer: DECIDED,
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      expect(world.requests.map(seen => seen.url)).toEqual([OPENROUTER_URL])
+      expect(world.lines[0]).toBe(
+        'provider decision: one route is available (decisions-api-dev/' +
+          'jev-latest: the same model as openrouter/~typesafe/jev-latest; ' +
+          'decisionapi-net/jev-latest: the same model as ' +
+          'openrouter/~typesafe/jev-latest); using the configured ' +
+          'openrouter/~typesafe/jev-latest',
+      )
+    },
+  )
+
+  test(
+    'success: a reseller whose 32 KiB the state would overrun is not offered, though its tokens fit',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: 'decisionapi-net',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY,
+          DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
+        },
+        answer: DECIDED,
+      })
+      const messages = sessionOf()
+
+      // One unbroken run of letters: six to a token as estimated, one byte
+      // each, so the state stays inside the reseller's token figure and
+      // still takes more than 32 KiB.
+      messages[7] = calling('a'.repeat(33_000), [], 'h7')
+
+      await $.session.compact({ trigger: 'manual', messages })
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
+      expect(world.lines[0]).toMatch(
+        /^provider decision: one route is available \(decisionapi-net\/jev-latest: no question fits beside the state: the request takes 3\d{4} of the 27852 bytes it may hold before any question\); using the configured typesafe\/jev-latest$/,
+      )
+    },
+  )
+
+  test(
+    'success: a CJK-heavy state over 32 KiB rules out both resellers and is decided by typesafe',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: 'decisions-api-dev,decisionapi-net',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY,
+          DECISIONS_API_KEY: ADDED_ENV.DECISIONS_API_KEY,
+          DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
+        },
+        answer: DECIDED,
+      })
+      const messages = sessionOf()
+
+      // Twelve thousand characters of Japanese: about as many tokens, well
+      // inside what typesafe takes, and three UTF-8 bytes each.
+      messages[7] = calling('日本語の文章'.repeat(2000), [], 'h7')
+
+      const out = await $.session.compact({ trigger: 'manual', messages })
+      const [seen] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(request => request.url)).toEqual([
+        TYPESAFE_URL,
+      ])
+      expect(
+        new TextEncoder().encode(JSON.stringify(seen?.state)).length > 32_768,
+        'typesafe was sent more than the resellers could take',
+      ).toBe(true)
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.lines[0]).toMatch(
+        /^provider decision: one route is available \(decisions-api-dev\/jev-latest: .+; decisionapi-net\/jev-latest: .+\); using the configured typesafe\/jev-latest$/,
+      )
+    },
+  )
+
+  test(
+    'error: an unknown name in decisionProviders is dropped, said once without a secret, and the compaction goes on',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: `typesafe, nope ,${ENV.TYPESAFE_API_KEY}`,
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: { TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY },
+        answer: DECIDED,
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+      const said = world.lines.filter(line =>
+        line.includes('decisionProviders'),
+      )
+
+      expect(said).toEqual([
+        'the decisionProviders option names "nope", "[redacted]", which ' +
+          'are none of typesafe, cloudflare, openrouter, codiv, perplexity, ' +
+          'decisions-api-dev, decisionapi-net, openai; ignored',
+      ])
+      expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expectNoSecret(world)
+    },
+  )
+
+  test(
+    'success: a cleared decisionProviders leaves only the configured provider, every key set',
+    { options: { ...DECIDING, provider: 'codiv', decisionProviders: '' } },
+    async ($, on) => {
+      const world = worldOf(on, { env: ALL_ENV, answer: DECIDED })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => seen.url)).toEqual([CODIV_URL])
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expect(world.lines).toContain(
+        'provider decision: one route is available; using the configured ' +
+          'codiv/openjev-latest',
+      )
+    },
+  )
+
+  test(
+    'error: a cloudflare model outside its catalogue is refused before routing, and nothing is sent',
+    {
+      options: { ...DECIDING, provider: 'cloudflare', model: 'llama-3-8b' },
+    },
+    async ($, on) => {
+      const world = worldOf(on, { env: ALL_ENV, answer: DECIDED })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.fetches).toBe(0)
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.toasts).toEqual([
+        'built-in summary used instead: cloudflare serves clef and ' +
+          'clef-flash, not "llama-3-8b"',
+      ])
+    },
+  )
+
+  test(
+    'success: a cloudflare model named by its catalogue id is offered with the other cloudflare model',
+    {
+      options: {
+        ...DECIDING,
+        provider: 'cloudflare',
+        model: '@cf/cloudflare/clef',
+        decisionProviders: 'cloudflare',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ENV,
+        answer: (id, question, seen) =>
+          id === 'route' ? 'cloudflare.clef' : DECIDED(id, question, seen),
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
+        'cloudflare.clef',
+        'cloudflare.clef-flash',
+      ])
+      expect(world.requests.map(seen => seen.url)).toEqual([
+        `${CLOUDFLARE_URL}clef-flash`,
+        `${CLOUDFLARE_URL}clef`,
+      ])
     },
   )
 })

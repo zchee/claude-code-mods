@@ -1,5 +1,8 @@
 import type { SessionMessage, ToolUseSummary } from 'claude-code'
 
+import { bytesOf } from './systemone'
+import type { Wire } from './systemone'
+
 /**
  * One tool call with the result that answers it, found by `tool_use_id`.
  */
@@ -81,7 +84,8 @@ export type Stage =
 export type Fitted = {
   state: State
   /**
-   * The estimated size of the serialised state.
+   * The estimated size of the serialised state, as the wire format it was
+   * fitted for carries it.
    */
   tokens: number
   stage: Stage
@@ -94,6 +98,19 @@ export type FitNeed = {
   maxStateTokens: number
   preserveRecentMessages: number
   goal: string
+  /**
+   * The wire format the state is sent in. It is measured as that format
+   * carries it: a format that escapes the state inside a string makes it
+   * larger than its own JSON.
+   */
+  wire: Wire
+  /**
+   * For a route that caps the request body in bytes: the UTF-8 bytes the
+   * body may take besides the questions it must leave room for, and the
+   * bytes it takes around a state, questions left out. The state is then
+   * held to both budgets; absent, it is fitted in tokens alone.
+   */
+  bytes?: { limit: number; besideOf: (state: State) => number }
 }
 
 /**
@@ -477,6 +494,11 @@ function lineOf(call: Call): string {
 type Slot = {
   entry: Entry
   tokens: number
+  /**
+   * What the entry takes in UTF-8 bytes, comma included; 0 when the state
+   * has no byte budget.
+   */
+  bytes: number
   isOld: boolean
   isOut: boolean
 }
@@ -495,17 +517,30 @@ type Pass = {
 /**
  * What an entry costs inside the list: its own JSON and the comma after it.
  */
-function weigh(entry: Entry): number {
-  return estimatedTokensOf(JSON.stringify(entry)) + 1
+function weigh(entry: Entry, wire: Wire): number {
+  return estimatedTokensOf(wire.stateJsonOf(JSON.stringify(entry))) + 1
+}
+
+/**
+ * What an entry takes in the request body, in UTF-8 bytes: its own JSON as
+ * the wire format carries it and the comma after it. The last entry has no
+ * comma, so a sum of these is over by one byte at most.
+ */
+function weighBytes(entry: Entry, wire: Wire): number {
+  return bytesOf(wire.stateJsonOf(JSON.stringify(entry))) + 1
 }
 
 /**
  * Where several entries in a row hold nothing but one-line calls, gives the
  * lines of all of them to the first and drops the rest. The keys of an
  * entry are then paid for once for the whole row, and every line still
- * starts with the id its questions name.
+ * starts with the id its questions name. `reweigh` measures a slot again
+ * once its entry has grown.
  */
-function folded(slots: readonly Slot[]): Slot[] {
+function folded(
+  slots: readonly Slot[],
+  reweigh: (slot: Slot) => void,
+): Slot[] {
   const isFoldable = (slot: Slot) =>
     slot.isOld &&
     slot.entry.text === '' &&
@@ -539,7 +574,7 @@ function folded(slots: readonly Slot[]): Slot[] {
   }
 
   for (const slot of grown) {
-    slot.tokens = weigh(slot.entry)
+    reweigh(slot)
   }
 
   return kept
@@ -561,13 +596,15 @@ function folded(slots: readonly Slot[]): Slot[] {
  * 6. the separate entries of neighbouring old messages that hold only calls.
  *
  * The estimate is checked here, whichever provider is asked, because a
- * provider may cut a state that is too long without saying so. A
- * conversation still over the budget on the last rung is refused by
- * throwing.
+ * provider may cut a state that is too long without saying so. Where the
+ * route caps the body in bytes, the state is held to that budget too, on
+ * the same rungs: text with many letters to a token takes more bytes than
+ * the token budget assumes. A conversation still over either budget on the
+ * last rung is refused by throwing.
  *
  * @param messages the conversation
  * @param calls its paired calls, as `pairCalls` answered them
- * @param need the budget, the pinning and the goal
+ * @param need the budget, the pinning, the goal and the wire format
  * @returns the fitted state, its estimated size and the stage reached
  */
 export function stateWithin(
@@ -580,7 +617,13 @@ export function stateWithin(
     goal: need.goal,
     conversation,
   })
-  const frameTokens = estimatedTokensOf(JSON.stringify(frame([])))
+  const tokensOf = (state: State) =>
+    estimatedTokensOf(need.wire.stateJsonOf(JSON.stringify(state)))
+  const frameTokens = tokensOf(frame([]))
+  const { bytes } = need
+  const frameBytes = bytes === undefined ? 0 : bytes.besideOf(frame([]))
+  const bytesOfEntry = (entry: Entry) =>
+    bytes === undefined ? 0 : weighBytes(entry, need.wire)
   const inputs = new Map(calls.map(call => [call, inputJsonOf(call)]))
   const made = new Map<number, Call[]>()
 
@@ -590,12 +633,15 @@ export function stateWithin(
 
   let slots: Slot[] = []
   let total = 0
+  let totalBytes = 0
 
   const tally = () => {
     total = frameTokens
+    totalBytes = frameBytes
 
     for (const slot of slots) {
       total += slot.tokens
+      totalBytes += slot.bytes
     }
   }
 
@@ -626,7 +672,8 @@ export function stateWithin(
 
       slots.push({
         entry,
-        tokens: weigh(entry),
+        tokens: weigh(entry, need.wire),
+        bytes: bytesOfEntry(entry),
         isOld: !isPinnedIndex(at, messages.length, need.preserveRecentMessages),
         isOut: false,
       })
@@ -635,14 +682,16 @@ export function stateWithin(
     tally()
   }
 
-  const fits = () => total <= need.maxStateTokens
+  const fits = () =>
+    total <= need.maxStateTokens &&
+    (bytes === undefined || totalBytes <= bytes.limit)
 
   const fitted = (stage: Stage): Fitted => {
     const state = frame(
       slots.filter(slot => !slot.isOut).map(slot => slot.entry),
     )
 
-    return { state, tokens: estimatedTokensOf(JSON.stringify(state)), stage }
+    return { state, tokens: tokensOf(state), stage }
   }
 
   for (const cap of INPUT_CAPS) {
@@ -701,10 +750,13 @@ export function stateWithin(
 
       pass.reduce(slot)
 
-      const now = slot.isOut ? 0 : weigh(slot.entry)
+      const now = slot.isOut ? 0 : weigh(slot.entry, need.wire)
+      const nowBytes = slot.isOut ? 0 : bytesOfEntry(slot.entry)
 
       total += now - slot.tokens
+      totalBytes += nowBytes - slot.bytes
       slot.tokens = now
+      slot.bytes = nowBytes
 
       if (fits()) {
         return fitted(pass.stage)
@@ -712,11 +764,25 @@ export function stateWithin(
     }
   }
 
-  slots = folded(slots.filter(slot => !slot.isOut))
+  slots = folded(
+    slots.filter(slot => !slot.isOut),
+    slot => {
+      slot.tokens = weigh(slot.entry, need.wire)
+      slot.bytes = bytesOfEntry(slot.entry)
+    },
+  )
   tally()
 
   if (fits()) {
     return fitted('rows of old calls joined')
+  }
+
+  if (total <= need.maxStateTokens && bytes !== undefined) {
+    throw new Error(
+      'the conversation does not fit the request body: about ' +
+        `${totalBytes} bytes are left after every reduction and ` +
+        `${bytes.limit} are allowed`,
+    )
   }
 
   throw new Error(

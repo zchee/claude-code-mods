@@ -7,8 +7,8 @@ import type {
 import type { Limits } from './providers'
 import { estimatedTokensOf, headOf } from './state'
 import type { Call, Fitted, Stage } from './state'
-import { noulOf } from './systemone'
-import type { Questions, Reply } from './systemone'
+import { bytesOf, noulOf } from './systemone'
+import type { Questions, Reply, Wire } from './systemone'
 
 /**
  * Sends one batch of questions about a state and resolves with the reply.
@@ -24,6 +24,12 @@ export type Budget = {
   stateTokens: number
   requestTokens: number
   questions?: number
+  /**
+   * For a provider that caps the request body in bytes: the bytes a body
+   * may take, already held to `LIMIT_SHARE` of the cap, and the bytes it
+   * takes besides its questions.
+   */
+  bytes?: { limit: number; state: number }
 }
 
 /**
@@ -104,6 +110,13 @@ export type Demand = {
    * calls whose questions are longest.
    */
   batchTokens: number
+  /**
+   * The UTF-8 bytes the questions of one request may take: those of the
+   * calls whose questions take the most bytes, `batchCalls` of them or as
+   * many as the provider's question cap lets one request hold, whichever
+   * is fewer. What a cap on the body in bytes has to leave free.
+   */
+  batchBytes: number
 }
 
 /**
@@ -113,7 +126,7 @@ const QUESTIONS_PER_CALL = 2
 
 /**
  * What a request costs around its state and questions: the `model` field
- * and the three key names.
+ * and the three key names, which are about the same in every wire format.
  */
 const ENVELOPE_TOKENS = 32
 
@@ -208,20 +221,38 @@ export function questionsOf(call: Call): Questions {
 
 /**
  * The estimated size of each of a call's questions and of the two together,
- * as they ride in a request body.
+ * as they ride in a request body written in the route's wire format, with
+ * what the provider counts for each question beyond its text; and the UTF-8
+ * bytes of the two, each with the comma after it.
  */
-function questionTokensOf(call: Call): { both: number; longest: number } {
+function questionTokensOf(
+  call: Call,
+  wire: Wire,
+): { both: number; longest: number; bytes: number } {
   let both = 0
   let longest = 0
+  let bytes = 0
 
   for (const [id, question] of Object.entries(questionsOf(call))) {
-    const tokens = estimatedTokensOf(JSON.stringify({ [id]: question })) + 1
+    const json = wire.questionJsonOf(id, question)
+    const tokens = estimatedTokensOf(json) + 1 + wire.tokensPerQuestion
 
     both += tokens
     longest = Math.max(longest, tokens)
+    bytes += bytesOf(json) + 1
   }
 
-  return { both, longest }
+  return { both, longest, bytes }
+}
+
+/**
+ * The sum of the `count` largest of some sizes.
+ */
+function largestOf(sizes: readonly number[], count: number): number {
+  return [...sizes]
+    .sort((a, b) => b - a)
+    .slice(0, count)
+    .reduce((sum, size) => sum + size, 0)
 }
 
 /**
@@ -232,11 +263,22 @@ function questionTokensOf(call: Call): { both: number; longest: number } {
  * calls end up in a batch together.
  *
  * @param calls the calls that will be asked about
+ * @param wire the wire format the questions are written in
+ * @param maxQuestions the provider's cap on the questions of one request,
+ * when it has one; it bounds only the bytes set aside
  * @returns the demand, all zero when there are no calls
  */
-export function demandOf(calls: readonly Call[]): Demand {
-  const sizes = calls.map(questionTokensOf)
+export function demandOf(
+  calls: readonly Call[],
+  wire: Wire,
+  maxQuestions?: number,
+): Demand {
+  const sizes = calls.map(call => questionTokensOf(call, wire))
   const batchCalls = Math.min(MIN_CALLS_PER_REQUEST, sizes.length)
+  const byteCalls =
+    maxQuestions === undefined
+      ? batchCalls
+      : Math.min(batchCalls, Math.floor(maxQuestions / QUESTIONS_PER_CALL))
 
   return {
     longestQuestion: sizes.reduce(
@@ -244,11 +286,14 @@ export function demandOf(calls: readonly Call[]): Demand {
       0,
     ),
     batchCalls,
-    batchTokens: sizes
-      .map(size => size.both)
-      .sort((a, b) => b - a)
-      .slice(0, batchCalls)
-      .reduce((sum, both) => sum + both, 0),
+    batchTokens: largestOf(
+      sizes.map(size => size.both),
+      batchCalls,
+    ),
+    batchBytes: largestOf(
+      sizes.map(size => size.bytes),
+      byteCalls,
+    ),
   }
 }
 
@@ -313,6 +358,7 @@ export function budgetOf(
  * @param calls the calls to ask about, in order
  * @param stateTokens the estimated size of the fitted state
  * @param budget what one request may hold
+ * @param wire the wire format the questions are written in
  * @returns the batches, in order; throws when the state leaves room for not
  * even one call's questions, and when there would be more batches than
  * `MAX_REQUESTS`
@@ -321,8 +367,13 @@ export function batchesOf(
   calls: readonly Call[],
   stateTokens: number,
   budget: Budget,
+  wire: Wire,
 ): Call[][] {
   const room = budget.requestTokens - stateTokens - ENVELOPE_TOKENS
+  const byteRoom =
+    budget.bytes === undefined
+      ? Infinity
+      : budget.bytes.limit - budget.bytes.state
   const mostCalls =
     budget.questions === undefined
       ? Infinity
@@ -338,9 +389,10 @@ export function batchesOf(
   const batches: Call[][] = []
   let batch: Call[] = []
   let used = 0
+  let usedBytes = 0
 
   for (const call of calls) {
-    const { both } = questionTokensOf(call)
+    const { both, bytes } = questionTokensOf(call, wire)
 
     if (both > room) {
       throw new Error(
@@ -350,14 +402,28 @@ export function batchesOf(
       )
     }
 
-    if (batch.length >= mostCalls || used + both > room) {
+    if (bytes > byteRoom) {
+      throw new Error(
+        `no question fits beside the state: the request takes ` +
+          `${budget.bytes?.state} of the ${budget.bytes?.limit} bytes it ` +
+          'may hold before any question',
+      )
+    }
+
+    if (
+      batch.length >= mostCalls ||
+      used + both > room ||
+      usedBytes + bytes > byteRoom
+    ) {
       batches.push(batch)
       batch = []
       used = 0
+      usedBytes = 0
     }
 
     batch.push(call)
     used += both
+    usedBytes += bytes
   }
 
   if (batch.length > 0) {
@@ -708,10 +774,12 @@ async function inTurns<Item, Result>(
  *
  * @param messages the conversation
  * @param calls its paired calls, pinned ones included
- * @param fitted the state, already fitted to the budget
+ * @param fitted the state, already fitted to the budget, with its size as
+ * the route's wire format carries it
  * @param ask how a batch is sent
- * @param settings the budget, the keep threshold, the truncation length,
- * and `halt`, which hears the reason the moment a batch fails
+ * @param settings the budget, the route's wire format, the keep threshold,
+ * the truncation length, and `halt`, which hears the reason the moment a
+ * batch fails
  * @returns the outcome
  */
 export async function compact(
@@ -721,6 +789,7 @@ export async function compact(
   ask: Ask,
   settings: {
     budget: Budget
+    wire: Wire
     keepThreshold: number
     truncateHeadChars: number
     halt?: (reason: Error) => void
@@ -730,6 +799,7 @@ export async function compact(
     calls.filter(call => !call.isPinned),
     fitted.tokens,
     settings.budget,
+    settings.wire,
   )
   const answered = await inTurns(
     batches,

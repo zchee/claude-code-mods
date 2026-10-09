@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
+import { bytesBesideOf, routeOf } from '../hooks/providers'
 import {
   estimatedTokensOf,
   stateWithin,
@@ -10,6 +11,7 @@ import {
   pairCalls,
 } from '../hooks/state'
 import type { CallNote, Fitted, Stage } from '../hooks/state'
+import { BARE } from '../hooks/systemone'
 import { answering, calling, said, sessionOf } from './fixtures'
 
 describe('estimatedTokensOf', () => {
@@ -289,6 +291,7 @@ function fit(budget: number): Fitted {
     maxStateTokens: budget,
     preserveRecentMessages: RECENT,
     goal: 'refactor the parser',
+    wire: BARE,
   })
 }
 
@@ -508,6 +511,7 @@ describe('stateWithin', () => {
           maxStateTokens: budget,
           preserveRecentMessages: 0,
           goal: '',
+          wire: BARE,
         })
       let refusal = ''
 
@@ -543,6 +547,121 @@ describe('stateWithin', () => {
   test('error: a budget nothing can reach says how far it got', () => {
     expect(() => fit(50)).toThrow(
       /^the conversation does not fit the state budget: about \d+ tokens are left after every reduction and 50 are allowed$/,
+    )
+  })
+})
+
+describe('stateWithin under a cap in bytes', () => {
+  const route = routeOf('decisionapi-net')
+  const besideOf = (state: unknown) => bytesBesideOf(route, state)
+
+  /**
+   * Old messages of English prose: many letters to an estimated token, so
+   * the state takes far more bytes than four a token.
+   */
+  function proseSession(): SessionMessage[] {
+    const sentence =
+      'The assistant reads the module again and compares the behaviour ' +
+      'with what the specification describes before changing anything. '
+    const messages = [said('refactor the parser')]
+
+    for (let n = 1; n <= 12; n++) {
+      messages.push(
+        calling(sentence.repeat(12), [
+          [`u${n}`, 'Read', { file_path: `src/f${n}.ts` }],
+        ]),
+        answering([[`u${n}`, 'x'.repeat(400)]]),
+      )
+    }
+
+    messages.push(said('carry on'))
+
+    return messages
+  }
+
+  function fitBytes(limit: number): Fitted {
+    const messages = proseSession()
+
+    return stateWithin(messages, pairCalls(messages, RECENT), {
+      maxStateTokens: 1_000_000,
+      preserveRecentMessages: RECENT,
+      goal: 'refactor the parser',
+      wire: BARE,
+      bytes: { limit, besideOf },
+    })
+  }
+
+  test('success: a letter-heavy state within its tokens is shrunk until its body fits the bytes', () => {
+    const messages = proseSession()
+    const whole = stateWithin(messages, pairCalls(messages, RECENT), {
+      maxStateTokens: 1_000_000,
+      preserveRecentMessages: RECENT,
+      goal: 'refactor the parser',
+      wire: BARE,
+    })
+    const wholeBytes = besideOf(whole.state)
+    const limit = Math.floor(wholeBytes / 2)
+    const fitted = fitBytes(limit)
+
+    expect(whole.stage).toBe('whole')
+    expect(
+      wholeBytes > whole.tokens * 4,
+      `${wholeBytes} bytes for ${whole.tokens} tokens`,
+    ).toBe(true)
+    expect(fitted.stage).not.toBe('whole')
+    expect(
+      besideOf(fitted.state) <= limit,
+      `${besideOf(fitted.state)} bytes against ${limit}`,
+    ).toBe(true)
+  })
+
+  test('success: an ample byte budget changes nothing', () => {
+    const messages = proseSession()
+    const calls = pairCalls(messages, RECENT)
+    const need = {
+      maxStateTokens: 3000,
+      preserveRecentMessages: RECENT,
+      goal: 'refactor the parser',
+      wire: BARE,
+    }
+
+    expect(
+      stateWithin(messages, calls, {
+        ...need,
+        bytes: { limit: 10_000_000, besideOf },
+      }),
+    ).toEqual(stateWithin(messages, calls, need))
+  })
+
+  test('success: a shrinking byte budget gives up detail in the order the token budget does', () => {
+    const seen: Stage[] = []
+
+    for (let limit = 60_000; limit >= 2_000; limit -= 500) {
+      let stage: Stage
+
+      try {
+        stage = fitBytes(limit).stage
+      } catch {
+        break
+      }
+
+      if (seen.at(-1) !== stage) {
+        seen.push(stage)
+      }
+    }
+
+    expect(seen.length >= 3, seen.join(', ')).toBe(true)
+    expect(
+      seen.map(stage => ORDER.indexOf(stage)),
+      seen.join(', '),
+    ).toEqual(
+      seen.map(stage => ORDER.indexOf(stage)).sort((a, b) => a - b),
+    )
+  })
+
+  test('error: a byte budget nothing can reach says how far it got in bytes', () => {
+    expect(() => fitBytes(50)).toThrow(
+      /^the conversation does not fit the request body: about \d+ bytes are left after every reduction and 50 are allowed$/,
     )
   })
 })

@@ -261,7 +261,7 @@ export function askerOf(
         response = await send()
       }
 
-      return replyFrom(route, response, credentials)
+      return replyFrom(route, response, credentials, questions)
     } catch (error) {
       const reason =
         attempt.failure() ??

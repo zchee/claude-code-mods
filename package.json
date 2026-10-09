@@ -21,6 +21,7 @@
   "type": "module",
   "scripts": {
     "check": "pnpm run validate && pnpm run typecheck && pnpm run test",
+    "live:decision-compaction": "bun scripts/decision-compaction-live.ts",
     "test": "bash scripts/each-mod.bash claude plugin test",
     "typecheck": "tsc -p mods",
     "types:sync": "bash scripts/sync-types.bash",

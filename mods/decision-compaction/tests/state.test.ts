@@ -7,7 +7,6 @@ import {
   stateWithin,
   goalOf,
   headOf,
-  isPinnedIndex,
   pairCalls,
 } from '../hooks/state'
 import type { CallNote, Fitted, Stage } from '../hooks/state'
@@ -52,15 +51,6 @@ describe('headOf', () => {
 })
 
 describe('pairCalls', () => {
-  test('success: the first and the newest messages are pinned', () => {
-    expect(isPinnedIndex(0, 11, 2)).toBe(true)
-    expect(isPinnedIndex(1, 11, 2)).toBe(false)
-    expect(isPinnedIndex(8, 11, 2)).toBe(false)
-    expect(isPinnedIndex(9, 11, 2)).toBe(true)
-    expect(isPinnedIndex(10, 11, 2)).toBe(true)
-    expect(isPinnedIndex(5, 11, 0)).toBe(false)
-  })
-
   test('success: calls are paired by tool_use_id and numbered in order', () => {
     const calls = pairCalls(sessionOf(), 2)
 

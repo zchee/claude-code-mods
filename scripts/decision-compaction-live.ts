@@ -9,8 +9,8 @@ import type { HttpResponse } from 'claude-code'
 import {
   credentialsFor,
   credentialsOf,
-  ENV_NAMES,
   exchangeOf,
+  messageOf,
   missingOf,
   PROVIDERS,
   redacted,
@@ -19,7 +19,6 @@ import {
 } from '../mods/decision-compaction/hooks/providers'
 import type {
   Credentials,
-  Environment,
   ProviderName,
 } from '../mods/decision-compaction/hooks/providers'
 import { choiceOf, noulOf } from '../mods/decision-compaction/hooks/systemone'
@@ -60,16 +59,6 @@ const QUESTIONS: Questions = {
 
 type Verdict = { line: string; failed: boolean }
 
-function environmentFromProcess(): Environment {
-  const environment: Environment = {}
-
-  for (const name of Object.values(ENV_NAMES)) {
-    environment[name] = process.env[name]
-  }
-
-  return environment
-}
-
 async function probe(
   provider: ProviderName,
   credentials: Credentials,
@@ -83,9 +72,8 @@ async function probe(
     }
   }
 
-  const route = routeOf(provider)
-
   try {
+    const route = routeOf(provider)
     // Only this provider's own credential goes into its request.
     const exchange = exchangeOf(
       route,
@@ -122,7 +110,7 @@ async function probe(
       failed: false,
     }
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = messageOf(error)
 
     return {
       line: `FAIL ${provider}: ${reason.replace(/\s+/g, ' ').trim()}`,
@@ -131,7 +119,7 @@ async function probe(
   }
 }
 
-const credentials = credentialsOf({}, environmentFromProcess())
+const credentials = credentialsOf({}, process.env)
 const verdicts = await Promise.all(
   PROVIDERS.map(provider => probe(provider, credentials)),
 )

@@ -17,6 +17,7 @@ import {
   assertConfigured,
   bytesBesideOf,
   limitsOf,
+  messageOf,
   routeOf,
   wireOf,
 } from './providers'
@@ -54,10 +55,9 @@ export type Result = {
  *
  * The state is fitted once, against the configured provider's limits and
  * wire format, a cap on the body in bytes included, and every request that
- * asks about a call then goes over one
- * route: the configured one, or the one the provider decision picked. A
- * route whose wire format carries the state differently is held to the
- * state's size in that format. A failure
+ * asks about a call then goes over one route: the configured one, or the
+ * one the provider decision picked. A route whose wire format carries the
+ * state differently is held to the state's size in that format. A failure
  * anywhere throws; the caller falls back to the built-in summary.
  *
  * Everything sent to a provider, the routing question included, is sent
@@ -169,7 +169,7 @@ export async function run(job: Job): Promise<Result> {
 
             batchesOf(unpinned, tokens, budget, wireOf(route))
           } catch (error) {
-            return error instanceof Error ? error.message : String(error)
+            return messageOf(error)
           }
 
           return undefined

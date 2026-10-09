@@ -1,12 +1,7 @@
 import type { HttpInit, HttpResponse } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
-import {
-  askerOf,
-  attemptOf,
-  BACKOFF_MS,
-  COMPACTION_DEADLINE_MS,
-} from '../hooks/ask'
+import { askerOf, attemptOf } from '../hooks/ask'
 import { routeOf } from '../hooks/providers'
 import type { Credentials, Route } from '../hooks/providers'
 import { listenersOf } from './fixtures'
@@ -164,11 +159,6 @@ async function quiet(): Promise<void> {
 }
 
 describe('askerOf', () => {
-  test('success: the backoff stays under two seconds in all', () => {
-    expect(BACKOFF_MS).toEqual([400, 1200])
-    expect(BACKOFF_MS[0] + BACKOFF_MS[1] <= 2000).toBe(true)
-  })
-
   const retried: Record<string, { statuses: number[]; pauses: number[] }> = {
     'success: a first answer needs no wait': { statuses: [200], pauses: [] },
     'success: a 429 is retried once after the first wait': {
@@ -197,7 +187,7 @@ describe('askerOf', () => {
       expect(
         world.timers.map(timer => [timer.ms, timer.isCancelled]),
         'one deadline for the whole attempt, still armed while it is open',
-      ).toEqual([[COMPACTION_DEADLINE_MS, false]])
+      ).toEqual([[30_000, false]])
 
       attempt.close()
 
@@ -290,10 +280,6 @@ describe('askerOf', () => {
 })
 
 describe('one compaction, one bound', () => {
-  test('success: the bound is thirty seconds', () => {
-    expect(COMPACTION_DEADLINE_MS).toBe(30_000)
-  })
-
   test('success: every request of an attempt runs under the one deadline armed for it', async () => {
     const world = portsOf([200, 429, 200, 200])
     const { attempt, ask } = askingOn(world)

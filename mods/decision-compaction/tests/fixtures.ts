@@ -77,7 +77,7 @@ export const SUMMARY: SessionMessage = {
 /**
  * One question as a request body carries it.
  */
-export type AskedQuestion = {
+type AskedQuestion = {
   type: string
   instructions: string
   criteria?: Record<string, unknown>
@@ -88,7 +88,7 @@ export type AskedQuestion = {
  * form is read back into the System One shape, so that a test asks the same
  * of every provider; `body` keeps it as it was sent.
  */
-export type Seen = {
+type Seen = {
   url: string
   provider: ProviderName
   model: string
@@ -190,7 +190,7 @@ export type World = {
  * it ran to its end. A wait whose dispatch is aborted is dropped by the
  * clock and never ends.
  */
-export type Wait = { ms: number; hasEnded: boolean }
+type Wait = { ms: number; hasEnded: boolean }
 
 /**
  * The test's `on` as `mock.clock` is handed it: the same registrar, but the
@@ -234,20 +234,16 @@ const DECISIONS_QUESTION_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const RESELLER_QUESTIONS = 8
 const RESELLER_BYTES = 32_768
 
-function jsonResponse(status: number, payload: unknown): HttpResponse {
+/**
+ * A response with a JSON body, for a test's `intercept`.
+ */
+export function responseOf(status: number, payload: unknown): HttpResponse {
   return {
     status,
     ok: status >= 200 && status < 300,
     headers: { 'content-type': 'application/json' },
     text: JSON.stringify(payload),
   }
-}
-
-/**
- * A response with a JSON body, for a test's `intercept`.
- */
-export function responseOf(status: number, payload: unknown): HttpResponse {
-  return jsonResponse(status, payload)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -482,7 +478,7 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
 
   // The shapes below follow what each provider answered when it was probed.
   if (seen.provider === 'openai') {
-    return jsonResponse(200, {
+    return responseOf(200, {
       model: seen.model,
       answers: Object.entries(seen.questions).map(([name, question]) => {
         const said = answer(name, question, seen)
@@ -507,7 +503,7 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
   }
 
   if (seen.provider === 'decisions-api-dev') {
-    return jsonResponse(200, {
+    return responseOf(200, {
       code: 0,
       message: 'ok',
       data: {
@@ -517,7 +513,7 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
   }
 
   if (seen.provider === 'decisionapi-net') {
-    return jsonResponse(200, {
+    return responseOf(200, {
       code: 0,
       message: 'ok',
       data: { result: { answers, usage, elapsedMs: 1448 }, creditsUsed: 1 },
@@ -525,15 +521,15 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
   }
 
   if (seen.provider === 'codiv') {
-    return jsonResponse(200, { model: 'openjev-0.1', answers, usage })
+    return responseOf(200, { model: 'openjev-0.1', answers, usage })
   }
 
   if (seen.provider === 'perplexity') {
-    return jsonResponse(200, { model: seen.model, answers, usage })
+    return responseOf(200, { model: seen.model, answers, usage })
   }
 
   if (seen.provider === 'cloudflare') {
-    return jsonResponse(200, {
+    return responseOf(200, {
       result: { model: seen.model, answers, usage },
       success: true,
       errors: [],
@@ -542,7 +538,7 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
   }
 
   if (seen.provider === 'openrouter') {
-    return jsonResponse(200, {
+    return responseOf(200, {
       id: 'gen-dec-test',
       model: 'typesafe/jev-1.13',
       provider: 'TypeSafe',
@@ -551,7 +547,7 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
     })
   }
 
-  return jsonResponse(200, { model: 'jev-1.13.0', answers, usage })
+  return responseOf(200, { model: 'jev-1.13.0', answers, usage })
 }
 
 /**
@@ -651,7 +647,7 @@ export function worldOf(on: On, setup: Setup = {}): World {
     if (typeof seen === 'string') {
       world.problems.push(seen)
 
-      return { value: jsonResponse(422, { error: { message: seen } }) }
+      return { value: responseOf(422, { error: { message: seen } }) }
     }
 
     world.requests.push(seen)

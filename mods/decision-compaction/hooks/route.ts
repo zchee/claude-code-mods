@@ -5,6 +5,7 @@ import {
   briefOf,
   familyOf,
   gatewayOf,
+  messageOf,
   missingOf,
   modelsOf,
 } from './providers'
@@ -17,7 +18,7 @@ import type { ChoiceQuestion } from './systemone'
  * A route the decision may pick: the name it is offered under and what is
  * documented about the model behind it.
  */
-export type Candidate = {
+type Candidate = {
   key: string
   route: Route
   about: string
@@ -43,12 +44,12 @@ export type Profile = {
  * Says why the fitted state and its questions do not fit a route's limits,
  * or nothing when they do.
  */
-export type SizeCheck = (route: Route) => string | undefined
+type SizeCheck = (route: Route) => string | undefined
 
 /**
  * The route to use and one line saying how it was arrived at.
  */
-export type Routed = {
+type Routed = {
   route: Route
   why: string
 }
@@ -56,7 +57,7 @@ export type Routed = {
 /**
  * The id of the one routing question.
  */
-export const ROUTE_QUESTION = 'route'
+const ROUTE_QUESTION = 'route'
 
 /**
  * How many tools the profile names; the rest are counted together.
@@ -292,7 +293,7 @@ export function profileOf(
  * @param candidates the routes on offer, two or more
  * @returns the `choice` question
  */
-export function routeQuestionOf(
+function routeQuestionOf(
   candidates: readonly Candidate[],
 ): ChoiceQuestion {
   return {
@@ -414,10 +415,7 @@ export async function chooseRoute(
   } catch (error) {
     // The reason may quote a provider's text, and it reaches the report
     // line, so it is quoted like any other: redacted and on one short line.
-    const reason = briefOf(
-      error instanceof Error ? error.message : String(error),
-      credentials,
-    )
+    const reason = briefOf(messageOf(error), credentials)
 
     return {
       route: configured,

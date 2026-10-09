@@ -1,7 +1,7 @@
 /**
  * What the `turn.complete` trigger remembers between turns.
  */
-export type Arm = {
+type Arm = {
   /**
    * The usage the last requested compaction left, while that is still at or
    * above the threshold: the level the next request has to rise from.
@@ -19,7 +19,7 @@ export type Arm = {
  * How far usage has to rise above the floor before another compaction is
  * requested, in points of the context window.
  */
-export const REARM_POINTS = 10
+const REARM_POINTS = 10
 
 /**
  * A trigger that has requested nothing yet.

@@ -4,14 +4,9 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   batchesOf,
   budgetOf,
-  charsOf,
   compact,
-  CONCURRENT_REQUESTS,
   decide,
   demandOf,
-  LIMIT_SHARE,
-  MAX_REQUESTS,
-  MIN_CALLS_PER_REQUEST,
   questionsOf,
   rebuild,
   reductionOf,
@@ -80,13 +75,6 @@ describe('questionsOf', () => {
 })
 
 describe('demandOf', () => {
-  test('success: the constants are the documented ones', () => {
-    expect(MIN_CALLS_PER_REQUEST).toBe(16)
-    expect(MAX_REQUESTS).toBe(16)
-    expect(CONCURRENT_REQUESTS).toBe(3)
-    expect(LIMIT_SHARE).toBe(0.85)
-  })
-
   test('success: no calls need nothing', () => {
     expect(demandOf([], BARE)).toEqual({
       longestQuestion: 0,
@@ -761,7 +749,7 @@ describe('sizes', () => {
       toolResults: [{ tool_use_id: 'u0', text: 'four', isError: false }],
     }
 
-    expect(charsOf(message)).toBe(3 + '{"a":1}'.length + 4)
+    expect(untouched([message], []).charsBefore).toBe(3 + '{"a":1}'.length + 4)
   })
 
   test('success: the reduction is the share of characters removed', () => {
@@ -827,6 +815,21 @@ describe('compact', () => {
     return { messages, calls, fitted }
   }
 
+  const SETTINGS = {
+    budget: { stateTokens: 25_000, requestTokens: 30_000 },
+    wire: BARE,
+    keepThreshold: 0.5,
+    truncateHeadChars: 300,
+  }
+
+  // Lets everything an answer sets off run: reading the answer and sending
+  // the next request are a few promise turns apart.
+  const quiet = async () => {
+    for (let turn = 0; turn < 20; turn++) {
+      await Promise.resolve()
+    }
+  }
+
   test('success: every batch is asked against the same whole state and the answers are merged', async () => {
     const { messages, calls, fitted } = prepared(2)
     const { ask, asked } = fakeAsk(
@@ -838,10 +841,8 @@ describe('compact', () => {
       ],
     )
     const outcome = await compact(messages, calls, fitted, ask, {
-      budget: { stateTokens: 25_000, requestTokens: 30_000, questions: 2 },
-      wire: BARE,
-      keepThreshold: 0.5,
-      truncateHeadChars: 300,
+      ...SETTINGS,
+      budget: { ...SETTINGS.budget, questions: 2 },
     })
 
     expect(asked.map(request => Object.keys(request.questions))).toEqual([
@@ -883,12 +884,13 @@ describe('compact', () => {
 
   test('success: a provider that reports no usage leaves the figures absent', async () => {
     const { messages, calls, fitted } = prepared(2)
-    const outcome = await compact(messages, calls, fitted, fakeAsk({}).ask, {
-      budget: { stateTokens: 25_000, requestTokens: 30_000 },
-      wire: BARE,
-      keepThreshold: 0.5,
-      truncateHeadChars: 300,
-    })
+    const outcome = await compact(
+      messages,
+      calls,
+      fitted,
+      fakeAsk({}).ask,
+      SETTINGS,
+    )
 
     expect(outcome.requests).toBe(1)
     expect(outcome.reported).toEqual({})
@@ -900,12 +902,7 @@ describe('compact', () => {
     const { ask } = fakeAsk({ result_t2: -1 })
 
     await expect(
-      compact(messages, calls, fitted, ask, {
-        budget: { stateTokens: 25_000, requestTokens: 30_000 },
-        wire: BARE,
-        keepThreshold: 0.5,
-        truncateHeadChars: 300,
-      }),
+      compact(messages, calls, fitted, ask, SETTINGS),
     ).rejects.toThrow('no probability from 0 to 1 was answered for result_t2')
   })
 
@@ -916,19 +913,14 @@ describe('compact', () => {
       result_t2: 0.1,
       result_t3: 0.1,
     }
-    const settings = {
-      budget: { stateTokens: 25_000, requestTokens: 30_000 },
-      wire: BARE,
-      keepThreshold: 0.5,
-    }
     // The results are 5000, 4000 and 3000 characters long, and a result is
     // cut only when it is more than 120 characters longer than its head.
     const cutAll = await compact(messages, calls, fitted, fakeAsk(scores).ask, {
-      ...settings,
+      ...SETTINGS,
       truncateHeadChars: 300,
     })
     const cutTwo = await compact(messages, calls, fitted, fakeAsk(scores).ask, {
-      ...settings,
+      ...SETTINGS,
       truncateHeadChars: 2880,
     })
     const cutNone = await compact(
@@ -937,7 +929,7 @@ describe('compact', () => {
       fitted,
       fakeAsk(scores).ask,
       {
-        ...settings,
+        ...SETTINGS,
         truncateHeadChars: 4880,
       },
     )
@@ -989,10 +981,8 @@ describe('compact', () => {
       calls,
       fitted,
       settings: {
-        budget: { stateTokens: 25_000, requestTokens: 30_000, questions: 2 },
-        wire: BARE,
-        keepThreshold: 0.5,
-        truncateHeadChars: 300,
+        ...SETTINGS,
+        budget: { ...SETTINGS.budget, questions: 2 },
       },
     }
   }
@@ -1018,13 +1008,6 @@ describe('compact', () => {
       })
     }
     const running = compact(messages, calls, fitted, ask, settings)
-    // Lets everything an answer sets off run: reading the answer and
-    // sending the next request are a few promise turns apart.
-    const quiet = async () => {
-      for (let turn = 0; turn < 20; turn++) {
-        await Promise.resolve()
-      }
-    }
     const sizes: number[] = []
 
     // Answer one request at a time, oldest first, and note how many had
@@ -1098,11 +1081,6 @@ describe('compact', () => {
         )
       })
     const running = compact(messages, calls, fitted, ask, settings)
-    const quiet = async () => {
-      for (let turn = 0; turn < 20; turn++) {
-        await Promise.resolve()
-      }
-    }
 
     // The third batch answers first, then the second; the fourth goes out
     // only once one of the first three is back, and answers before the
@@ -1183,12 +1161,7 @@ describe('compact', () => {
       call_t3: 0.1,
       result_t3: 0.1,
     })
-    const outcome = await compact(messages, calls, fitted, ask, {
-      budget: { stateTokens: 25_000, requestTokens: 30_000 },
-      wire: BARE,
-      keepThreshold: 0.5,
-      truncateHeadChars: 300,
-    })
+    const outcome = await compact(messages, calls, fitted, ask, SETTINGS)
 
     expect(
       asked.map(request => Object.keys(request.questions)),
@@ -1303,11 +1276,7 @@ describe('a cap on the request body in bytes', () => {
 
   test('success: the bytes left beside the state split the calls into batches', () => {
     const calls = callsOf(9)
-    const one = Object.entries(questionsOf(calls[0] as Call)).reduce(
-      (sum, [id, question]) =>
-        sum + bytesOf(BARE.questionJsonOf(id, question)) + 1,
-      0,
-    )
+    const one = demandOf(calls.slice(0, 1), BARE).batchBytes
     const sizes = (room: number) =>
       batchesOf(
         calls,
@@ -1366,12 +1335,7 @@ describe('the bytes a body is counted at', () => {
           calls.flatMap(call => Object.entries(questionsOf(call))),
         )
         const counted =
-          bytesBesideOf(route, state) +
-          Object.entries(questions).reduce(
-            (sum, [id, question]) =>
-              sum + bytesOf(wire.questionJsonOf(id, question)) + 1,
-            0,
-          )
+          bytesBesideOf(route, state) + demandOf(calls, wire).batchBytes
         const sent = bytesOf(
           exchangeOf(route, ALL, state, questions).init.body,
         )

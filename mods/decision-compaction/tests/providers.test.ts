@@ -2,7 +2,6 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { OPENAI } from '../hooks/openai'
 import {
-  briefOf,
   credentialsFor,
   credentialsOf,
   environmentOf,
@@ -14,8 +13,6 @@ import {
   providerOf,
   REASON_CHARS,
   redacted,
-  MIN_SECRET_CHARS,
-  REDACTED,
   replyFrom,
   routeOf,
   unresolvedOf,
@@ -25,11 +22,29 @@ import type { Credentials, ProviderName, Route } from '../hooks/providers'
 import { BARE, choiceOf, noulOf } from '../hooks/systemone'
 import type { Questions } from '../hooks/systemone'
 
+/**
+ * The keys of TypeSafe, OpenRouter and Cloudflare and the Cloudflare
+ * account: with these alone any other provider is one that is not
+ * configured.
+ */
 const CREDENTIALS: Credentials = {
   typesafeApiKey: 'test-typesafe-key',
   openrouterApiKey: 'test-openrouter-key',
   cloudflareApiToken: 'test-cloudflare-token',
   cloudflareAccountId: 'test-account',
+}
+
+/**
+ * The keys of every provider, so that a test can check that none of them
+ * leaks.
+ */
+const ALL: Credentials = {
+  ...CREDENTIALS,
+  codivApiKey: 'test-codiv-key',
+  perplexityApiKey: 'test-perplexity-key',
+  decisionsApiKey: 'test-decisions-key',
+  decisionapiApiKey: 'test-decisionapi-key',
+  openaiApiKey: 'test-openai-key',
 }
 
 const QUESTIONS = { call_t1: { type: 'noul', instructions: 'Is it?' } } as const
@@ -44,6 +59,22 @@ function response(status: number, payload: unknown) {
 }
 
 const ANSWERS = { call_t1: { type: 'noul', noul: 0.25 } }
+
+/**
+ * The two questions the providers were probed with, in the order they were
+ * sent.
+ */
+const PROBED: Questions = {
+  asks_weather: {
+    type: 'noul',
+    instructions: 'Does the user ask about the weather?',
+  },
+  topic: {
+    type: 'choice',
+    instructions: 'What is the conversation about?',
+    criteria: { weather: null, cooking: null, code: null },
+  },
+}
 
 describe('exchangeOf', () => {
   const requests: Record<
@@ -108,6 +139,117 @@ describe('exchangeOf', () => {
     })
   }
 
+  const STATE = { goal: 'g', conversation: [{ at: 0, text: 'a "b"' }] }
+  const ASKED = {
+    call_t1: { type: 'noul', instructions: 'Is it?' },
+    route: {
+      type: 'choice',
+      instructions: 'Which?',
+      criteria: {
+        'codiv.openjev-latest': 'Open Jev.',
+        'openai.gpt-6-luna': null,
+      },
+    },
+  } as const
+  const bareBody = (model: string, ids = ['call_t1', 'route']) =>
+    `{"model":"${model}",` +
+    '"state":{"goal":"g","conversation":[{"at":0,"text":"a \\"b\\""}]},' +
+    `"questions":{"${ids[0]}":{"type":"noul","instructions":"Is it?"},` +
+    `"${ids[1]}":{"type":"choice","instructions":"Which?","criteria":` +
+    '{"codiv.openjev-latest":"Open Jev.","openai.gpt-6-luna":null}}}}'
+
+  const sent: Record<
+    string,
+    { route: Route; url: string; key: string; body: string }
+  > = {
+    'success: the typesafe request is the bare body at its endpoint': {
+      route: routeOf('typesafe'),
+      url: 'https://api.typesafe.ai/v1/systemone',
+      key: 'test-typesafe-key',
+      body: bareBody('jev-latest'),
+    },
+    'success: the openrouter request is the bare body at its endpoint': {
+      route: routeOf('openrouter'),
+      url: 'https://openrouter.ai/api/v1/systemone',
+      key: 'test-openrouter-key',
+      body: bareBody('~typesafe/jev-latest'),
+    },
+    'success: the cloudflare request is the bare body under the account URL': {
+      route: routeOf('cloudflare', 'clef-flash'),
+      url: 'https://api.cloudflare.com/client/v4/accounts/test-account/ai/run/@cf/cloudflare/clef-flash',
+      key: 'test-cloudflare-token',
+      body: bareBody('clef-flash'),
+    },
+    'success: codiv is sent the bare body at its endpoint': {
+      route: routeOf('codiv'),
+      url: 'https://api.codiv.ai/v1/systemone',
+      key: 'test-codiv-key',
+      body: bareBody('openjev-latest'),
+    },
+    'success: perplexity is sent the bare body with its own decider': {
+      route: routeOf('perplexity'),
+      url: 'https://api.perplexity.ai/v1/decisions',
+      key: 'test-perplexity-key',
+      body: bareBody('pplx-decider-v1.1-27b'),
+    },
+    'success: decisions-api.dev is sent the bare body with each question named by its place':
+      {
+        route: routeOf('decisions-api-dev'),
+        url: 'https://decisions-api.dev/v1/systemone',
+        key: 'test-decisions-key',
+        body: bareBody('jev-latest', ['q0', 'q1']),
+      },
+    'success: decisionapi.net is sent the bare body for jev': {
+      route: routeOf('decisionapi-net'),
+      url: 'https://decisionapi.net/v1/systemone',
+      key: 'test-decisionapi-key',
+      body: bareBody('jev-latest'),
+    },
+    'success: openai is sent the state as text and the questions as a list': {
+      route: routeOf('openai'),
+      url: 'https://api.openai.com/v1/decisions',
+      key: 'test-openai-key',
+      body:
+        '{"model":"gpt-6-luna",' +
+        '"input":"{\\"goal\\":\\"g\\",\\"conversation\\":' +
+        '[{\\"at\\":0,\\"text\\":\\"a \\\\\\"b\\\\\\"\\"}]}",' +
+        '"questions":[' +
+        '{"name":"call_t1","type":"predicate","instructions":"Is it?"},' +
+        '{"name":"route","type":"choice","instructions":"Which?",' +
+        '"choices":[{"value":"codiv.openjev-latest","description":"Open Jev."},' +
+        '{"value":"openai.gpt-6-luna"}]}]}',
+    },
+  }
+
+  for (const [name, { route, url, key, body }] of Object.entries(sent)) {
+    test(name, () => {
+      const exchange = exchangeOf(route, ALL, STATE, ASKED)
+
+      expect(exchange).toEqual({
+        url,
+        init: {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${key}`,
+            'content-type': 'application/json',
+          },
+          body,
+        },
+      })
+
+      for (const secret of Object.values(ALL)) {
+        if (secret !== 'test-account') {
+          const sent = `${exchange.url} ${exchange.init.body}`
+
+          expect(
+            sent.includes(secret),
+            `${secret} is in the URL or the body`,
+          ).toBe(false)
+        }
+      }
+    })
+  }
+
   const unconfigured: Record<
     string,
     { route: Route; has: Credentials; message: string }
@@ -133,6 +275,31 @@ describe('exchangeOf', () => {
       has: { typesafeApiKey: 'test-typesafe-key' },
       message: 'openrouter is not configured: OPENROUTER_API_KEY is unset',
     },
+    'error: codiv without a key names the variable to set': {
+      route: routeOf('codiv'),
+      has: CREDENTIALS,
+      message: 'codiv is not configured: CODIV_API_KEY is unset',
+    },
+    'error: perplexity without a key names the variable to set': {
+      route: routeOf('perplexity'),
+      has: CREDENTIALS,
+      message: 'perplexity is not configured: PERPLEXITY_API_KEY is unset',
+    },
+    'error: decisions-api.dev without a key names the variable to set': {
+      route: routeOf('decisions-api-dev'),
+      has: CREDENTIALS,
+      message: 'decisions-api-dev is not configured: DECISIONS_API_KEY is unset',
+    },
+    'error: decisionapi.net without a key names the variable to set': {
+      route: routeOf('decisionapi-net'),
+      has: CREDENTIALS,
+      message: 'decisionapi-net is not configured: DECISIONAPI_API_KEY is unset',
+    },
+    'error: openai without a key names the variable to set': {
+      route: routeOf('openai'),
+      has: CREDENTIALS,
+      message: 'openai is not configured: OPENAI_API_KEY is unset',
+    },
   }
 
   for (const [name, { route, has, message }] of Object.entries(unconfigured)) {
@@ -140,60 +307,22 @@ describe('exchangeOf', () => {
       expect(() => exchangeOf(route, has, 's', QUESTIONS)).toThrow({ message })
     })
   }
-})
 
-describe('exchangeOf, byte for byte', () => {
-  const STATE = {
-    context: 'c',
-    goal: 'g',
-    conversation: [{ at: 0, role: 'user', text: 'hi "there"' }],
-  }
-  const ASKED = {
-    call_t1: { type: 'noul', instructions: 'Is it?' },
-    route: {
-      type: 'choice',
-      instructions: 'Which?',
-      criteria: { 'typesafe.jev-latest': 'Jev.', 'cloudflare.clef': null },
-    },
-  } as const
-  const bodyFor = (model: string) =>
-    `{"model":"${model}",` +
-    '"state":{"context":"c","goal":"g","conversation":' +
-    '[{"at":0,"role":"user","text":"hi \\"there\\""}]},' +
-    '"questions":{"call_t1":{"type":"noul","instructions":"Is it?"},' +
-    '"route":{"type":"choice","instructions":"Which?","criteria":' +
-    '{"typesafe.jev-latest":"Jev.","cloudflare.clef":null}}}}'
+  test('success: only openai and decisions-api.dev write the body their own way', () => {
+    expect(wireOf(routeOf('openai'))).toBe(OPENAI)
+    expect(wireOf(routeOf('decisions-api-dev'))).not.toBe(BARE)
 
-  const sent: Record<string, { route: Route; url: string; bearer: string }> = {
-    'success: the typesafe request is the bare body at its endpoint': {
-      route: routeOf('typesafe'),
-      url: 'https://api.typesafe.ai/v1/systemone',
-      bearer: 'Bearer test-typesafe-key',
-    },
-    'success: the openrouter request is the bare body at its endpoint': {
-      route: routeOf('openrouter'),
-      url: 'https://openrouter.ai/api/v1/systemone',
-      bearer: 'Bearer test-openrouter-key',
-    },
-    'success: the cloudflare request is the bare body under the account URL': {
-      route: routeOf('cloudflare', 'clef-flash'),
-      url: 'https://api.cloudflare.com/client/v4/accounts/test-account/ai/run/@cf/cloudflare/clef-flash',
-      bearer: 'Bearer test-cloudflare-token',
-    },
-  }
-
-  for (const [name, { route, url, bearer }] of Object.entries(sent)) {
-    test(name, () => {
-      expect(exchangeOf(route, CREDENTIALS, STATE, ASKED)).toEqual({
-        url,
-        init: {
-          method: 'POST',
-          headers: { authorization: bearer, 'content-type': 'application/json' },
-          body: bodyFor(route.model),
-        },
-      })
-    })
-  }
+    for (const provider of [
+      'typesafe',
+      'cloudflare',
+      'openrouter',
+      'codiv',
+      'perplexity',
+      'decisionapi-net',
+    ] as const) {
+      expect(wireOf(routeOf(provider)), provider).toBe(BARE)
+    }
+  })
 })
 
 describe('routeOf', () => {
@@ -233,6 +362,54 @@ describe('limits', () => {
       maxQuestions: 64,
     })
   })
+
+  const limits: Record<string, { provider: ProviderName; expected: object }> =
+    {
+      'success: codiv holds its window with no question cap': {
+        provider: 'codiv',
+        expected: { maxStateTokens: 60000, maxRequestTokens: 65536 },
+      },
+      'success: perplexity holds its window and 128 questions': {
+        provider: 'perplexity',
+        expected: {
+          maxStateTokens: 262143,
+          maxRequestTokens: 262143,
+          maxQuestions: 128,
+        },
+      },
+      "success: decisions-api.dev holds 8 questions within 32 KiB and Jev's window": {
+        provider: 'decisions-api-dev',
+        expected: {
+          maxStateTokens: 32000,
+          maxRequestTokens: 64000,
+          maxQuestions: 8,
+          maxRequestBytes: 32768,
+        },
+      },
+      "success: decisionapi.net holds 8 questions within 32 KiB and Jev's window": {
+        provider: 'decisionapi-net',
+        expected: {
+          maxStateTokens: 32000,
+          maxRequestTokens: 64000,
+          maxQuestions: 8,
+          maxRequestBytes: 32768,
+        },
+      },
+      'success: openai documents none and is held to the fallback': {
+        provider: 'openai',
+        expected: {
+          maxStateTokens: 32000,
+          maxRequestTokens: 32000,
+          maxQuestions: 64,
+        },
+      },
+    }
+
+  for (const [name, { provider, expected }] of Object.entries(limits)) {
+    test(name, () => {
+      expect(limitsOf(routeOf(provider))).toEqual(expected)
+    })
+  }
 
   const gateway: Record<string, { model: string; maxQuestions?: number }> = {
     'success: clef over openrouter takes at most 64 questions': {
@@ -274,6 +451,14 @@ describe('limits', () => {
     expect(modelsOf('openrouter')).toEqual(['~typesafe/jev-latest'])
   })
 
+  test('success: each is offered with its default model', () => {
+    expect(modelsOf('codiv')).toEqual(['openjev-latest'])
+    expect(modelsOf('perplexity')).toEqual(['pplx-decider-v1.1-27b'])
+    expect(modelsOf('decisions-api-dev')).toEqual(['jev-latest'])
+    expect(modelsOf('decisionapi-net')).toEqual(['jev-latest'])
+    expect(modelsOf('openai')).toEqual(['gpt-6-luna'])
+  })
+
   test('success: only a listed name is a provider', () => {
     expect(providerOf('cloudflare')).toBe('cloudflare')
     expect(providerOf('openai')).toBe('openai')
@@ -281,6 +466,18 @@ describe('limits', () => {
     expect(providerOf('typellm')).toBeUndefined()
     expect(providerOf('nope')).toBeUndefined()
     expect(providerOf(undefined)).toBeUndefined()
+  })
+
+  test('success: each is named by the provider option', () => {
+    for (const name of [
+      'codiv',
+      'perplexity',
+      'decisions-api-dev',
+      'decisionapi-net',
+      'openai',
+    ]) {
+      expect(providerOf(name)).toBe(name)
+    }
   })
 })
 
@@ -300,7 +497,7 @@ describe('replyFrom', () => {
     expect(reply).toEqual({
       model: 'jev-1.13.0',
       answers: ANSWERS,
-      usage: { input_tokens: 296, output_tokens: 20 },
+      usage: { input_tokens: 296 },
     })
   })
 
@@ -318,14 +515,9 @@ describe('replyFrom', () => {
       QUESTIONS,
     )
 
-    expect(reply.usage).toEqual({
-      cost: 0.000019992,
-      input_tokens: 476,
-      output_tokens: 70,
-    })
+    expect(reply.usage).toEqual({ cost: 0.000019992, input_tokens: 476 })
     expect(reply.answers).toEqual(ANSWERS)
   })
-
   test('success: a cloudflare envelope is unwrapped', () => {
     const reply = replyFrom(
       routeOf('cloudflare'),
@@ -346,7 +538,7 @@ describe('replyFrom', () => {
     expect(reply).toEqual({
       model: 'clef',
       answers: ANSWERS,
-      usage: { input_tokens: 9, output_tokens: 1 },
+      usage: { input_tokens: 9 },
     })
   })
 
@@ -360,6 +552,149 @@ describe('replyFrom', () => {
 
     expect(reply).toEqual({ answers: ANSWERS, usage: {} })
   })
+
+  const recorded: Record<
+    string,
+    { provider: ProviderName; payload: unknown; expected: object }
+  > = {
+    'success: the recorded perplexity body is the reply': {
+      provider: 'perplexity',
+      payload: {
+        model: 'pplx-decider-v1.1-27b',
+        answers: {
+          asks_weather: { type: 'noul', noul: 0.9997546075625011 },
+          topic: {
+            type: 'choice',
+            choice: 'weather',
+            confidence: 0.9999119392823574,
+            probabilities: {
+              weather: 0.99994,
+              cooking: 0.00002,
+              code: 0.00004,
+            },
+          },
+        },
+        usage: { input_tokens: 286, output_tokens: 2 },
+      },
+      expected: {
+        model: 'pplx-decider-v1.1-27b',
+        usage: { input_tokens: 286 },
+      },
+    },
+    'success: the recorded codiv body is the reply': {
+      provider: 'codiv',
+      payload: {
+        model: 'openjev-0.1',
+        answers: {
+          asks_weather: { type: 'noul', noul: 0.9974021261033258 },
+          topic: {
+            type: 'choice',
+            choice: 'weather',
+            confidence: 0.9986455718188082,
+          },
+        },
+        usage: { input_tokens: 173, output_tokens: 0 },
+      },
+      expected: {
+        model: 'openjev-0.1',
+        usage: { input_tokens: 173 },
+      },
+    },
+    'success: the recorded decisionapi.net envelope is unwrapped': {
+      provider: 'decisionapi-net',
+      payload: {
+        code: 0,
+        message: 'ok',
+        data: {
+          result: {
+            answers: {
+              asks_weather: { type: 'noul', noul: 0.99 },
+              topic: {
+                type: 'choice',
+                choice: 'weather',
+                probabilities: { code: 0, cooking: 0, weather: 1 },
+                confidence: 1,
+              },
+            },
+            usage: { input_tokens: 405, output_tokens: 57 },
+            elapsedMs: 1448,
+          },
+          creditsUsed: 1,
+        },
+      },
+      expected: { usage: { input_tokens: 405 } },
+    },
+    'success: a decisions-api.dev envelope is unwrapped with its model': {
+      provider: 'decisions-api-dev',
+      payload: {
+        code: 0,
+        message: 'ok',
+        data: {
+          result: {
+            model: 'typesafe/jev-1.13-20260917',
+            answers: {
+              q0: { type: 'noul', noul: 0.99 },
+              q1: { type: 'choice', choice: 'weather', confidence: 1 },
+            },
+            usage: { input_tokens: 405, output_tokens: 57 },
+          },
+        },
+      },
+      expected: {
+        model: 'typesafe/jev-1.13-20260917',
+        usage: { input_tokens: 405 },
+      },
+    },
+    'success: the recorded openai answer list is the reply': {
+      provider: 'openai',
+      payload: {
+        model: 'gpt-6-luna',
+        answers: [
+          { type: 'predicate', name: 'asks_weather', probability: 1.0 },
+          {
+            type: 'choice',
+            name: 'topic',
+            choice: 'weather',
+            probabilities: [
+              { value: 'weather', probability: 1.0 },
+              { value: 'cooking', probability: 0.0 },
+            ],
+            confidence: 1.0,
+          },
+        ],
+        usage: {
+          input_tokens: 318,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: 0,
+          total_tokens: 318,
+        },
+      },
+      expected: {
+        model: 'gpt-6-luna',
+        usage: { input_tokens: 318 },
+      },
+    },
+  }
+
+  for (const [name, { provider, payload, expected }] of Object.entries(
+    recorded,
+  )) {
+    test(name, () => {
+      const reply = replyFrom(
+        routeOf(provider),
+        response(200, payload),
+        ALL,
+        PROBED,
+      )
+
+      expect(reply).toMatchObject(expected)
+      expect('model' in reply).toBe('model' in expected)
+      expect(noulOf(reply, 'asks_weather') > 0.9).toBe(true)
+      expect(choiceOf(reply, 'topic', ['weather', 'cooking', 'code'])).toEqual(
+        expect.objectContaining({ choice: 'weather' }),
+      )
+    })
+  }
 
   const failures: Record<
     string,
@@ -567,6 +902,74 @@ describe('replyFrom', () => {
         'may hold (65536): the state was probably cut short, so the answers ' +
         'decide nothing',
     },
+    'error: an envelope reporting failure is quoted with its message': {
+      route: routeOf('decisions-api-dev'),
+      status: 200,
+      payload: { code: 1, message: 'insufficient credits', data: null },
+      message:
+        'decisions-api-dev: the response envelope reports failure: ' +
+        'insufficient credits',
+    },
+    'error: an envelope without a result is a failure': {
+      route: routeOf('decisionapi-net'),
+      status: 200,
+      payload: { code: 0, message: 'ok', data: {} },
+      message: 'decisionapi-net: the response envelope reports failure: ok',
+    },
+    'error: an envelope with no code at all is a failure': {
+      route: routeOf('decisionapi-net'),
+      status: 200,
+      payload: { answers: {} },
+      message:
+        'decisionapi-net: the response envelope reports failure: ' +
+        'no reason given',
+    },
+    'error: an envelope that repeats the key is quoted without it': {
+      route: routeOf('decisions-api-dev'),
+      status: 200,
+      payload: { code: 401, message: 'key test-decisions-key is revoked' },
+      message:
+        'decisions-api-dev: the response envelope reports failure: ' +
+        'key [redacted] is revoked',
+    },
+    'error: an envelope reason on a failed status is quoted': {
+      route: routeOf('decisionapi-net'),
+      status: 402,
+      payload: { code: 1, message: 'insufficient credits' },
+      message: 'decisionapi-net answered HTTP 402: insufficient credits',
+    },
+    'error: an openai answer of an unknown type is refused, naming the type': {
+      route: routeOf('openai'),
+      status: 200,
+      payload: {
+        answers: [{ type: 'score', name: 'asks_weather' }],
+        usage: {},
+      },
+      message:
+        'openai: answers[0].type is "score", neither predicate nor choice',
+    },
+    'error: an openai error body is quoted by its message': {
+      route: routeOf('openai'),
+      status: 400,
+      payload: {
+        error: {
+          message: "Invalid type for 'questions': expected an array",
+          type: 'invalid_request_error',
+          param: 'questions',
+        },
+      },
+      message:
+        "openai answered HTTP 400: Invalid type for 'questions': " +
+        'expected an array',
+    },
+    'error: perplexity refusing a model is quoted': {
+      route: routeOf('perplexity'),
+      status: 400,
+      payload: {
+        error: { code: null, message: "Invalid model 'jev-latest'." },
+      },
+      message: "perplexity answered HTTP 400: Invalid model 'jev-latest'.",
+    },
   }
 
   for (const [name, { route, status, payload, message }] of Object.entries(
@@ -574,7 +977,7 @@ describe('replyFrom', () => {
   )) {
     test(name, () => {
       expect(() =>
-        replyFrom(route, response(status, payload), CREDENTIALS, QUESTIONS),
+        replyFrom(route, response(status, payload), ALL, PROBED),
       ).toThrow({ message })
     })
   }
@@ -632,6 +1035,184 @@ describe('replyFrom', () => {
 
     expect(message).toBe(`typesafe answered HTTP 422: ${'x'.repeat(159)}…`)
   })
+
+  /**
+   * What `replyFrom` threw for a response, as a string.
+   */
+  function failureOf(provider: ProviderName, status: number, payload: unknown) {
+    try {
+      replyFrom(routeOf(provider), response(status, payload), ALL, PROBED)
+    } catch (error) {
+      return (error as Error).message
+    }
+
+    return 'no failure'
+  }
+
+  /**
+   * Checks a message quotes a vendor's text the way every message must: on
+   * one line no longer than the limit after the words that lead it, with no
+   * control character and no key.
+   */
+  function expectQuotable(message: string, lead: string) {
+    expect(message.startsWith(lead), message).toBe(true)
+    expect(
+      message.length <= lead.length + REASON_CHARS + 1,
+      `${message.length} characters: ${message}`,
+    ).toBe(true)
+    expect(/[\u0000-\u001f\u007f-\u009f]/.test(message), message).toBe(false)
+
+    for (const key of Object.values(ALL)) {
+      if (key !== ALL.cloudflareAccountId) {
+        expect(message.includes(key), message).toBe(false)
+      }
+    }
+  }
+
+  const echoed = `${ALL.openaiApiKey}\n\u001b[31m\u009b${'r'.repeat(5000)}`
+
+  test('error: a 5,000-character refusal name with control characters and a key is not quoted', () => {
+    const message = failureOf('openai', 200, {
+      answers: [{ type: 'refusal', name: echoed, refusal: 'no' }],
+    })
+
+    expectQuotable(message, 'openai: ')
+    expect(message).toBe(
+      'openai: answers[0].name is a value of 5030 characters, which was ' +
+        'not asked',
+    )
+  })
+
+  test('error: a short type with a key in it is quoted whole and then redacted', () => {
+    const message = failureOf('openai', 200, {
+      answers: [{ type: `x ${ALL.openaiApiKey}`, name: 'asks_weather' }],
+    })
+
+    expectQuotable(message, 'openai: ')
+    expect(message).toBe(
+      'openai: answers[0].type is "x [redacted]", neither predicate nor ' +
+        'choice',
+    )
+  })
+
+  test('error: an envelope message with control characters and a key is one short redacted line', () => {
+    const message = failureOf('decisionapi-net', 200, {
+      code: 1,
+      message: echoed,
+    })
+
+    expectQuotable(message, 'decisionapi-net: ')
+    expect(
+      message.startsWith(
+        'decisionapi-net: the response envelope reports failure: ' +
+          '[redacted] [31m rrr',
+      ),
+    ).toBe(true)
+    expect(message.endsWith('r…')).toBe(true)
+  })
+
+  test('error: an error body with control characters and a key is one short redacted line', () => {
+    const message = failureOf('openai', 400, { error: { message: echoed } })
+
+    expectQuotable(message, 'openai answered HTTP 400: ')
+    expect(
+      message.startsWith('openai answered HTTP 400: [redacted] [31m rrr'),
+    ).toBe(true)
+  })
+
+  /**
+   * A response body inside the envelope the two Decisions resellers answer
+   * with.
+   */
+  const enveloped = (result: object) => ({
+    code: 0,
+    message: 'ok',
+    data: { result },
+  })
+  const bare = (body: object) => body
+
+  const windows: Record<
+    string,
+    {
+      provider: ProviderName
+      window: number
+      answers: object
+      wrap: (body: object) => object
+    }
+  > = {
+    'error: codiv counting its whole window is taken as a cut state': {
+      provider: 'codiv',
+      window: 65536,
+      answers: ANSWERS,
+      wrap: bare,
+    },
+    'error: perplexity counting its whole window is taken as a cut state': {
+      provider: 'perplexity',
+      window: 262143,
+      answers: ANSWERS,
+      wrap: bare,
+    },
+    "error: decisions-api.dev counting Jev's whole window is taken as a cut state":
+      {
+        provider: 'decisions-api-dev',
+        window: 64000,
+        answers: { q0: ANSWERS.call_t1 },
+        wrap: enveloped,
+      },
+    "error: decisionapi.net counting Jev's whole window is taken as a cut state":
+      {
+        provider: 'decisionapi-net',
+        window: 64000,
+        answers: ANSWERS,
+        wrap: enveloped,
+      },
+    'error: openai counting the fallback window is taken as a cut state': {
+      provider: 'openai',
+      window: 32000,
+      answers: [{ type: 'predicate', name: 'call_t1', probability: 0.25 }],
+      wrap: bare,
+    },
+  }
+
+  for (const [name, { provider, window, answers, wrap }] of Object.entries(
+    windows,
+  )) {
+    test(name, () => {
+      const counting = (tokens: number) =>
+        response(200, wrap({ answers, usage: { input_tokens: tokens } }))
+
+      expect(
+        replyFrom(routeOf(provider), counting(window - 1), ALL, QUESTIONS)
+          .usage,
+        'one token under the window is a reply',
+      ).toEqual({ input_tokens: window - 1 })
+      expect(() =>
+        replyFrom(routeOf(provider), counting(window), ALL, QUESTIONS),
+      ).toThrow({
+        message:
+          `${provider} counted ${window} input tokens, all that a request ` +
+          `of its may hold (${window}): the state was probably cut short, ` +
+          'so the answers decide nothing',
+      })
+    })
+  }
+
+  for (const provider of ['decisions-api-dev', 'decisionapi-net'] as const) {
+    test(`success: ${provider} counting more tokens than 32 KiB of English is not taken as a cut state`, () => {
+      // A body near the byte cap written in CJK counts about a token a
+      // character, so 9,000 tokens fit in 32 KiB and the state was read whole.
+      const answers =
+        provider === 'decisions-api-dev' ? { q0: ANSWERS.call_t1 } : ANSWERS
+      const reply = replyFrom(
+        routeOf(provider),
+        response(200, enveloped({ answers, usage: { input_tokens: 9000 } })),
+        ALL,
+        QUESTIONS,
+      )
+
+      expect(reply.usage).toEqual({ input_tokens: 9000 })
+    })
+  }
 })
 
 describe('redacted', () => {
@@ -687,14 +1268,13 @@ describe('redacted', () => {
   })
 
   test('success: a resolved value too short to be a key is not replaced where it stands', () => {
-    const credentials = { typesafeApiKey: 'ab12' }
+    const credentials = { typesafeApiKey: 'abc1234' }
 
-    expect(MIN_SECRET_CHARS).toBe(8)
-    expect(redacted('the tab12 key and ab12 here', credentials)).toBe(
-      'the tab12 key and ab12 here',
+    expect(redacted('the tabc1234 key and abc1234 here', credentials)).toBe(
+      'the tabc1234 key and abc1234 here',
     )
     expect(
-      redacted('Authorization: Bearer ab12', credentials),
+      redacted('Authorization: Bearer abc1234', credentials),
       'after the scheme it is still taken out',
     ).toBe('Authorization: [redacted]')
   })
@@ -707,7 +1287,20 @@ describe('redacted', () => {
 
   test('success: with no credential resolved a bearer token is still taken out', () => {
     expect(redacted('sent Bearer abc', {})).toBe('sent [redacted]')
-    expect(REDACTED.toLowerCase().includes('bearer')).toBe(false)
+  })
+
+  test('success: every key of every provider is taken out of a text', () => {
+    expect(
+      redacted(
+        'test-codiv-key test-perplexity-key test-decisions-key ' +
+          'test-decisionapi-key test-openai-key test-typesafe-key ' +
+          'Authorization: Bearer sk-anything',
+        ALL,
+      ),
+    ).toBe(
+      '[redacted] [redacted] [redacted] [redacted] [redacted] [redacted] ' +
+        'Authorization: [redacted]',
+    )
   })
 })
 
@@ -771,719 +1364,6 @@ describe('credentials', () => {
     ).toEqual([])
   })
 
-  const unresolved: Record<
-    string,
-    {
-      providers: ('typesafe' | 'openrouter' | 'cloudflare')[]
-      options: Record<string, string>
-      read: Record<string, string>
-      expected: string[]
-    }
-  > = {
-    'success: both cloudflare values in the environment leave nothing to look for':
-      {
-        providers: ['cloudflare'],
-        options: {},
-        read: {
-          CLOUDFLARE_API_TOKEN: 'test-cloudflare-token',
-          CLOUDFLARE_ACCOUNT_ID: 'test-account',
-        },
-        expected: [],
-      },
-    'success: a key given as an option leaves nothing to look for': {
-      providers: ['typesafe'],
-      options: { typesafeApiKey: 'test-typesafe-key' },
-      read: {},
-      expected: [],
-    },
-    'success: a provider that is not in play is not looked for': {
-      providers: ['typesafe'],
-      options: {},
-      read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
-      expected: [],
-    },
-    'success: the key of the one provider in play is named when absent': {
-      providers: ['openrouter'],
-      options: {},
-      read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
-      expected: ['OPENROUTER_API_KEY'],
-    },
-    'success: every provider in play is checked, each variable once': {
-      providers: ['typesafe', 'cloudflare', 'openrouter', 'cloudflare'],
-      options: { cloudflareAccountId: 'test-account' },
-      read: { OPENROUTER_API_KEY: 'test-openrouter-key' },
-      expected: ['TYPESAFE_API_KEY', 'CLOUDFLARE_API_TOKEN'],
-    },
-  }
-
-  for (const [name, { providers, options, read, expected }] of Object.entries(
-    unresolved,
-  )) {
-    test(name, () => {
-      expect(unresolvedOf(providers, options, read)).toEqual(expected)
-    })
-  }
-})
-
-/**
- * The keys of the five providers added after the first three, beside the
- * three that were there before.
- */
-const ADDED: Credentials = {
-  codivApiKey: 'test-codiv-key',
-  perplexityApiKey: 'test-perplexity-key',
-  decisionsApiKey: 'test-decisions-key',
-  decisionapiApiKey: 'test-decisionapi-key',
-  openaiApiKey: 'test-openai-key',
-}
-
-const ALL: Credentials = { ...CREDENTIALS, ...ADDED }
-
-const ENV_READ = { TYPESAFE_API_KEY: 'test-typesafe-key' }
-
-/**
- * The two questions the providers were probed with, in the order they were
- * sent.
- */
-const PROBED: Questions = {
-  asks_weather: {
-    type: 'noul',
-    instructions: 'Does the user ask about the weather?',
-  },
-  topic: {
-    type: 'choice',
-    instructions: 'What is the conversation about?',
-    criteria: { weather: null, cooking: null, code: null },
-  },
-}
-
-describe('the providers added after the first three', () => {
-  const STATE = { goal: 'g', conversation: [{ at: 0, text: 'a "b"' }] }
-  const ASKED = {
-    call_t1: { type: 'noul', instructions: 'Is it?' },
-    route: {
-      type: 'choice',
-      instructions: 'Which?',
-      criteria: {
-        'codiv.openjev-latest': 'Open Jev.',
-        'openai.gpt-6-luna': null,
-      },
-    },
-  } as const
-  const bareBody = (model: string, ids = ['call_t1', 'route']) =>
-    `{"model":"${model}",` +
-    '"state":{"goal":"g","conversation":[{"at":0,"text":"a \\"b\\""}]},' +
-    `"questions":{"${ids[0]}":{"type":"noul","instructions":"Is it?"},` +
-    `"${ids[1]}":{"type":"choice","instructions":"Which?","criteria":` +
-    '{"codiv.openjev-latest":"Open Jev.","openai.gpt-6-luna":null}}}}'
-
-  const sent: Record<
-    string,
-    { provider: ProviderName; url: string; key: string; body: string }
-  > = {
-    'success: codiv is sent the bare body at its endpoint': {
-      provider: 'codiv',
-      url: 'https://api.codiv.ai/v1/systemone',
-      key: 'test-codiv-key',
-      body: bareBody('openjev-latest'),
-    },
-    'success: perplexity is sent the bare body with its own decider': {
-      provider: 'perplexity',
-      url: 'https://api.perplexity.ai/v1/decisions',
-      key: 'test-perplexity-key',
-      body: bareBody('pplx-decider-v1.1-27b'),
-    },
-    'success: decisions-api.dev is sent the bare body with each question named by its place':
-      {
-        provider: 'decisions-api-dev',
-        url: 'https://decisions-api.dev/v1/systemone',
-        key: 'test-decisions-key',
-        body: bareBody('jev-latest', ['q0', 'q1']),
-      },
-    'success: decisionapi.net is sent the bare body for jev': {
-      provider: 'decisionapi-net',
-      url: 'https://decisionapi.net/v1/systemone',
-      key: 'test-decisionapi-key',
-      body: bareBody('jev-latest'),
-    },
-    'success: openai is sent the state as text and the questions as a list': {
-      provider: 'openai',
-      url: 'https://api.openai.com/v1/decisions',
-      key: 'test-openai-key',
-      body:
-        '{"model":"gpt-6-luna",' +
-        '"input":"{\\"goal\\":\\"g\\",\\"conversation\\":' +
-        '[{\\"at\\":0,\\"text\\":\\"a \\\\\\"b\\\\\\"\\"}]}",' +
-        '"questions":[' +
-        '{"name":"call_t1","type":"predicate","instructions":"Is it?"},' +
-        '{"name":"route","type":"choice","instructions":"Which?",' +
-        '"choices":[{"value":"codiv.openjev-latest","description":"Open Jev."},' +
-        '{"value":"openai.gpt-6-luna"}]}]}',
-    },
-  }
-
-  for (const [name, { provider, url, key, body }] of Object.entries(sent)) {
-    test(name, () => {
-      const exchange = exchangeOf(routeOf(provider), ALL, STATE, ASKED)
-
-      expect(exchange).toEqual({
-        url,
-        init: {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${key}`,
-            'content-type': 'application/json',
-          },
-          body,
-        },
-      })
-
-      for (const secret of Object.values(ALL)) {
-        if (secret !== 'test-account') {
-          const sent = `${exchange.url} ${exchange.init.body}`
-
-          expect(
-            sent.includes(secret),
-            `${secret} is in the URL or the body`,
-          ).toBe(false)
-        }
-      }
-    })
-  }
-
-  const unconfigured: Record<string, { provider: ProviderName; env: string }> =
-    {
-      'error: codiv without a key names the variable to set': {
-        provider: 'codiv',
-        env: 'CODIV_API_KEY',
-      },
-      'error: perplexity without a key names the variable to set': {
-        provider: 'perplexity',
-        env: 'PERPLEXITY_API_KEY',
-      },
-      'error: decisions-api.dev without a key names the variable to set': {
-        provider: 'decisions-api-dev',
-        env: 'DECISIONS_API_KEY',
-      },
-      'error: decisionapi.net without a key names the variable to set': {
-        provider: 'decisionapi-net',
-        env: 'DECISIONAPI_API_KEY',
-      },
-      'error: openai without a key names the variable to set': {
-        provider: 'openai',
-        env: 'OPENAI_API_KEY',
-      },
-    }
-
-  for (const [name, { provider, env }] of Object.entries(unconfigured)) {
-    test(name, () => {
-      expect(() =>
-        exchangeOf(routeOf(provider), CREDENTIALS, 's', QUESTIONS),
-      ).toThrow({ message: `${provider} is not configured: ${env} is unset` })
-    })
-  }
-
-  test('success: each is named by the provider option', () => {
-    for (const name of [
-      'codiv',
-      'perplexity',
-      'decisions-api-dev',
-      'decisionapi-net',
-      'openai',
-    ]) {
-      expect(providerOf(name)).toBe(name)
-    }
-  })
-
-  const limits: Record<string, { provider: ProviderName; expected: object }> =
-    {
-      'success: codiv holds its window with no question cap': {
-        provider: 'codiv',
-        expected: { maxStateTokens: 60000, maxRequestTokens: 65536 },
-      },
-      'success: perplexity holds its window and 128 questions': {
-        provider: 'perplexity',
-        expected: {
-          maxStateTokens: 262143,
-          maxRequestTokens: 262143,
-          maxQuestions: 128,
-        },
-      },
-      "success: decisions-api.dev holds 8 questions within 32 KiB and Jev's window": {
-        provider: 'decisions-api-dev',
-        expected: {
-          maxStateTokens: 32000,
-          maxRequestTokens: 64000,
-          maxQuestions: 8,
-          maxRequestBytes: 32768,
-        },
-      },
-      "success: decisionapi.net holds 8 questions within 32 KiB and Jev's window": {
-        provider: 'decisionapi-net',
-        expected: {
-          maxStateTokens: 32000,
-          maxRequestTokens: 64000,
-          maxQuestions: 8,
-          maxRequestBytes: 32768,
-        },
-      },
-      'success: openai documents none and is held to the fallback': {
-        provider: 'openai',
-        expected: {
-          maxStateTokens: 32000,
-          maxRequestTokens: 32000,
-          maxQuestions: 64,
-        },
-      },
-    }
-
-  for (const [name, { provider, expected }] of Object.entries(limits)) {
-    test(name, () => {
-      expect(limitsOf(routeOf(provider))).toEqual(expected)
-    })
-  }
-
-  test('success: each is offered with its default model', () => {
-    expect(modelsOf('codiv')).toEqual(['openjev-latest'])
-    expect(modelsOf('perplexity')).toEqual(['pplx-decider-v1.1-27b'])
-    expect(modelsOf('decisions-api-dev')).toEqual(['jev-latest'])
-    expect(modelsOf('decisionapi-net')).toEqual(['jev-latest'])
-    expect(modelsOf('openai')).toEqual(['gpt-6-luna'])
-  })
-
-  test('success: only openai and decisions-api.dev write the body their own way', () => {
-    expect(wireOf(routeOf('openai'))).toBe(OPENAI)
-    expect(wireOf(routeOf('decisions-api-dev'))).not.toBe(BARE)
-
-    for (const provider of [
-      'typesafe',
-      'cloudflare',
-      'openrouter',
-      'codiv',
-      'perplexity',
-      'decisionapi-net',
-    ] as const) {
-      expect(wireOf(routeOf(provider)), provider).toBe(BARE)
-    }
-  })
-})
-
-describe('replyFrom, for the providers added after the first three', () => {
-  const recorded: Record<
-    string,
-    { provider: ProviderName; payload: unknown; expected: object }
-  > = {
-    'success: the recorded perplexity body is the reply': {
-      provider: 'perplexity',
-      payload: {
-        model: 'pplx-decider-v1.1-27b',
-        answers: {
-          asks_weather: { type: 'noul', noul: 0.9997546075625011 },
-          topic: {
-            type: 'choice',
-            choice: 'weather',
-            confidence: 0.9999119392823574,
-            probabilities: {
-              weather: 0.99994,
-              cooking: 0.00002,
-              code: 0.00004,
-            },
-          },
-        },
-        usage: { input_tokens: 286, output_tokens: 2 },
-      },
-      expected: {
-        model: 'pplx-decider-v1.1-27b',
-        usage: { input_tokens: 286, output_tokens: 2 },
-      },
-    },
-    'success: the recorded codiv body is the reply': {
-      provider: 'codiv',
-      payload: {
-        model: 'openjev-0.1',
-        answers: {
-          asks_weather: { type: 'noul', noul: 0.9974021261033258 },
-          topic: {
-            type: 'choice',
-            choice: 'weather',
-            confidence: 0.9986455718188082,
-          },
-        },
-        usage: { input_tokens: 173, output_tokens: 0 },
-      },
-      expected: {
-        model: 'openjev-0.1',
-        usage: { input_tokens: 173, output_tokens: 0 },
-      },
-    },
-    'success: the recorded decisionapi.net envelope is unwrapped': {
-      provider: 'decisionapi-net',
-      payload: {
-        code: 0,
-        message: 'ok',
-        data: {
-          result: {
-            answers: {
-              asks_weather: { type: 'noul', noul: 0.99 },
-              topic: {
-                type: 'choice',
-                choice: 'weather',
-                probabilities: { code: 0, cooking: 0, weather: 1 },
-                confidence: 1,
-              },
-            },
-            usage: { input_tokens: 405, output_tokens: 57 },
-            elapsedMs: 1448,
-          },
-          creditsUsed: 1,
-        },
-      },
-      expected: { usage: { input_tokens: 405, output_tokens: 57 } },
-    },
-    'success: a decisions-api.dev envelope is unwrapped with its model': {
-      provider: 'decisions-api-dev',
-      payload: {
-        code: 0,
-        message: 'ok',
-        data: {
-          result: {
-            model: 'typesafe/jev-1.13-20260917',
-            answers: {
-              q0: { type: 'noul', noul: 0.99 },
-              q1: { type: 'choice', choice: 'weather', confidence: 1 },
-            },
-            usage: { input_tokens: 405, output_tokens: 57 },
-          },
-        },
-      },
-      expected: {
-        model: 'typesafe/jev-1.13-20260917',
-        usage: { input_tokens: 405, output_tokens: 57 },
-      },
-    },
-    'success: the recorded openai answer list is the reply': {
-      provider: 'openai',
-      payload: {
-        model: 'gpt-6-luna',
-        answers: [
-          { type: 'predicate', name: 'asks_weather', probability: 1.0 },
-          {
-            type: 'choice',
-            name: 'topic',
-            choice: 'weather',
-            probabilities: [
-              { value: 'weather', probability: 1.0 },
-              { value: 'cooking', probability: 0.0 },
-            ],
-            confidence: 1.0,
-          },
-        ],
-        usage: {
-          input_tokens: 318,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens: 0,
-          total_tokens: 318,
-        },
-      },
-      expected: {
-        model: 'gpt-6-luna',
-        usage: { input_tokens: 318, output_tokens: 0 },
-      },
-    },
-  }
-
-  for (const [name, { provider, payload, expected }] of Object.entries(
-    recorded,
-  )) {
-    test(name, () => {
-      const reply = replyFrom(
-        routeOf(provider),
-        response(200, payload),
-        ALL,
-        PROBED,
-      )
-
-      expect(reply).toMatchObject(expected)
-      expect('model' in reply).toBe('model' in expected)
-      expect(noulOf(reply, 'asks_weather') > 0.9).toBe(true)
-      expect(choiceOf(reply, 'topic', ['weather', 'cooking', 'code'])).toEqual(
-        expect.objectContaining({ choice: 'weather' }),
-      )
-    })
-  }
-
-  const failures: Record<
-    string,
-    {
-      provider: ProviderName
-      status: number
-      payload: unknown
-      message: string
-    }
-  > = {
-    'error: an envelope reporting failure is quoted with its message': {
-      provider: 'decisions-api-dev',
-      status: 200,
-      payload: { code: 1, message: 'insufficient credits', data: null },
-      message:
-        'decisions-api-dev: the response envelope reports failure: ' +
-        'insufficient credits',
-    },
-    'error: an envelope without a result is a failure': {
-      provider: 'decisionapi-net',
-      status: 200,
-      payload: { code: 0, message: 'ok', data: {} },
-      message: 'decisionapi-net: the response envelope reports failure: ok',
-    },
-    'error: an envelope with no code at all is a failure': {
-      provider: 'decisionapi-net',
-      status: 200,
-      payload: { answers: {} },
-      message:
-        'decisionapi-net: the response envelope reports failure: ' +
-        'no reason given',
-    },
-    'error: an envelope that repeats the key is quoted without it': {
-      provider: 'decisions-api-dev',
-      status: 200,
-      payload: { code: 401, message: 'key test-decisions-key is revoked' },
-      message:
-        'decisions-api-dev: the response envelope reports failure: ' +
-        'key [redacted] is revoked',
-    },
-    'error: an envelope reason on a failed status is quoted': {
-      provider: 'decisionapi-net',
-      status: 402,
-      payload: { code: 1, message: 'insufficient credits' },
-      message: 'decisionapi-net answered HTTP 402: insufficient credits',
-    },
-    'error: an openai answer of an unknown type is refused, naming the type': {
-      provider: 'openai',
-      status: 200,
-      payload: {
-        answers: [{ type: 'score', name: 'asks_weather' }],
-        usage: {},
-      },
-      message:
-        'openai: answers[0].type is "score", neither predicate nor choice',
-    },
-    'error: an openai error body is quoted by its message': {
-      provider: 'openai',
-      status: 400,
-      payload: {
-        error: {
-          message: "Invalid type for 'questions': expected an array",
-          type: 'invalid_request_error',
-          param: 'questions',
-        },
-      },
-      message:
-        "openai answered HTTP 400: Invalid type for 'questions': " +
-        'expected an array',
-    },
-    'error: perplexity refusing a model is quoted': {
-      provider: 'perplexity',
-      status: 400,
-      payload: {
-        error: { code: null, message: "Invalid model 'jev-latest'." },
-      },
-      message: "perplexity answered HTTP 400: Invalid model 'jev-latest'.",
-    },
-  }
-
-  for (const [name, { provider, status, payload, message }] of Object.entries(
-    failures,
-  )) {
-    test(name, () => {
-      expect(() =>
-        replyFrom(routeOf(provider), response(status, payload), ALL, PROBED),
-      ).toThrow({ message })
-    })
-  }
-
-  /**
-   * What `replyFrom` threw for a response, as a string.
-   */
-  function failureOf(provider: ProviderName, status: number, payload: unknown) {
-    try {
-      replyFrom(routeOf(provider), response(status, payload), ALL, PROBED)
-    } catch (error) {
-      return (error as Error).message
-    }
-
-    return 'no failure'
-  }
-
-  /**
-   * Checks a message quotes a vendor's text the way every message must: on
-   * one line no longer than the limit after the words that lead it, with no
-   * control character and no key.
-   */
-  function expectQuotable(message: string, lead: string) {
-    expect(message.startsWith(lead), message).toBe(true)
-    expect(
-      message.length <= lead.length + REASON_CHARS + 1,
-      `${message.length} characters: ${message}`,
-    ).toBe(true)
-    expect(/[\u0000-\u001f\u007f-\u009f]/.test(message), message).toBe(false)
-
-    for (const key of Object.values(ALL)) {
-      if (key !== ALL.cloudflareAccountId) {
-        expect(message.includes(key), message).toBe(false)
-      }
-    }
-  }
-
-  const echoed = `${ADDED.openaiApiKey}\n\u001b[31m\u009b${'r'.repeat(5000)}`
-
-  test('error: a 5,000-character refusal name with control characters and a key is not quoted', () => {
-    const message = failureOf('openai', 200, {
-      answers: [{ type: 'refusal', name: echoed, refusal: 'no' }],
-    })
-
-    expectQuotable(message, 'openai: ')
-    expect(message).toBe(
-      'openai: answers[0].name is a value of 5030 characters, which was ' +
-        'not asked',
-    )
-  })
-
-  test('error: a short type with a key in it is quoted whole and then redacted', () => {
-    const message = failureOf('openai', 200, {
-      answers: [{ type: `x ${ADDED.openaiApiKey}`, name: 'asks_weather' }],
-    })
-
-    expectQuotable(message, 'openai: ')
-    expect(message).toBe(
-      'openai: answers[0].type is "x [redacted]", neither predicate nor ' +
-        'choice',
-    )
-  })
-
-  test('error: an envelope message with control characters and a key is one short redacted line', () => {
-    const message = failureOf('decisionapi-net', 200, {
-      code: 1,
-      message: echoed,
-    })
-
-    expectQuotable(message, 'decisionapi-net: ')
-    expect(
-      message.startsWith(
-        'decisionapi-net: the response envelope reports failure: ' +
-          '[redacted] [31m rrr',
-      ),
-    ).toBe(true)
-    expect(message.endsWith('r…')).toBe(true)
-  })
-
-  test('error: an error body with control characters and a key is one short redacted line', () => {
-    const message = failureOf('openai', 400, { error: { message: echoed } })
-
-    expectQuotable(message, 'openai answered HTTP 400: ')
-    expect(
-      message.startsWith('openai answered HTTP 400: [redacted] [31m rrr'),
-    ).toBe(true)
-  })
-
-  const windows: Record<string, { provider: ProviderName; window: number }> =
-    {
-      'error: codiv counting its whole window is taken as a cut state': {
-        provider: 'codiv',
-        window: 65536,
-      },
-      'error: perplexity counting its whole window is taken as a cut state': {
-        provider: 'perplexity',
-        window: 262143,
-      },
-      "error: decisions-api.dev counting Jev's whole window is taken as a cut state":
-        { provider: 'decisions-api-dev', window: 64000 },
-      "error: decisionapi.net counting Jev's whole window is taken as a cut state":
-        { provider: 'decisionapi-net', window: 64000 },
-      'error: openai counting the fallback window is taken as a cut state': {
-        provider: 'openai',
-        window: 32000,
-      },
-    }
-
-  for (const [name, { provider, window }] of Object.entries(windows)) {
-    test(name, () => {
-      const answers =
-        provider === 'openai'
-          ? [{ type: 'predicate', name: 'call_t1', probability: 0.25 }]
-          : provider === 'decisions-api-dev'
-            ? { q0: ANSWERS.call_t1 }
-            : ANSWERS
-      const body = { answers, usage: { input_tokens: window } }
-      const payload = provider.startsWith('decision')
-        ? { code: 0, message: 'ok', data: { result: body } }
-        : body
-
-      expect(
-        replyFrom(
-          routeOf(provider),
-          response(200, {
-            ...payload,
-            ...(provider.startsWith('decision')
-              ? {
-                  data: {
-                    result: { answers, usage: { input_tokens: window - 1 } },
-                  },
-                }
-              : { usage: { input_tokens: window - 1 } }),
-          }),
-          ALL,
-          QUESTIONS,
-        ).usage,
-        'one token under the window is a reply',
-      ).toEqual({ input_tokens: window - 1 })
-      expect(() =>
-        replyFrom(routeOf(provider), response(200, payload), ALL, QUESTIONS),
-      ).toThrow({
-        message:
-          `${provider} counted ${window} input tokens, all that a request ` +
-          `of its may hold (${window}): the state was probably cut short, ` +
-          'so the answers decide nothing',
-      })
-    })
-  }
-
-  for (const provider of ['decisions-api-dev', 'decisionapi-net'] as const) {
-    test(`success: ${provider} counting more tokens than 32 KiB of English is not taken as a cut state`, () => {
-      // A body near the byte cap written in CJK counts about a token a
-      // character, so 9,000 tokens fit in 32 KiB and the state was read whole.
-      const answers =
-        provider === 'decisions-api-dev' ? { q0: ANSWERS.call_t1 } : ANSWERS
-      const reply = replyFrom(
-        routeOf(provider),
-        response(200, {
-          code: 0,
-          message: 'ok',
-          data: { result: { answers, usage: { input_tokens: 9000 } } },
-        }),
-        ALL,
-        QUESTIONS,
-      )
-
-      expect(reply.usage).toEqual({ input_tokens: 9000 })
-    })
-  }
-})
-
-describe('credentials of the providers added after the first three', () => {
-  test('success: every key of every provider is taken out of a text', () => {
-    expect(
-      redacted(
-        'test-codiv-key test-perplexity-key test-decisions-key ' +
-          'test-decisionapi-key test-openai-key test-typesafe-key ' +
-          'Authorization: Bearer sk-anything',
-        ALL,
-      ),
-    ).toBe(
-      '[redacted] [redacted] [redacted] [redacted] [redacted] [redacted] ' +
-        'Authorization: [redacted]',
-    )
-  })
-
   test('success: all nine variables are read from the environment and the settings', () => {
     const environment = environmentOf(
       {
@@ -1532,11 +1412,65 @@ describe('credentials of the providers added after the first three', () => {
     expect(credentialsFor(['codiv'], CREDENTIALS)).toEqual({})
   })
 
-  test('success: a key needed by a provider in play is looked for in the settings', () => {
-    expect(unresolvedOf(['typesafe', 'openai'], {}, ENV_READ)).toEqual([
-      'OPENAI_API_KEY',
-    ])
-  })
+  const unresolved: Record<
+    string,
+    {
+      providers: ProviderName[]
+      options: Record<string, string>
+      read: Record<string, string>
+      expected: string[]
+    }
+  > = {
+    'success: both cloudflare values in the environment leave nothing to look for':
+      {
+        providers: ['cloudflare'],
+        options: {},
+        read: {
+          CLOUDFLARE_API_TOKEN: 'test-cloudflare-token',
+          CLOUDFLARE_ACCOUNT_ID: 'test-account',
+        },
+        expected: [],
+      },
+    'success: a key given as an option leaves nothing to look for': {
+      providers: ['typesafe'],
+      options: { typesafeApiKey: 'test-typesafe-key' },
+      read: {},
+      expected: [],
+    },
+    'success: a provider that is not in play is not looked for': {
+      providers: ['typesafe'],
+      options: {},
+      read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
+      expected: [],
+    },
+    'success: the key of the one provider in play is named when absent': {
+      providers: ['openrouter'],
+      options: {},
+      read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
+      expected: ['OPENROUTER_API_KEY'],
+    },
+    'success: every provider in play is checked, each variable once': {
+      providers: ['typesafe', 'cloudflare', 'openrouter', 'cloudflare'],
+      options: { cloudflareAccountId: 'test-account' },
+      read: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+      expected: ['TYPESAFE_API_KEY', 'CLOUDFLARE_API_TOKEN'],
+    },
+    'success: a key needed by a provider in play is looked for in the settings':
+      {
+        providers: ['typesafe', 'openai'],
+        options: {},
+        read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
+        expected: ['OPENAI_API_KEY'],
+      },
+  }
+
+  for (const [name, { providers, options, read, expected }] of Object.entries(
+    unresolved,
+  )) {
+    test(name, () => {
+      expect(unresolvedOf(providers, options, read)).toEqual(expected)
+    })
+  }
 })
 
 describe('question ids at decisions-api.dev', () => {

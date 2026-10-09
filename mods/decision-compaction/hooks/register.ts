@@ -6,16 +6,16 @@ import {
   briefOf,
   credentialsFor,
   credentialsOf,
+  cutOf,
   environmentOf,
+  messageOf,
   PROVIDERS,
-  REASON_CHARS,
   redacted,
   unresolvedOf,
 } from './providers'
 import type { Credentials, Environment, ProviderName } from './providers'
 import { decisionLinesOf, percentOf, summaryOf } from './report'
 import { run } from './run'
-import { headOf } from './state'
 import { armOf, isCompactionDue, settle } from './trigger'
 
 /**
@@ -29,23 +29,13 @@ const TOAST_MS = 15_000
  */
 const PAUSE_RESERVE_MS = 1500
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 /**
  * Says which names of the `decisionProviders` option are no provider. Each
  * is quoted, and quoted only in part when long, as the `provider` option
  * is: the field may hold anything that was pasted into it.
  */
 function unknownLineOf(names: readonly string[]): string {
-  const quoted = names.map(name => {
-    const given = JSON.stringify(name)
-
-    return given.length > REASON_CHARS
-      ? `${headOf(given, REASON_CHARS)}…`
-      : given
-  })
+  const quoted = names.map(name => cutOf(JSON.stringify(name)))
 
   return (
     `the decisionProviders option names ${quoted.join(', ')}, ` +

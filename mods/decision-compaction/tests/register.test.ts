@@ -41,10 +41,6 @@ const OPTIONS = { preserveRecentMessages: 2 }
 const DECIDED = scoring({ t1: [0.9, 0.1], t2: [0.1, 0.1], t3: [0.9, 0.9] })
 
 /**
- * The handles of the session once `DECIDED` is applied: the Read's result
- * is rebuilt, the Bash call and its result are gone.
- */
-/**
  * `DECIDED`, read off what a question asks instead of its id: a provider
  * that names questions by their place sends ids that say nothing of the
  * call.
@@ -62,6 +58,10 @@ const DECIDED_BY_TEXT: Answerer = (id, question, seen) => {
   )
 }
 
+/**
+ * The handles of the session once `DECIDED` is applied: the Read's result
+ * is rebuilt, the Bash call and its result are gone.
+ */
 const DECIDED_HANDLES = [
   'h0',
   'h1',
@@ -93,8 +93,9 @@ const CUT_READ =
   'this tool output; run the tool again if they are needed]'
 
 /**
- * Why each of the five providers added after the first three is ruled out
- * when none of their keys is set, in the order they are considered.
+ * Why codiv, perplexity, decisions-api-dev, decisionapi-net and openai are
+ * each ruled out when none of their keys is set, as a list of refusals
+ * spells them and in the order they are considered.
  */
 const ADDED_UNSET =
   'codiv/openjev-latest: CODIV_API_KEY unset; ' +
@@ -1084,6 +1085,7 @@ describe('the bounds on one compaction', () => {
       expect(out.messages).toEqual([SUMMARY])
       expect(world.fetches).toBe(0)
       expect(world.settingsReads, 'not even a credential is looked for').toBe(0)
+      expect(world.envReads, 'nor read from the environment').toEqual([])
       expect(world.toasts).toEqual([
         'built-in summary used instead: the provider option is ' +
           '"cloud-flare", which is none of typesafe, cloudflare, ' +
@@ -1530,7 +1532,7 @@ describe('provider decision', () => {
   )
 })
 
-describe('the providers added after the first three', () => {
+describe('session.compact, provider by provider', () => {
   const asked: Record<
     string,
     { provider: string; url: string; model: string; reports: string }
@@ -2064,6 +2066,33 @@ describe('provider decision over every provider', () => {
       expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
       expectNoSecret(world)
+    },
+  )
+
+  test(
+    'error: a very long unknown name in decisionProviders is quoted only in part',
+    {
+      options: {
+        ...DECIDING,
+        decisionProviders: `typesafe,${'x'.repeat(200)}`,
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: { TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY },
+        answer: DECIDED,
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      expect(
+        world.lines.filter(line => line.includes('decisionProviders')),
+        'the opening quote and 159 characters of the name, then an ellipsis',
+      ).toEqual([
+        `the decisionProviders option names "${'x'.repeat(159)}…, which ` +
+          'is none of typesafe, cloudflare, openrouter, codiv, perplexity, ' +
+          'decisions-api-dev, decisionapi-net, openai; ignored',
+      ])
     },
   )
 

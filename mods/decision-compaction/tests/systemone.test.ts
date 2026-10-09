@@ -61,12 +61,12 @@ describe('replyOf', () => {
         id: 'gen-1',
         model: 'jev-1.13.0',
         answers: { a: { type: 'noul', noul: 0.5 } },
-        usage: { input_tokens: 476, output_tokens: 70, cost: 0.00002 },
+        usage: { input_tokens: 476, cost: 0.00002 },
       }),
     ).toEqual({
       model: 'jev-1.13.0',
       answers: { a: { type: 'noul', noul: 0.5 } },
-      usage: { input_tokens: 476, output_tokens: 70, cost: 0.00002 },
+      usage: { input_tokens: 476, cost: 0.00002 },
     })
   })
 

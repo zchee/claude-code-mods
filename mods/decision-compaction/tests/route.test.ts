@@ -6,10 +6,7 @@ import type { Credentials, ProviderName, Route } from '../hooks/providers'
 import {
   candidatesOf,
   chooseRoute,
-  labelOf,
   profileOf,
-  ROUTE_QUESTION,
-  routeQuestionOf,
 } from '../hooks/route'
 import type { Profile } from '../hooks/route'
 import { pairCalls } from '../hooks/state'
@@ -34,8 +31,9 @@ const CLOUDFLARE_KEYS: Credentials = {
 const FITS = () => undefined
 
 /**
- * The providers the mod served before the five resellers and vendors were
- * added: narrowed to them, every choice is what it was then.
+ * Three providers that between them meet every rule of the choice: a direct
+ * route and a gateway to the same Jev, and a provider with two models.
+ * Narrowed to them, the candidates and refusals a test expects stay short.
  */
 const ORIGINAL: readonly ProviderName[] = [
   'typesafe',
@@ -71,7 +69,7 @@ function askingFor(pick: string | Error) {
 
       return {
         answers: {
-          [ROUTE_QUESTION]: { type: 'choice', choice: pick, confidence: 0.81 },
+          route: { type: 'choice', choice: pick, confidence: 0.81 },
         },
         usage: {},
       }
@@ -520,18 +518,6 @@ describe('chooseRoute', () => {
       })
     })
   }
-
-  test('success: the question offers exactly the candidates', () => {
-    const { candidates } = candidatesOf(CLEF, ORIGINAL, CLOUDFLARE_KEYS, FITS)
-    const question = routeQuestionOf(candidates)
-
-    expect(question.type).toBe('choice')
-    expect(Object.keys(question.criteria)).toEqual([
-      'cloudflare.clef',
-      'cloudflare.clef-flash',
-    ])
-    expect(labelOf(CLEF_FLASH)).toBe('cloudflare/clef-flash')
-  })
 })
 
 const ADDED_KEYS: Credentials = {

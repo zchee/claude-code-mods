@@ -1,7 +1,7 @@
 /**
  * A yes/no question; the answer is the probability of yes.
  */
-export type NoulQuestion = {
+type NoulQuestion = {
   type: 'noul'
   instructions: string
   criteria?: { true?: string; false?: string }
@@ -25,11 +25,10 @@ export type Questions = Record<string, Question>
 
 /**
  * What a provider reported a request cost. Every field is optional because
- * only `input_tokens` and `output_tokens` are common to the three providers.
+ * the eight providers do not report the same fields.
  */
-export type Usage = {
+type Usage = {
   input_tokens?: number
-  output_tokens?: number
   cost?: number
 }
 
@@ -45,18 +44,23 @@ export type Reply = {
 /**
  * The picked option of a `choice` answer and how sure the model was.
  */
-export type Picked = {
+type Picked = {
   choice: string
   confidence?: number
 }
 
 /**
- * The strictest id rule among the providers (Cloudflare's): letters, digits,
- * `_`, `.` and `-`, 100 characters at most.
+ * The rule every question id must pass before any provider-specific alias
+ * is applied: letters, digits, `_`, `.` and `-`, 100 characters at most. A
+ * provider with a stricter rule is sent aliases in place of the ids.
  */
 const QUESTION_ID = /^[A-Za-z0-9_.-]{1,100}$/
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/**
+ * Whether a decoded JSON value is an object, as opposed to an array, `null`
+ * or a scalar.
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -94,9 +98,6 @@ const UTF8 = new TextEncoder()
 /**
  * The size of a text once sent, in UTF-8 bytes: what a cap stated in bytes
  * is held against. A character beyond ASCII takes two to four of them.
- *
- * @param text the text
- * @returns the byte count
  */
 export function bytesOf(text: string): number {
   return UTF8.encode(text).length
@@ -161,7 +162,6 @@ export const BARE: Wire = {
  * which type the question had.
  *
  * @param payload the decoded body, already out of any provider envelope
- * @returns the reply
  */
 export function replyOf(payload: unknown): Reply {
   if (!isRecord(payload) || !isRecord(payload.answers)) {
@@ -170,20 +170,13 @@ export function replyOf(payload: unknown): Reply {
 
   const reported = isRecord(payload.usage) ? payload.usage : {}
   const usage: Usage = {}
-  const inputTokens = numberOf(reported.input_tokens)
-  const outputTokens = numberOf(reported.output_tokens)
-  const cost = numberOf(reported.cost)
 
-  if (inputTokens !== undefined) {
-    usage.input_tokens = inputTokens
-  }
+  for (const field of ['input_tokens', 'cost'] as const) {
+    const value = numberOf(reported[field])
 
-  if (outputTokens !== undefined) {
-    usage.output_tokens = outputTokens
-  }
-
-  if (cost !== undefined) {
-    usage.cost = cost
+    if (value !== undefined) {
+      usage[field] = value
+    }
   }
 
   const reply: Reply = { answers: payload.answers, usage }
@@ -230,14 +223,17 @@ export function choiceOf(
   options: readonly string[],
 ): Picked {
   const answer = reply.answers[id]
-  const choice = isRecord(answer) ? answer.choice : undefined
 
-  if (typeof choice !== 'string' || !options.includes(choice)) {
+  if (
+    !isRecord(answer) ||
+    typeof answer.choice !== 'string' ||
+    !options.includes(answer.choice)
+  ) {
     throw new Error(`no offered option was answered for ${id}`)
   }
 
-  const picked: Picked = { choice }
-  const confidence = isRecord(answer) ? numberOf(answer.confidence) : undefined
+  const picked: Picked = { choice: answer.choice }
+  const confidence = numberOf(answer.confidence)
 
   if (confidence !== undefined) {
     picked.confidence = confidence

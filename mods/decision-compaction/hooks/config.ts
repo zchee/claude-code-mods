@@ -1,8 +1,7 @@
 import type { PluginOptions } from 'claude-code'
 
-import { providerOf, PROVIDERS, REASON_CHARS } from './providers'
+import { cutOf, providerOf, PROVIDERS } from './providers'
 import type { ProviderName } from './providers'
-import { headOf } from './state'
 
 /**
  * The plugin's options as the hooks use them: every value present, typed
@@ -45,7 +44,7 @@ export type Config = {
  * What an option reads as when it is unset or unusable; the manifest's
  * `userConfig` states the same values to the person.
  */
-export const DEFAULTS = {
+const DEFAULTS = {
   provider: 'typesafe',
   providerDecision: false,
   decisionProviders: PROVIDERS,
@@ -195,14 +194,9 @@ export function configOf(options: PluginOptions): Config {
   }
 
   if (named === undefined && !isUnset(options.provider)) {
-    const given = JSON.stringify(options.provider)
-
     config.refusal =
-      'the provider option is ' +
-      (given.length > REASON_CHARS
-        ? `${headOf(given, REASON_CHARS)}…`
-        : given) +
-      `, which is none of ${PROVIDERS.join(', ')}`
+      `the provider option is ${cutOf(JSON.stringify(options.provider))}, ` +
+      `which is none of ${PROVIDERS.join(', ')}`
   }
 
   if (deciding.unknown.length > 0) {

@@ -54,7 +54,7 @@ export type Decision = Scores & {
 /**
  * What the batches reported between them.
  */
-export type Reported = {
+type Reported = {
   /**
    * The largest `input_tokens` any batch reported. Every batch sends the
    * same state, so the largest is the one to hold against the estimate.
@@ -136,7 +136,7 @@ const ENVELOPE_TOKENS = 32
  * the request leaves room for one call's questions at a time, and the state
  * is then paid for once per call instead of once per batch.
  */
-export const MIN_CALLS_PER_REQUEST = 16
+const MIN_CALLS_PER_REQUEST = 16
 
 /**
  * The most requests one compaction sends. The state rides in every one of
@@ -144,14 +144,14 @@ export const MIN_CALLS_PER_REQUEST = 16
  * state; a conversation that would need more is left to the built-in
  * summary.
  */
-export const MAX_REQUESTS = 16
+const MAX_REQUESTS = 16
 
 /**
  * How many requests are in flight at once. Waiting on a request is not
  * charged to the hook, so there is no need to send every batch at the same
  * moment, which is what a provider's rate limit is most likely to refuse.
  */
-export const CONCURRENT_REQUESTS = 3
+const CONCURRENT_REQUESTS = 3
 
 /**
  * The share of a provider's documented limits a budget may reach. The token
@@ -176,14 +176,14 @@ const UNASKED: Scores = { keepCall: 1, keepResult: 1 }
 /**
  * The id of the question whether a call should stay.
  */
-export function callQuestionId(call: Call): string {
+function callQuestionId(call: Call): string {
   return `call_${call.id}`
 }
 
 /**
  * The id of the question whether a call's whole output should stay.
  */
-export function resultQuestionId(call: Call): string {
+function resultQuestionId(call: Call): string {
   return `result_${call.id}`
 }
 
@@ -194,7 +194,6 @@ export function resultQuestionId(call: Call): string {
  *
  * The rubric they are read under is in the state's `context`, sent once.
  *
- * @param call the call
  * @returns its two `noul` questions, by id
  */
 export function questionsOf(call: Call): Questions {
@@ -446,10 +445,7 @@ export function batchesOf(
  * question is the stronger claim, so it is read first: a result worth
  * keeping keeps its call with it.
  *
- * @param call the call
- * @param scores the answers
  * @param threshold the probability from which an item is kept
- * @returns the decision
  */
 export function decide(
   call: Call,
@@ -627,11 +623,8 @@ function inputCharsOf(use: ToolUseSummary): number {
  * The characters a message holds for the model: its text, its tool inputs
  * and its tool results. The outcome mirrored on a tool use is not counted,
  * since the result block already is.
- *
- * @param message the message
- * @returns the count
  */
-export function charsOf(message: SessionMessage): number {
+function charsOf(message: SessionMessage): number {
   const inputs = message.toolUses.reduce(
     (sum, use) => sum + inputCharsOf(use),
     0,
@@ -651,7 +644,6 @@ function totalChars(messages: readonly SessionMessage[]): number {
 /**
  * The share of the conversation's characters a compaction removed.
  *
- * @param outcome the compaction
  * @returns a ratio from 0 to 1; 0 for an empty conversation
  */
 export function reductionOf(
@@ -780,7 +772,6 @@ async function inTurns<Item, Result>(
  * @param settings the budget, the route's wire format, the keep threshold,
  * the truncation length, and `halt`, which hears the reason the moment a
  * batch fails
- * @returns the outcome
  */
 export async function compact(
   messages: readonly SessionMessage[],

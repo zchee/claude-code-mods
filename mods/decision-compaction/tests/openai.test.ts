@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { decodeOpenAI, encodeOpenAI, OPENAI } from '../hooks/openai'
+import { decodeOpenAI, OPENAI } from '../hooks/openai'
 import { choiceOf, noulOf, replyOf } from '../hooks/systemone'
 import type { Questions } from '../hooks/systemone'
 
@@ -57,7 +57,7 @@ describe('encodeOpenAI', () => {
       },
     }
 
-    expect(encodeOpenAI('gpt-6-luna', { goal: 'say "hi"' }, questions)).toBe(
+    expect(OPENAI.encode('gpt-6-luna', { goal: 'say "hi"' }, questions)).toBe(
       '{"model":"gpt-6-luna","input":"{\\"goal\\":\\"say \\\\\\"hi\\\\\\"\\"}",' +
         '"questions":[' +
         '{"name":"call_t1","type":"predicate","instructions":"Is it?"},' +
@@ -90,7 +90,7 @@ describe('encodeOpenAI', () => {
   for (const [name, { criteria, instructions }] of Object.entries(folded)) {
     test(name, () => {
       const body = JSON.parse(
-        encodeOpenAI('m', 's', {
+        OPENAI.encode('m', 's', {
           q: { type: 'noul', instructions: 'Keep it?', criteria },
         }),
       )
@@ -106,13 +106,13 @@ describe('encodeOpenAI', () => {
       'call t1': { type: 'noul', instructions: 'x' },
     }
 
-    expect(() => encodeOpenAI('m', 's', questions)).toThrow({
+    expect(() => OPENAI.encode('m', 's', questions)).toThrow({
       message: 'question id "call t1" is not a valid id',
     })
   })
 
   test('error: a request without questions is refused', () => {
-    expect(() => encodeOpenAI('m', 's', {})).toThrow({
+    expect(() => OPENAI.encode('m', 's', {})).toThrow({
       message: 'a System One request needs at least one question',
     })
   })
@@ -128,7 +128,7 @@ describe('decodeOpenAI', () => {
         asks_weather: { noul: 1 },
         topic: { choice: 'weather', confidence: 1 },
       },
-      usage: { input_tokens: 318, output_tokens: 0 },
+      usage: { input_tokens: 318 },
     })
     expect(noulOf(reply, 'asks_weather')).toBe(1)
     expect(choiceOf(reply, 'topic', ['weather', 'cooking', 'code'])).toEqual({
@@ -240,7 +240,6 @@ describe('decodeOpenAI', () => {
     expect(Object.hasOwn(reply.answers, '__proto__')).toBe(true)
     expect(Object.getPrototypeOf(reply.answers)).toBe(null)
     expect(noulOf(reply, '__proto__')).toBe(0.4)
-    expect(Object.prototype.hasOwnProperty.call({}, 'noul')).toBe(false)
   })
 
   test('error: a probability out of range is left for the reader to refuse', () => {
@@ -276,7 +275,7 @@ describe('the OpenAI wire format', () => {
   test('success: the state is measured as it stands escaped inside input', () => {
     const state = { text: 'say "hi"' }
     const body = JSON.parse(
-      encodeOpenAI('m', state, { q: { type: 'noul', instructions: 'x' } }),
+      OPENAI.encode('m', state, { q: { type: 'noul', instructions: 'x' } }),
     )
     const carried = OPENAI.stateJsonOf(JSON.stringify(state))
 

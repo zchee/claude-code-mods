@@ -1,7 +1,6 @@
 import type { HttpInit, HttpResponse } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
-import { COMPACTION_DEADLINE_MS } from '../hooks/ask'
 import { configOf } from '../hooks/config'
 import { run } from '../hooks/run'
 import type { Job } from '../hooks/run'
@@ -234,7 +233,7 @@ describe('run', () => {
       expect(
         world.timers.map(timer => timer.ms),
         'one deadline armed',
-      ).toEqual([COMPACTION_DEADLINE_MS])
+      ).toEqual([30_000])
       expect(world.listeners.added(), 'one listener on the signal').toBe(1)
 
       act?.(world)

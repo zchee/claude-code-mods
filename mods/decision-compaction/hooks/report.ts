@@ -6,7 +6,7 @@ import type { Result } from './run'
 /**
  * The longest line `$.ui.log` is given; a longer decisions list is split.
  */
-export const LOG_LINE_CHARS = 4096
+const LOG_LINE_CHARS = 4096
 
 /**
  * What every line of the per-call verdicts starts with.

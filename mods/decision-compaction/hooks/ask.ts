@@ -1,7 +1,13 @@
 import type { HttpInit, HttpResponse } from 'claude-code'
 
 import type { Ask } from './compact'
-import { briefOf, exchangeOf, isRetryable, replyFrom } from './providers'
+import {
+  briefOf,
+  exchangeOf,
+  isRetryable,
+  messageOf,
+  replyFrom,
+} from './providers'
 import type { Credentials, Route } from './providers'
 
 /**
@@ -41,7 +47,7 @@ export type Ports = {
  * in turn. What bounds the waits of a compaction together is the `pause`
  * port, which declines a wait when the hook has too little of its time left.
  */
-export const BACKOFF_MS = [400, 1200] as const
+const BACKOFF_MS = [400, 1200] as const
 
 /**
  * How long one compaction may wait on its providers, from the moment its
@@ -53,7 +59,7 @@ export const BACKOFF_MS = [400, 1200] as const
  * turn. The bound is the longest the person waits on the providers, with the
  * session paused, before that summary starts.
  */
-export const COMPACTION_DEADLINE_MS = 30_000
+const COMPACTION_DEADLINE_MS = 30_000
 
 /**
  * The requests and waits of one compaction, under the one bound they share.
@@ -66,7 +72,7 @@ export const COMPACTION_DEADLINE_MS = 30_000
  * ends, a wait under way is aborted. A request that is out cannot be
  * withdrawn, so its late answer is ignored.
  */
-export type Attempt = {
+type Attempt = {
   /**
    * `Ports.fetch`, started only while the compaction is not over. A request
    * the host refuses by throwing, instead of by rejecting, rejects all the
@@ -93,10 +99,6 @@ export type Attempt = {
    * then has nobody to answer, and must not retry or wait.
    */
   close: () => void
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 /**

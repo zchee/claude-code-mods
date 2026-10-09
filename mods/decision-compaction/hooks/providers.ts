@@ -2,7 +2,7 @@ import type { HttpResponse, PluginOptions } from 'claude-code'
 
 import { decodeOpenAI, OPENAI } from './openai'
 import { headOf } from './state'
-import { BARE, bodyOf, bytesOf, idsOf, replyOf } from './systemone'
+import { BARE, bodyOf, bytesOf, idsOf, isRecord, replyOf } from './systemone'
 import type { Question, Questions, Reply, Wire } from './systemone'
 
 /**
@@ -68,7 +68,7 @@ export type Credentials = {
  * The environment variable each credential falls back to when its plugin
  * option is unset.
  */
-export const ENV_NAMES = {
+const ENV_NAMES = {
   typesafeApiKey: 'TYPESAFE_API_KEY',
   openrouterApiKey: 'OPENROUTER_API_KEY',
   cloudflareApiToken: 'CLOUDFLARE_API_TOKEN',
@@ -80,7 +80,7 @@ export const ENV_NAMES = {
   openaiApiKey: 'OPENAI_API_KEY',
 } as const satisfies Record<keyof Credentials, string>
 
-export type EnvName = (typeof ENV_NAMES)[keyof Credentials]
+type EnvName = (typeof ENV_NAMES)[keyof Credentials]
 
 /**
  * The values of the credential variables as one source holds them.
@@ -90,7 +90,7 @@ export type Environment = Partial<Record<EnvName, string | undefined>>
 /**
  * One request as `$.http.fetch` takes it.
  */
-export type Exchange = {
+type Exchange = {
   url: string
   init: { method: 'POST'; headers: Record<string, string>; body: string }
 }
@@ -215,6 +215,15 @@ const ALIASED: Wire = {
 const JEV = /^jev(?:-|$)/
 
 /**
+ * The ids OpenRouter routes to Jev: a Jev id (`jev`, `jev-latest`,
+ * `jev-1.13`) either bare, which OpenRouter maps onto TypeSafe's namespace
+ * before routing, or under that namespace (`typesafe/`) or its alias
+ * (`~typesafe/`). The namespace alone does not make a model Jev: any other
+ * model TypeSafe publishes there is a model of its own.
+ */
+const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
+
+/**
  * The Workers AI catalogue prefix; a Cloudflare model is `clef` in the body
  * and this prefix plus `clef` in the URL.
  */
@@ -232,13 +241,13 @@ export const REASON_CHARS = 160
  * one is not a key any of the providers issues, and replacing it wherever
  * its few characters occur would garble the ordinary words around it.
  */
-export const MIN_SECRET_CHARS = 8
+const MIN_SECRET_CHARS = 8
 
 /**
  * What stands where a credential was. It holds no part of what it replaces,
  * not even the word that announced it.
  */
-export const REDACTED = '[redacted]'
+const REDACTED = '[redacted]'
 
 /**
  * An `Authorization` value as a response may echo it: the scheme and the
@@ -247,10 +256,6 @@ export const REDACTED = '[redacted]'
  * written out as a field (`Bearer: ...`, `bearer=...`).
  */
 const BEARER = /bearer(?:\s*[:=]\s*|\s+)[^\s"'<>]+/gi
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function textOf(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== ''
@@ -290,6 +295,20 @@ function envelopeErrorOf(payload: Record<string, unknown>): string | undefined {
 }
 
 /**
+ * The error for a response envelope that reports failure, quoting the
+ * reason it gives.
+ */
+function envelopeFailure(
+  reason: string | undefined,
+  credentials: Credentials,
+): Error {
+  return new Error(
+    'the response envelope reports failure: ' +
+      briefOf(reason ?? '', credentials),
+  )
+}
+
+/**
  * Takes a Workers AI response out of its `{ result, success, errors }`
  * envelope. A body that is already a bare reply is passed through, because
  * the envelope is documented for the REST API in general and not for Clef.
@@ -302,10 +321,7 @@ function unwrapCloudflare(payload: unknown, credentials: Credentials): unknown {
   }
 
   if (payload.success === false) {
-    throw new Error(
-      'the response envelope reports failure: ' +
-        briefOf(envelopeErrorOf(payload) ?? '', credentials),
-    )
+    throw envelopeFailure(envelopeErrorOf(payload), credentials)
   }
 
   return isRecord(payload.result) ? payload.result : payload
@@ -321,16 +337,14 @@ function unwrapCloudflare(payload: unknown, credentials: Credentials): unknown {
 function unwrapDataEnvelope(
   payload: unknown,
   credentials: Credentials,
-): unknown {
+): Record<string, unknown> {
   const data = isRecord(payload) ? payload.data : undefined
   const result = isRecord(data) ? data.result : undefined
 
   if (!isRecord(payload) || payload.code !== 0 || !isRecord(result)) {
-    const message = isRecord(payload) ? textOf(payload.message) : undefined
-
-    throw new Error(
-      'the response envelope reports failure: ' +
-        briefOf(message ?? '', credentials),
+    throw envelopeFailure(
+      isRecord(payload) ? textOf(payload.message) : undefined,
+      credentials,
     )
   }
 
@@ -349,10 +363,7 @@ function unwrapAliased(
   credentials: Credentials,
   asked: Questions,
 ): unknown {
-  const result = unwrapDataEnvelope(payload, credentials) as Record<
-    string,
-    unknown
-  >
+  const result = unwrapDataEnvelope(payload, credentials)
 
   if (!isRecord(result.answers)) {
     return result
@@ -380,6 +391,23 @@ function unwrapAliased(
   return { ...result, answers }
 }
 
+/**
+ * A model name as configured, without the white space around it: how most
+ * providers' bodies spell it.
+ */
+const TRIMMED = (model: string) => model.trim()
+
+/**
+ * A response that already is a bare System One reply.
+ */
+const AS_SENT = (payload: unknown) => payload
+
+/**
+ * The family of a model at a reseller of TypeSafe's Jev: Jev for a Jev id,
+ * the model itself otherwise.
+ */
+const JEV_FAMILY = (model: string) => (JEV.test(model) ? 'jev' : model)
+
 const TABLE: Record<ProviderName, Descriptor> = {
   typesafe: {
     title: 'TypeSafe',
@@ -389,11 +417,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
     isGateway: false,
     limits: { maxStateTokens: 32_000, maxRequestTokens: 64_000 },
     needs: ['typesafeApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.typesafe.ai/v1/systemone',
     tokenOf: credentials => credentials.typesafeApiKey,
     wire: BARE,
-    unwrap: payload => payload,
+    unwrap: AS_SENT,
   },
   cloudflare: {
     title: 'Cloudflare',
@@ -425,15 +453,15 @@ const TABLE: Record<ProviderName, Descriptor> = {
     title: 'OpenRouter',
     defaultModel: '~typesafe/jev-latest',
     models: ['~typesafe/jev-latest'],
-    family: model => (isOpenRouterJev(model) ? 'jev' : model),
+    family: model => (OPENROUTER_JEV.test(model) ? 'jev' : model),
     isGateway: true,
     limits: { maxStateTokens: 32_000, maxRequestTokens: 32_000 },
     needs: ['openrouterApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://openrouter.ai/api/v1/systemone',
     tokenOf: credentials => credentials.openrouterApiKey,
     wire: BARE,
-    unwrap: payload => payload,
+    unwrap: AS_SENT,
   },
   // Codiv serves its own open Jev, which answers as `openjev-0.1` and is a
   // model of its own, not TypeSafe's Jev; at Codiv `jev-latest` is an alias
@@ -448,11 +476,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
     isGateway: false,
     limits: { maxStateTokens: 60_000, maxRequestTokens: 65_536 },
     needs: ['codivApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.codiv.ai/v1/systemone',
     tokenOf: credentials => credentials.codivApiKey,
     wire: BARE,
-    unwrap: payload => payload,
+    unwrap: AS_SENT,
   },
   // Perplexity refuses any model but its own deciders (HTTP 400, "Invalid
   // model"), Jev included. A request must stay under 262,144 input tokens,
@@ -470,11 +498,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxQuestions: 128,
     },
     needs: ['perplexityApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.perplexity.ai/v1/decisions',
     tokenOf: credentials => credentials.perplexityApiKey,
     wire: BARE,
-    unwrap: payload => payload,
+    unwrap: AS_SENT,
   },
   // The two Decisions resellers forward to TypeSafe's Jev and wrap the
   // reply in an envelope of their own. decisions-api.dev alone restricts
@@ -483,11 +511,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
     title: 'decisions-api.dev',
     defaultModel: 'jev-latest',
     models: ['jev-latest'],
-    family: model => (JEV.test(model) ? 'jev' : model),
+    family: JEV_FAMILY,
     isGateway: true,
     limits: RESELLER,
     needs: ['decisionsApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://decisions-api.dev/v1/systemone',
     tokenOf: credentials => credentials.decisionsApiKey,
     wire: ALIASED,
@@ -500,11 +528,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
     title: 'decisionapi.net',
     defaultModel: 'jev-latest',
     models: ['jev-latest'],
-    family: model => (JEV.test(model) ? 'jev' : model),
+    family: JEV_FAMILY,
     isGateway: true,
     limits: RESELLER,
     needs: ['decisionapiApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://decisionapi.net/v1/systemone',
     tokenOf: credentials => credentials.decisionapiApiKey,
     wire: BARE,
@@ -523,7 +551,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
     isGateway: false,
     limits: UNDOCUMENTED,
     needs: ['openaiApiKey'],
-    bodyModelOf: model => model.trim(),
+    bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.openai.com/v1/decisions',
     tokenOf: credentials => credentials.openaiApiKey,
     wire: OPENAI,
@@ -542,25 +570,6 @@ export function providerOf(value: unknown): ProviderName | undefined {
 }
 
 /**
- * The ids OpenRouter routes to Jev: a Jev id (`jev`, `jev-latest`,
- * `jev-1.13`) either bare, which OpenRouter maps onto TypeSafe's namespace
- * before routing, or under that namespace (`typesafe/`) or its alias
- * (`~typesafe/`). The namespace alone does not make a model Jev: any other
- * model TypeSafe publishes there is a model of its own.
- */
-const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
-
-/**
- * Tells whether an OpenRouter model id reaches Jev.
- *
- * @param model the model id as OpenRouter's body spells it
- * @returns true for a Jev id
- */
-export function isOpenRouterJev(model: string): boolean {
-  return OPENROUTER_JEV.test(model)
-}
-
-/**
  * The limits a request over a route must keep to. OpenRouter is a gateway:
  * a request it forwards is also held to what the model's own host accepts.
  * Its Jev window is documented, and no question cap with it. Any other model
@@ -574,7 +583,7 @@ export function isOpenRouterJev(model: string): boolean {
 export function limitsOf(route: Route): Limits {
   const limits = TABLE[route.provider].limits
 
-  if (route.provider === 'openrouter' && !isOpenRouterJev(route.model)) {
+  if (route.provider === 'openrouter' && !OPENROUTER_JEV.test(route.model)) {
     return {
       ...limits,
       maxQuestions: TABLE.cloudflare.limits.maxQuestions,
@@ -585,8 +594,7 @@ export function limitsOf(route: Route): Limits {
 }
 
 /**
- * The models a provider offers the routing decision: both Cloudflare models,
- * and for a single-model provider its default.
+ * The models a provider is offered with in the routing decision.
  *
  * @param provider the provider
  * @returns the model names as its body spells them
@@ -867,11 +875,28 @@ export function briefOf(text: string, credentials: Credentials): string {
     .replace(/\s+/g, ' ')
     .trim()
 
-  if (line === '') {
-    return 'no reason given'
-  }
+  return line === '' ? 'no reason given' : cutOf(line)
+}
 
-  return line.length > REASON_CHARS ? `${headOf(line, REASON_CHARS)}…` : line
+/**
+ * A text held to `REASON_CHARS`: cut there, never between the two halves of
+ * a surrogate pair, with `…` where it was cut.
+ *
+ * @param text the text
+ * @returns the text, or its first `REASON_CHARS` characters and `…`
+ */
+export function cutOf(text: string): string {
+  return text.length > REASON_CHARS ? `${headOf(text, REASON_CHARS)}…` : text
+}
+
+/**
+ * The message of a thrown value, which need not be an `Error`.
+ *
+ * @param error what was thrown
+ * @returns its message, or the value as text
+ */
+export function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -983,7 +1008,7 @@ const REASON_DEPTH = 4
  * and `AiError:` prefix is dropped and a quoted body is read for its own
  * reason and field errors.
  */
-function innermostReason(reason: string, depth = 0): string {
+function innermostReason(reason: string, depth: number): string {
   const bare = reason.replace(/^(?:\s*(?:HTTP \d{3}|AiError):)+\s*/i, '')
   const start = bare.indexOf('{')
   const end = bare.lastIndexOf('}')
@@ -1000,16 +1025,22 @@ function innermostReason(reason: string, depth = 0): string {
     return bare
   }
 
-  const inner = reasonIn(quoted)
-  const fields = fieldErrorsIn(quoted)
+  return statedIn(quoted, depth + 1) ?? bare
+}
 
-  if (inner === undefined) {
-    return fields ?? bare
-  }
+/**
+ * What an error body states: its reason with the bodies quoted in it
+ * unwrapped, and its field errors after it, or either alone.
+ */
+function statedIn(payload: unknown, depth: number): string | undefined {
+  const reason = reasonIn(payload)
+  const fields = fieldErrorsIn(payload)
 
-  const deepest = innermostReason(inner, depth + 1)
-
-  return fields === undefined ? deepest : `${deepest}: ${fields}`
+  return reason === undefined
+    ? fields
+    : fields === undefined
+      ? innermostReason(reason, depth)
+      : `${innermostReason(reason, depth)}: ${fields}`
 }
 
 /**
@@ -1026,16 +1057,7 @@ function reasonOf(text: string, credentials: Credentials): string {
     payload = undefined
   }
 
-  const reason = reasonIn(payload)
-  const fields = fieldErrorsIn(payload)
-  const stated =
-    reason === undefined
-      ? fields
-      : fields === undefined
-        ? innermostReason(reason)
-        : `${innermostReason(reason)}: ${fields}`
-
-  return briefOf(stated ?? text, credentials)
+  return briefOf(statedIn(payload, 0) ?? text, credentials)
 }
 
 /**
@@ -1081,11 +1103,7 @@ export function replyFrom(
     reply = replyOf(TABLE[route.provider].unwrap(payload, credentials, asked))
   } catch (error) {
     throw new Error(
-      `${route.provider}: ` +
-        briefOf(
-          error instanceof Error ? error.message : String(error),
-          credentials,
-        ),
+      `${route.provider}: ${briefOf(messageOf(error), credentials)}`,
     )
   }
 

@@ -50,7 +50,7 @@ export type CallNote = {
  * One message of the conversation as the state shows it. `calls` holds
  * notes, or one line per call once the state had to shrink that far.
  */
-export type Entry = {
+type Entry = {
   at: number
   role: SessionMessage['role']
   text: string
@@ -94,7 +94,7 @@ export type Fitted = {
 /**
  * What the fitting needs to know.
  */
-export type FitNeed = {
+type FitNeed = {
   maxStateTokens: number
   preserveRecentMessages: number
   goal: string
@@ -117,7 +117,7 @@ export type FitNeed = {
  * The frame every question is read in. It carries the rubric once, so the
  * per-call questions can stay short: they are repeated for every call.
  */
-export const CONTEXT =
+const CONTEXT =
   'This is the transcript of a coding assistant session whose context ' +
   'window is nearly full. To free space, old tool calls and their outputs ' +
   'are being removed; nothing is summarised or reworded. `conversation` ' +
@@ -189,9 +189,6 @@ function isHighSurrogate(code: number): boolean {
  * The weights follow the design this mod is modelled on, which reports them
  * landing a little above Jev's own count; they are an estimate, so the
  * budgets they are compared with must leave headroom.
- *
- * @param text the text
- * @returns the estimated token count
  */
 export function estimatedTokensOf(text: string): number {
   // Counted in tenths of a token so the sum stays in whole numbers: adding
@@ -228,7 +225,6 @@ export function estimatedTokensOf(text: string): number {
  * The first `count` characters of a text, never ending between the two
  * halves of a surrogate pair: a lone half does not survive JSON transport.
  *
- * @param text the text
  * @param count how many characters at most
  * @returns the start of the text
  */
@@ -286,7 +282,7 @@ function abridged(text: string): string {
  * @param recent how many of the newest are kept as they are
  * @returns true when the message is pinned
  */
-export function isPinnedIndex(
+function isPinnedIndex(
   index: number,
   total: number,
   recent: number,
@@ -515,22 +511,6 @@ type Pass = {
 }
 
 /**
- * What an entry costs inside the list: its own JSON and the comma after it.
- */
-function weigh(entry: Entry, wire: Wire): number {
-  return estimatedTokensOf(wire.stateJsonOf(JSON.stringify(entry))) + 1
-}
-
-/**
- * What an entry takes in the request body, in UTF-8 bytes: its own JSON as
- * the wire format carries it and the comma after it. The last entry has no
- * comma, so a sum of these is over by one byte at most.
- */
-function weighBytes(entry: Entry, wire: Wire): number {
-  return bytesOf(wire.stateJsonOf(JSON.stringify(entry))) + 1
-}
-
-/**
  * Where several entries in a row hold nothing but one-line calls, gives the
  * lines of all of them to the first and drops the rest. The keys of an
  * entry are then paid for once for the whole row, and every line still
@@ -622,8 +602,17 @@ export function stateWithin(
   const frameTokens = tokensOf(frame([]))
   const { bytes } = need
   const frameBytes = bytes === undefined ? 0 : bytes.besideOf(frame([]))
-  const bytesOfEntry = (entry: Entry) =>
-    bytes === undefined ? 0 : weighBytes(entry, need.wire)
+  // What an entry costs inside the list: its own JSON as the wire format
+  // carries it and the comma after it, in tokens and in UTF-8 bytes. The
+  // last entry has no comma, so a sum of these is over by one byte at most.
+  const weigh = (entry: Entry): Pick<Slot, 'tokens' | 'bytes'> => {
+    const json = need.wire.stateJsonOf(JSON.stringify(entry))
+
+    return {
+      tokens: estimatedTokensOf(json) + 1,
+      bytes: bytes === undefined ? 0 : bytesOf(json) + 1,
+    }
+  }
   const inputs = new Map(calls.map(call => [call, inputJsonOf(call)]))
   const made = new Map<number, Call[]>()
 
@@ -672,8 +661,7 @@ export function stateWithin(
 
       slots.push({
         entry,
-        tokens: weigh(entry, need.wire),
-        bytes: bytesOfEntry(entry),
+        ...weigh(entry),
         isOld: !isPinnedIndex(at, messages.length, need.preserveRecentMessages),
         isOut: false,
       })
@@ -750,13 +738,12 @@ export function stateWithin(
 
       pass.reduce(slot)
 
-      const now = slot.isOut ? 0 : weigh(slot.entry, need.wire)
-      const nowBytes = slot.isOut ? 0 : bytesOfEntry(slot.entry)
+      const now = slot.isOut ? { tokens: 0, bytes: 0 } : weigh(slot.entry)
 
-      total += now - slot.tokens
-      totalBytes += nowBytes - slot.bytes
-      slot.tokens = now
-      slot.bytes = nowBytes
+      total += now.tokens - slot.tokens
+      totalBytes += now.bytes - slot.bytes
+      slot.tokens = now.tokens
+      slot.bytes = now.bytes
 
       if (fits()) {
         return fitted(pass.stage)
@@ -767,8 +754,7 @@ export function stateWithin(
   slots = folded(
     slots.filter(slot => !slot.isOut),
     slot => {
-      slot.tokens = weigh(slot.entry, need.wire)
-      slot.bytes = bytesOfEntry(slot.entry)
+      Object.assign(slot, weigh(slot.entry))
     },
   )
   tally()

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { armOf, isCompactionDue, REARM_POINTS, settle } from '../hooks/trigger'
+import { armOf, isCompactionDue, settle } from '../hooks/trigger'
 
 /**
  * One turn's end: the usage read, whether a compaction is expected to be
@@ -146,9 +146,5 @@ describe('isCompactionDue', () => {
 
     settle(arm, undefined, 95)
     expect(arm).toEqual({ isFloorPending: true })
-  })
-
-  test('success: the rise that re-arms is ten points', () => {
-    expect(REARM_POINTS).toBe(10)
   })
 })

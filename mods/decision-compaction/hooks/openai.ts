@@ -1,4 +1,4 @@
-import { idsOf } from './systemone'
+import { idsOf, isRecord } from './systemone'
 import type { Question, Questions, Wire } from './systemone'
 
 /**
@@ -18,10 +18,6 @@ type OpenAIQuestion =
  * The longest JSON of a value OpenAI sent that an error quotes.
  */
 const QUOTED_CHARS = 64
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 /**
  * A value OpenAI sent, made fit to quote in an error: its JSON, which
@@ -92,7 +88,7 @@ function questionOf(name: string, question: Question): OpenAIQuestion {
  * @param questions the questions, by id
  * @returns the JSON text of the request body
  */
-export function encodeOpenAI(
+function encodeOpenAI(
   model: string,
   state: unknown,
   questions: Questions,
@@ -178,10 +174,7 @@ export function decodeOpenAI(payload: unknown, asked: Questions): unknown {
   const reported = isRecord(payload.usage) ? payload.usage : {}
   const decoded: Record<string, unknown> = {
     answers,
-    usage: {
-      input_tokens: reported.input_tokens,
-      output_tokens: reported.output_tokens,
-    },
+    usage: { input_tokens: reported.input_tokens },
   }
 
   if (typeof payload.model === 'string') {

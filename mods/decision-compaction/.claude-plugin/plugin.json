@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "decision-compaction",
   "version": "0.1.0",
-  "description": "Hands back the conversation itself in place of a compaction summary, less the tool calls and results a System One decision model (TypeSafe Jev, Cloudflare Clef, or Jev through OpenRouter) judges no longer needed.",
+  "description": "Hands back the conversation itself in place of a compaction summary, less the tool calls and results a System One decision model judges no longer needed. The model can be TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, or Jev through OpenRouter, decisions-api.dev or decisionapi.net.",
   "author": {
     "name": "Koichi Shiraishi"
   },
@@ -11,19 +11,35 @@
     "provider": {
       "type": "string",
       "title": "Provider",
-      "description": "Which System One provider decides: \"typesafe\" (Jev, the default), \"cloudflare\" (Clef on Workers AI) or \"openrouter\" (Jev through the OpenRouter gateway). The conversation text and tool inputs are sent to it. Any other value sends nothing anywhere: every compaction then uses the built-in summary and says why.",
+      "description": "Which System One provider decides: \"typesafe\" (Jev, the default), \"cloudflare\" (Clef on Workers AI), \"openrouter\" (Jev through the OpenRouter gateway), \"codiv\" (OpenJev), \"perplexity\" (pplx-decider), \"decisions-api-dev\" (Jev through decisions-api.dev), \"decisionapi-net\" (Jev through decisionapi.net) or \"openai\" (GPT-6 Luna). The conversation text and tool inputs are sent to it. Any other value sends nothing anywhere: every compaction then uses the built-in summary and says why.",
       "default": "typesafe"
     },
     "model": {
       "type": "string",
       "title": "Model",
-      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash is the other), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest)."
+      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash is the other), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev and decisionapi-net), gpt-6-luna (openai)."
     },
     "providerDecision": {
       "type": "boolean",
       "title": "Decide the provider per compaction",
-      "description": "When on, the providers that have credentials and can hold the conversation are compared, and if more than one remains a single routing question picks which decides this compaction. That question goes to Cloudflare whenever its credentials are set, with a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
+      "description": "When on, the providers that have credentials and can hold the conversation are compared, and if more than one remains a single routing question picks which decides this compaction. A provider is a candidate as soon as its credentials resolve, so a key you exported for another tool (OPENAI_API_KEY, for example) makes that vendor eligible to receive the conversation; decisionProviders narrows the set. The routing question goes to Cloudflare only when cloudflare is among the providers considered and its credentials are set, otherwise to the configured provider; it carries a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
       "default": false
+    },
+    "decisionProviders": {
+      "type": "string",
+      "title": "Providers the decision may consider",
+      "description": "With providerDecision on, the providers that may be compared and so may receive the conversation. Default: all eight (typesafe, cloudflare, openrouter, codiv, perplexity, decisions-api-dev, decisionapi-net, openai). The configured provider is always considered. Takes a list, or one text of names separated by commas. Unset means all eight; a cleared field or an empty list names none, so only the configured provider is considered. A name that is no provider is dropped and named in one transcript line; the compaction goes on. No effect while providerDecision is off.",
+      "multiple": true,
+      "default": [
+        "typesafe",
+        "cloudflare",
+        "openrouter",
+        "codiv",
+        "perplexity",
+        "decisions-api-dev",
+        "decisionapi-net",
+        "openai"
+      ]
     },
     "typesafeApiKey": {
       "type": "string",
@@ -47,6 +63,36 @@
       "type": "string",
       "title": "Cloudflare account ID",
       "description": "The account Workers AI runs under. When empty, the CLOUDFLARE_ACCOUNT_ID variable is read, from the environment first and the settings env block second."
+    },
+    "codivApiKey": {
+      "type": "string",
+      "title": "Codiv key",
+      "description": "Stored as a secret. When empty, the CODIV_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "perplexityApiKey": {
+      "type": "string",
+      "title": "Perplexity key",
+      "description": "Stored as a secret. When empty, the PERPLEXITY_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "decisionsApiKey": {
+      "type": "string",
+      "title": "decisions-api.dev key",
+      "description": "Stored as a secret. When empty, the DECISIONS_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "decisionapiApiKey": {
+      "type": "string",
+      "title": "decisionapi.net key",
+      "description": "Stored as a secret. When empty, the DECISIONAPI_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
+    },
+    "openaiApiKey": {
+      "type": "string",
+      "title": "OpenAI key",
+      "description": "Stored as a secret. When empty, the OPENAI_API_KEY variable is read, from the environment first and the settings env block second.",
+      "sensitive": true
     },
     "keepThreshold": {
       "type": "number",
@@ -82,14 +128,14 @@
     "maxStateTokens": {
       "type": "number",
       "title": "State budget (tokens)",
-      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Held to 85% of the provider's documented limit, and to what the request budget leaves beside the questions of 16 tool calls. A fraction is rounded down.",
+      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Held to 85% of the provider's documented limit, and to what the request budget leaves beside the questions of 16 tool calls. For a provider whose limit is stated in bytes the description is also shrunk until it fits that cap beside one request's questions; see Limits in the README. A fraction is rounded down.",
       "default": 25000,
       "min": 1
     },
     "maxRequestTokens": {
       "type": "number",
       "title": "Request budget (tokens)",
-      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Held to 85% of the provider's documented limit, which for openrouter is 27,200, below the default. A fraction is rounded down.",
+      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Held to 85% of the provider's documented limit and, for a provider whose limit is stated in bytes, to its byte cap as well; see Limits in the README. A fraction is rounded down.",
       "default": 30000,
       "min": 1
     },

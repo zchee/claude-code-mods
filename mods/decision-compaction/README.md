@@ -6,15 +6,22 @@ outputs removed that a System One decision model says the assistant can do
 without. What you and the assistant wrote stays word for word.
 
 **The conversation text and the tool inputs are sent to the selected
-third-party API** (TypeSafe, Cloudflare or OpenRouter) on every compaction.
+third-party API** (TypeSafe, Cloudflare, OpenRouter, Codiv, Perplexity,
+decisions-api.dev, decisionapi.net or OpenAI) on every compaction.
 They are sent as they are: a secret you pasted into a prompt, or one that
 appears in a tool input such as a shell command, goes with them. Tool
 outputs are not sent: each is replaced by a note of its status and length.
 **With `providerDecision` on, a second provider can receive data in the
-same compaction**: the routing question, when there is a choice to make,
-goes to Cloudflare whenever Cloudflare credentials are set, whichever
-provider is configured, and it carries a profile of the job that includes
-up to 2,000 characters of your prompts (the text typed after `/compact`, or
+same compaction.** Every provider in `decisionProviders` (all eight by
+default) whose credentials resolve is a candidate to decide it, so a key
+you exported for another tool, `OPENAI_API_KEY` for example, makes that
+vendor eligible to receive the conversation. `decisionProviders` is the
+setting that narrows the set. The routing question, when there is a
+choice to make, goes to Cloudflare only when `cloudflare` is one of the
+providers considered (the configured provider, and those in
+`decisionProviders`) and its credentials are set; otherwise it goes to the
+configured provider. It carries a profile of the job that includes up to
+2,000 characters of your prompts (the text typed after `/compact`, or
 your last three prompts). Do not enable this mod for a session whose
 content must not leave your machine.
 
@@ -35,12 +42,16 @@ mod's trigger) the hook:
    middle cut out of long texts (old messages before the protected ones),
    old texts replaced by their length, old calls written on one line, old
    messages without a call omitted, and neighbouring old messages that
-   hold nothing but calls merged into one entry. Sizes are estimates; no tokenizer is used.
+   hold nothing but calls merged into one entry. For a provider that caps
+   the request body in bytes, the same reductions go on until the state
+   also fits that cap with room left for one request's questions. Sizes
+   are estimates; no tokenizer is used.
 3. Puts two yes/no questions to the provider for every call left to judge:
    is the call itself still needed, and is its complete output still
    needed word for word. A request holds as many of these questions as the
-   token budget and the provider's own limit on questions allow, and each
-   request carries the full state. See [Limits](#limits) for the bounds.
+   token budget, the provider's own limit on questions and, for a provider
+   that caps the body in bytes, that cap allow, and each request carries
+   the full state. See [Limits](#limits) for the bounds.
 4. Compares each answer with `keepThreshold`. Either the call and its
    output both stay; or the call stays and the output is shortened to its
    opening `truncateHeadChars` characters, followed by a note saying how
@@ -92,18 +103,50 @@ A turn you interrupted, and a subagent's turn, request nothing.
 
 ## Providers
 
-| `provider` | Model by default | Credentials | Documented limits |
-| --- | --- | --- | --- |
-| `typesafe` (default) | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
-| `cloudflare` | `clef` (`clef-flash` is the other) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 65,536 tokens; 64 questions a request |
-| `openrouter` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
+| `provider` | Endpoint | Model by default | Credentials | Documented limits |
+| --- | --- | --- | --- | --- |
+| `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
+| `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` is the other) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 65,536 tokens; 64 questions a request |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
+| `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no limit on questions |
+| `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
+| `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
+| `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, counted in bytes; 8 questions a request |
+| `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | not documented for the Decisions API; the mod holds a request to 32,000 tokens and 64 questions |
 
-The `provider` option takes exactly these three names. Any other value is
+The `provider` option takes exactly these eight names. Any other value is
 not replaced by the default: nothing is sent anywhere, and every compaction
 uses the built-in summary with a line naming the value. Only an option left
 unset or empty means `typesafe`. For that reason `/config` shows the option
 as a text field rather than a list (a list would let the engine turn an
 unknown value into the default without saying so).
+
+What differs between the providers beyond the table:
+
+- `openrouter`, `decisions-api-dev` and `decisionapi-net` are gateways to
+  TypeSafe's Jev. `codiv`'s OpenJev is a model of its own, not TypeSafe's
+  Jev: at Codiv `jev-latest` is an alias of OpenJev.
+- `perplexity` accepts only its own decider models. Any other name in
+  `model`, `jev-latest` included, is refused with an HTTP 400 and the
+  compaction uses the built-in summary.
+- `decisions-api-dev` and `decisionapi-net` wrap the answer in a
+  `{code, message, data}` envelope. A `code` other than 0, or an envelope
+  without `data.result`, ends the compaction with the vendor's message
+  quoted, as for any other failed request.
+- `decisions-api-dev` accepts a question id only if it starts with a
+  letter, uses letters, digits, `_` and `-`, and is at most 64 characters.
+  The mod's ids can hold `.` and run longer, so it names each question in
+  a request by its place (`q0`, `q1`, …) and maps the answers back to the
+  ids. An answer under a name the mod did not send is refused.
+- `openai` takes a different request: the state goes as one JSON string in
+  `input` and the questions as a list, each a `predicate` (yes/no) or a
+  `choice`. The mod translates the request into that form and the answers
+  back. OpenAI counts about 148 input tokens for each question (Codiv
+  about 26 for the same one-line question), and the mod's size estimate
+  adds that figure per question. If OpenAI refuses to answer a question
+  (the line reads `openai: refused to answer <question id>`), or answers in
+  a shape the mod does not read, the compaction ends with the built-in
+  summary and the line names the question or the field.
 
 `~typesafe/jev-latest` is OpenRouter's alias for the newest Jev;
 `typesafe/jev-1.13` pins a release. OpenRouter also takes TypeSafe's bare
@@ -121,7 +164,9 @@ Each credential is read from its plugin option first, then from the
 environment, at the time of the compaction. The `env` block of the settings
 is read only when a credential a provider in play needs is still missing;
 if the settings cannot be read, that is logged and the compaction goes on
-with what it has.
+with what it has. With `providerDecision` on and `decisionProviders` at
+its default of all eight providers, some key is usually unset, so the
+settings are read on most compactions.
 
 Text that comes from a provider or from the host (an HTTP error body, a
 Cloudflare failure envelope, the reason the host gives for refusing a
@@ -140,10 +185,16 @@ ordinary words.
 | `provider` | `typesafe` | Which provider decides; any other name sends nothing. |
 | `model` | provider default | Model name for the configured provider. |
 | `providerDecision` | `false` | Decide the provider per compaction; see below. |
+| `decisionProviders` | all eight providers | With `providerDecision` on, the providers that may be compared and so may receive the conversation: a list of provider names, or one text of names separated by commas. The configured provider is always considered. See below. |
 | `typesafeApiKey` | unset | TypeSafe API key (stored as a secret). |
 | `openrouterApiKey` | unset | OpenRouter API key (stored as a secret). |
 | `cloudflareApiToken` | unset | Cloudflare API token allowed to run Workers AI (stored as a secret). |
 | `cloudflareAccountId` | unset | Cloudflare account ID. |
+| `codivApiKey` | unset | Codiv API key (stored as a secret). |
+| `perplexityApiKey` | unset | Perplexity API key (stored as a secret). |
+| `decisionsApiKey` | unset | decisions-api.dev API key (stored as a secret). |
+| `decisionapiApiKey` | unset | decisionapi.net API key (stored as a secret). |
+| `openaiApiKey` | unset | OpenAI API key (stored as a secret). |
 | `keepThreshold` | `0.5` | Probability from which a call, or its full result, is kept. |
 | `preserveRecentMessages` | `6` | Newest messages that are never changed. |
 | `compactAtPercent` | `60` | Context usage at which a compaction is requested; `0` turns the trigger off. |
@@ -161,12 +212,44 @@ The bounds below are fixed; they are not options.
   cuts a state that is too long without saying so. A budget is therefore
   held to 85% of the provider's documented limit: 27,200 tokens for the
   state plus the longest question and 54,400 a request on `typesafe`,
-  55,705 on `cloudflare`, 27,200 on `openrouter`. On `openrouter` that is
-  below the default `maxRequestTokens` of 30,000, so the default is lowered
-  there.
+  55,705 on `cloudflare`, 27,200 on `openrouter` and `openai`, 51,000 for
+  the state plus the longest question (85% of the 60,000 the vendor
+  advises) and 55,705 a request on `codiv`, 222,821 on `perplexity`, and
+  27,200 for the state plus the longest question and 54,400 a request on
+  `decisions-api-dev` and `decisionapi-net`. Both serve TypeSafe's Jev
+  1.13 and state their own limit in bytes, so they are held to the token
+  window TypeSafe documents for Jev, and the byte cap below is the bound
+  that decides. `openai` documents no limit, so it is
+  held to the tightest figures of the others, 32,000 tokens and 64
+  questions, before the margin. Where the margin leaves less than the
+  default `maxRequestTokens` of 30,000 (`openrouter` and `openai`), the
+  default is lowered there.
+- **A byte cap.** `decisions-api-dev` and `decisionapi-net` also hold a
+  request to the 85% share of their 32 KiB cap, 27,852 of 32,768 bytes,
+  measured as UTF-8 of the encoded request body, since a body over the cap
+  is refused whole. When one of them is the configured provider the state
+  is fitted to that cap as well as to its tokens: the reductions above go
+  on until the body, with the questions of one request set aside (4 tool
+  calls, all that 8 questions hold), fits in 27,852 bytes. English prose
+  takes more bytes for each estimated token than the token budget allows
+  for, and text that is not ASCII more still, so on these two providers it
+  is usually the bytes that decide how much of the conversation the model
+  sees. Questions are counted at or above the bytes they are sent in
+  (`decisions-api-dev` counts each under the longest name it may send,
+  `q7`). A conversation still over the cap after every reduction is left
+  to the built-in summary, and the line says how many bytes were left.
+  With `providerDecision` on, the state is fitted for the configured
+  provider, so one of these two offered as another route may have no room
+  for a question within the cap; it is then ruled out, and the line says
+  how many of the 27,852 bytes the request takes before any question.
 - **A reply that shows a cut.** If a provider reports as many input tokens
-  as its documented request limit, the state was probably cut short. The
-  answers are discarded and the built-in summary runs.
+  as the request limit the mod holds for it (before the margin), the state
+  was probably cut short. The answers are discarded and the built-in
+  summary runs. On `decisions-api-dev` and `decisionapi-net` that limit is
+  Jev's own 64,000 tokens, which a body within 32 KiB does not reach. On
+  `openai` it is the mod's fallback of 32,000, not a window OpenAI states,
+  so a reply counting that many is discarded even if the model read the
+  state whole.
 - **Room for a batch.** The state may take at most the request budget less
   the questions of 16 tool calls (of all of them, when there are fewer).
   Every request carries the whole state, so without this a state that
@@ -215,30 +298,62 @@ Longer tool inputs and longer tool names lower these numbers. Raising
 `maxStateTokens` and `maxRequestTokens` raises them, up to the margins
 above.
 
+The table has no rows for `codiv`, `perplexity`, `decisions-api-dev`,
+`decisionapi-net` and `openai`; it was not measured on them.
+`decisions-api-dev` and `decisionapi-net` take 8 questions and 32 KiB a
+request, so of a long conversation the model sees only what is left once
+the state is shrunk to the cap. The cap counts bytes, so text that is not
+ASCII uses more of it. Eight questions are the questions of 4
+tool calls, so a compaction asks about at most 64 calls over its 16
+requests.
+
 ## `providerDecision`
 
-Off by default: the configured provider is always used.
+Off by default: the configured provider is always used, and no other
+provider is sent anything.
 
-When on, the mod first drops every route it can rule out in code: a provider
-whose credentials are unset, whose limits the fitted state exceeds, or that
-would need more than 16 requests. Cloudflare contributes two routes (`clef`
-and `clef-flash`); an OpenRouter id that names Jev (`jev`, `jev-…`, alone
-or under `typesafe/` or `~typesafe/`) is not offered when TypeSafe is
-usable, since it is the same model through a gateway. Any other OpenRouter
-id, under `typesafe/` included, is a model of its own. If two or more
-routes remain, one `choice` question is asked over a small profile of the
-job (message and call counts, state size, tool mix, error share, share of
-non-ASCII text, and the goal), not over the conversation. The goal is your
-own text: what you typed after `/compact`, cut to 2,000 characters, or your
-last three prompts, cut to 500 characters each. The question is asked on
-Cloudflare `clef-flash` when Cloudflare is configured, otherwise on the
-configured provider. The option descriptions state only what the providers
-document about their models.
+When on, the providers considered are the configured one and those in
+`decisionProviders`. Unset, that option is every provider, all eight. It
+takes a list of names, or one text of names separated by commas; a cleared
+field (an empty text) or an empty list names none, so only the configured
+provider is considered.
+A name that is no provider is dropped and named in one line of the
+transcript; the compaction goes on, because dropping a name can only
+narrow where data goes. A provider that is not considered is sent nothing,
+even when its credentials are set. A provider that is considered is a
+candidate as soon as its credentials resolve, so a key exported for
+another tool makes that vendor eligible. To keep the choice to the
+original three providers, set `decisionProviders` to
+`typesafe,cloudflare,openrouter`.
+
+The mod first drops every route it can rule out in code: a provider whose
+credentials are unset, whose limits the fitted state exceeds, or that would
+need more than 16 requests. Cloudflare contributes two routes (`clef` and
+`clef-flash`). Among routes to the same model one is offered: the direct
+route when it is usable, otherwise the first gateway in the order
+`openrouter`, `decisions-api-dev`, `decisionapi-net`. Jev is reached
+directly through `typesafe` and through those three gateways; on
+OpenRouter an id that names Jev (`jev`, `jev-…`, alone or under
+`typesafe/` or `~typesafe/`) is Jev. Every other route to that model is
+left out, with the reason "the same model as" the one offered. Any other
+OpenRouter id, under `typesafe/` included, is a model of its own. If two
+or more routes remain, one `choice` question is asked over a small
+profile of the job (message and call counts, state size, tool mix, error
+share, share of non-ASCII text, and the goal), not over the conversation.
+The goal is your own text: what you typed after `/compact`, cut to 2,000
+characters, or your last three prompts, cut to 500 characters each. The
+question is asked on Cloudflare `clef-flash` only when `cloudflare` is
+one of the providers considered and its credentials are set, otherwise on
+the configured provider. A `decisionProviders` list
+without `cloudflare` therefore keeps the profile away from Cloudflare,
+unless Cloudflare is the configured provider. The option descriptions
+state only what the providers document about their models.
 
 With one route left, or when the routing request fails, the configured
 provider is used and the reason is logged. That includes the case where the
-configured provider is OpenRouter and the one route left is TypeSafe's
-direct route to the same model. The one exception: if the configured
+configured provider is a gateway to Jev (`openrouter`, `decisions-api-dev`
+or `decisionapi-net`) and the one route left is TypeSafe's direct route to
+the same model. The one exception: if the configured
 provider cannot take the job and exactly one other route can, that route is
 used. With no route left at all the built-in summary runs, and its line
 lists every route with the reason it was ruled out. A routing question

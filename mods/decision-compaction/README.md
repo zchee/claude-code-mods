@@ -1,31 +1,82 @@
 # decision-compaction
 
-A Claude Code mod for `session.compact`. Instead of a written summary, the
-conversation comes back as it was, with only those tool calls and tool
+Compaction without a summary. A Claude Code mod for `session.compact` that
+hands the conversation back as it was, with only those tool calls and tool
 outputs removed that a System One decision model says the assistant can do
 without. What you and the assistant wrote stays word for word.
 
-**The conversation text and the tool inputs are sent to the selected
-third-party API** (TypeSafe, Cloudflare, OpenRouter, Codiv, Perplexity,
-decisions-api.dev, decisionapi.net or OpenAI) on every compaction.
-They are sent as they are: a secret you pasted into a prompt, or one that
-appears in a tool input such as a shell command, goes with them. Tool
-outputs are not sent: each is replaced by a note of its status and length.
-**With `providerDecision` on, a second provider can receive data in the
-same compaction.** Every provider in `decisionProviders` (all eight by
-default) whose credentials resolve is a candidate to decide it, so a key
-you exported for another tool, `OPENAI_API_KEY` for example, makes that
-vendor eligible to receive the conversation. `decisionProviders` is the
-setting that narrows the set. The routing question, when there is a
-choice to make, goes to Cloudflare only when `cloudflare` is one of the
-providers considered (the configured provider, and those in
-`decisionProviders`) and its credentials are set; otherwise it goes to the
-configured provider. It carries a profile of the job that includes up to
-2,000 characters of your prompts (the text typed after `/compact`, or
-your last three prompts). Do not enable this mod for a session whose
-content must not leave your machine.
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
+[![Plugin API: Claude Code 2.1.292](https://img.shields.io/badge/plugin%20API-Claude%20Code%202.1.292-8A2BE2.svg)](../types/claude-code/index.d.ts)
+[![Providers: 8](https://img.shields.io/badge/providers-8-success.svg)](#providers)
 
-## What it does
+> [!WARNING]
+> **The conversation text and the tool inputs are sent to the selected
+> third-party API** (TypeSafe, Cloudflare, OpenRouter, Codiv, Perplexity,
+> decisions-api.dev, decisionapi.net or OpenAI) on every compaction.
+> They are sent as they are: a secret you pasted into a prompt, or one that
+> appears in a tool input such as a shell command, goes with them. Tool
+> outputs are not sent: each is replaced by a note of its status and length.
+>
+> **With `providerDecision` on, a second provider can receive data in the
+> same compaction.** Every provider in `decisionProviders` (all eight by
+> default) whose credentials resolve is a candidate to decide it, so a key
+> you exported for another tool, `OPENAI_API_KEY` for example, makes that
+> vendor eligible to receive the conversation. `decisionProviders` is the
+> setting that narrows the set. The routing question, when there is a
+> choice to make, goes to Cloudflare only when `cloudflare` is one of the
+> providers considered (the configured provider, and those in
+> `decisionProviders`) and its credentials are set; otherwise it goes to the
+> configured provider. It carries a profile of the job that includes up to
+> 2,000 characters of your prompts (the text typed after `/compact`, or
+> your last three prompts).
+>
+> Do not enable this mod for a session whose content must not leave your
+> machine.
+
+## Table of contents
+
+- [Install](#install)
+- [How it works](#how-it-works)
+  - [On `session.compact`](#on-sessioncompact)
+  - [On `turn.complete`](#on-turncomplete)
+- [Providers](#providers)
+  - [Credentials](#credentials)
+  - [Redaction](#redaction)
+- [Options](#options)
+- [Limits](#limits)
+  - [How large a conversation can be decided](#how-large-a-conversation-can-be-decided)
+- [`providerDecision`](#providerdecision)
+- [What a compaction reports](#what-a-compaction-reports)
+- [Development](#development)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
+## Install
+
+From the marketplace, on Claude Code 2.1.275 or later:
+
+```sh
+claude plugin install decision-compaction --marketplace zchee/claude-code-mods
+```
+
+From a checkout, without installing:
+
+```sh
+claude --plugin-dir mods/decision-compaction
+```
+
+Then set a credential for the provider you want (see
+[Providers](#providers)), for example `TYPESAFE_API_KEY` in the
+environment, or the `typesafeApiKey` option in `/config`.
+
+Options are read from settings under `pluginConfigs` and appear in
+`/config`. A mod loaded with `--plugin-dir` is keyed
+`decision-compaction@inline` (the bare `decision-compaction` is read too);
+an installed one is keyed by its plugin id, `decision-compaction@<marketplace>`.
+
+## How it works
+
+### On `session.compact`
 
 On `session.compact` (a `/compact`, the engine's own threshold, or this
 mod's trigger) the hook:
@@ -68,19 +119,21 @@ with a result that was dropped or cut, loses any image content it had; and
 an assistant message that made several calls, one of which was dropped,
 loses its thinking block.
 
-It fails open. On any error (a missing key, a `provider` option that names
-no provider, an HTTP error, a request that is rejected, a compaction whose
-requests are not answered in time, a malformed answer, a conversation that
-cannot be fitted or would take too many requests) and when the decisions
-would remove less than `minReductionRatio`, it says why in one line and
-lets the built-in summary run. A `precompute` compaction is always left to
-the engine.
+**It fails open.** On any error (a missing key, a `provider` option that
+names no provider, an HTTP error, a request that is rejected, a compaction
+whose requests are not answered in time, a malformed answer, a conversation
+that cannot be fitted or would take too many requests) and when the
+decisions would remove less than `minReductionRatio`, it says why in one
+line and lets the built-in summary run. A `precompute` compaction is always
+left to the engine.
 
 Every request that asks about a tool call goes to one provider: the
 configured one, or the one the provider decision picked. Nothing falls over
 to another provider. With `providerDecision` on there can be one more
 request before them, the routing question, and it may go to a different
-provider (see below).
+provider (see [`providerDecision`](#providerdecision)).
+
+### On `turn.complete`
 
 On `turn.complete`, when the main conversation's context reaches
 `compactAtPercent`, the mod requests a compaction. What happens next
@@ -160,6 +213,8 @@ refuses one with more than 64 questions. A model other than Jev on
 `openrouter` is therefore asked at most 64 questions (32 tool calls) a
 request, as on `cloudflare`, while the token limits stay OpenRouter's.
 
+### Credentials
+
 Each credential is read from its plugin option first, then from the
 environment, at the time of the compaction. The `env` block of the settings
 is read only when a credential a provider in play needs is still missing;
@@ -167,6 +222,8 @@ if the settings cannot be read, that is logged and the compaction goes on
 with what it has. With `providerDecision` on and `decisionProviders` at
 its default of all eight providers, some key is usually unset, so the
 settings are read on most compactions.
+
+### Redaction
 
 Text that comes from a provider or from the host (an HTTP error body, a
 Cloudflare failure envelope, the reason the host gives for refusing a
@@ -184,8 +241,8 @@ ordinary words.
 | --- | --- | --- |
 | `provider` | `typesafe` | Which provider decides; any other name sends nothing. |
 | `model` | provider default | Model name for the configured provider. |
-| `providerDecision` | `false` | Decide the provider per compaction; see below. |
-| `decisionProviders` | all eight providers | With `providerDecision` on, the providers that may be compared and so may receive the conversation: a list of provider names, or one text of names separated by commas. The configured provider is always considered. See below. |
+| `providerDecision` | `false` | Decide the provider per compaction; see [`providerDecision`](#providerdecision). |
+| `decisionProviders` | all eight providers | With `providerDecision` on, the providers that may be compared and so may receive the conversation: a list of provider names, or one text of names separated by commas. The configured provider is always considered. See [`providerDecision`](#providerdecision). |
 | `typesafeApiKey` | unset | TypeSafe API key (stored as a secret). |
 | `openrouterApiKey` | unset | OpenRouter API key (stored as a secret). |
 | `cloudflareApiToken` | unset | Cloudflare API token allowed to run Workers AI (stored as a secret). |
@@ -266,7 +323,8 @@ The bounds below are fixed; they are not options.
   failed for good (an answer that is not retried, or the last retry), no
   request is sent and no retry is waited for after it, by any batch; the
   requests still out are abandoned. A failed routing question is the one
-  exception: the configured provider then decides, as described below.
+  exception: the configured provider then decides, as described under
+  [`providerDecision`](#providerdecision).
 - **30 seconds for the whole compaction.** One deadline covers everything a
   compaction sends: the routing question, every batch, every retry and the
   waits before retries. It starts when the first request can go out. When
@@ -360,16 +418,7 @@ lists every route with the reason it was ruled out. A routing question
 still unanswered when the compaction's 30 seconds run out does not hand
 the job to the configured provider: the built-in summary runs.
 
-## Loading
-
-```sh
-claude --plugin-dir mods/decision-compaction
-```
-
-Options are read from settings under `pluginConfigs` and appear in
-`/config`. A mod loaded with `--plugin-dir` is keyed
-`decision-compaction@inline` (the bare `decision-compaction` is read too);
-an installed one is keyed by its plugin id, `decision-compaction@<marketplace>`.
+## What a compaction reports
 
 Each compaction ends with one line, in a toast and in the log, for example
 `compacted without a summary: 41 of 96 messages remain (...)`, with what
@@ -380,20 +429,36 @@ verdicts:` line lists both probabilities for every call asked about.
 ## Development
 
 ```sh
-claude plugin validate mods/decision-compaction
+claude plugin validate --strict mods/decision-compaction
 claude plugin test mods/decision-compaction
 ```
 
 The tests use a fake provider at the `$.http.fetch` seam and never reach a
-network.
+network. From the repository root, `pnpm run check` runs them with the
+type check and the strict validation of every mod.
+
+To send one synthetic request to every provider whose key is in the
+environment, through the mod's own request builder and reply parser:
+
+```sh
+pnpm run live:decision-compaction
+```
+
+It prints one verdict line per provider and no secret, and exits non-zero
+when any provider it called failed. Nothing from a real conversation is
+sent.
 
 A hot reload of the mod while a compaction is running cancels the mod's
 pending waits, the deadline's timer among them, so that compaction's
 30-second bound does not hold across the reload. This matters only while
 the mod is being developed.
 
-## Credit
+## Acknowledgements
 
 The algorithm follows the design of
 [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
 (MIT); the code here is an independent implementation.
+
+## License
+
+[Apache-2.0](../../LICENSE).

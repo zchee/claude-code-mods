@@ -65,22 +65,52 @@ function numberOf(value: unknown): number | undefined {
 }
 
 /**
- * Serialises one request. The three providers take the same three fields, so
- * the body is built once here and only the URL and headers differ.
- *
- * An id a provider would reject is refused before anything is sent: a 422 on
- * one id would otherwise cost the whole batch it rides in.
- *
- * @param model the model name as the provider's body spells it
- * @param state what every question is asked about
- * @param questions the questions, by id
- * @returns the JSON text of the request body
+ * How one provider's request body is written, and how big what it carries
+ * comes out once written: the token estimate is taken of the text that is
+ * sent, not of the objects it was written from.
  */
-export function bodyOf(
-  model: string,
-  state: unknown,
-  questions: Questions,
-): string {
+export type Wire = {
+  /**
+   * Serialises one request.
+   */
+  encode: (model: string, state: unknown, questions: Questions) => string
+  /**
+   * The JSON one question takes in the body, its id included.
+   */
+  questionJsonOf: (id: string, question: Question) => string
+  /**
+   * The JSON of the state, or of a part of it, as it stands in the body:
+   * as it is, or escaped inside a string.
+   */
+  stateJsonOf: (json: string) => string
+  /**
+   * The tokens a provider counts for each question beyond its own text.
+   */
+  tokensPerQuestion: number
+}
+
+const UTF8 = new TextEncoder()
+
+/**
+ * The size of a text once sent, in UTF-8 bytes: what a cap stated in bytes
+ * is held against. A character beyond ASCII takes two to four of them.
+ *
+ * @param text the text
+ * @returns the byte count
+ */
+export function bytesOf(text: string): number {
+  return UTF8.encode(text).length
+}
+
+/**
+ * Checks the ids of one request. An id a provider would reject is refused
+ * before anything is sent: a 422 on one id would otherwise cost the whole
+ * batch it rides in.
+ *
+ * @param questions the questions, by id
+ * @returns the ids; throws when there is none or one is not a valid id
+ */
+export function idsOf(questions: Questions): string[] {
   const ids = Object.keys(questions)
 
   if (ids.length === 0) {
@@ -93,7 +123,36 @@ export function bodyOf(
     }
   }
 
+  return ids
+}
+
+/**
+ * Serialises one request in the System One form: the three fields every
+ * provider that speaks the protocol as published takes.
+ *
+ * @param model the model name as the provider's body spells it
+ * @param state what every question is asked about
+ * @param questions the questions, by id
+ * @returns the JSON text of the request body
+ */
+export function bodyOf(
+  model: string,
+  state: unknown,
+  questions: Questions,
+): string {
+  idsOf(questions)
+
   return JSON.stringify({ model, state, questions })
+}
+
+/**
+ * The System One body: the state as it is and the questions as a map by id.
+ */
+export const BARE: Wire = {
+  encode: bodyOf,
+  questionJsonOf: (id, question) => JSON.stringify({ [id]: question }),
+  stateJsonOf: json => json,
+  tokensPerQuestion: 0,
 }
 
 /**

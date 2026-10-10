@@ -278,6 +278,20 @@ describe('budgetOf', () => {
     expect(batches.length <= 16).toBe(true)
   })
 
+  test('success: codiv is asked at most 256 questions a request however much room is left', () => {
+    const calls = callsOf(300)
+    const limits = limitsOf(routeOf('codiv'))
+    const budget = budgetOf(
+      { maxStateTokens: 100_000, maxRequestTokens: 100_000 },
+      limits,
+      demandOf(calls, BARE),
+    )
+    const batches = batchesOf(calls, 2_000, budget, BARE)
+
+    expect(budget.questions).toBe(256)
+    expect(batches.map(batch => batch.length)).toEqual([128, 128, 44])
+  })
+
   test('success: clef over openrouter is asked at most 64 questions a request', () => {
     const calls = callsOf(60)
     const limits = limitsOf(routeOf('openrouter', 'cloudflare/clef'))

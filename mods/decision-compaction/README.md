@@ -161,7 +161,7 @@ A turn you interrupted, and a subagent's turn, request nothing.
 | `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
 | `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` and `clef-omni` are the others) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 64,000 tokens on `clef` and `clef-omni`, 24,000 on `clef-flash` (see below); 64 questions a request |
 | `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
-| `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no limit on questions |
+| `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no question limit documented, 256 a request measured |
 | `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
 | `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
 | `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, counted in bytes; 8 questions a request |
@@ -293,9 +293,10 @@ The bounds below are fixed; they are not options.
   window TypeSafe documents for Jev, and the byte cap below is the bound
   that decides. `openai` documents no limit, so it is
   held to the tightest figures of the others, 32,000 tokens and 64
-  questions, before the margin. Where the margin leaves less than the
-  default `maxRequestTokens` of 30,000 (`openrouter` and `openai`), the
-  default is lowered there.
+  questions, before the margin. `codiv` documents no question limit but
+  refused 300 questions (at most 256 a request), so it is held to 256.
+  Where the margin leaves less than the default `maxRequestTokens` of
+  30,000 (`openrouter` and `openai`), the default is lowered there.
 - **A byte cap.** `decisions-api-dev` and `decisionapi-net` also hold a
   request to the 85% share of their 32 KiB cap, 27,852 of 32,768 bytes,
   measured as UTF-8 of the encoded request body, since a body over the cap

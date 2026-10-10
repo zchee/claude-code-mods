@@ -397,9 +397,13 @@ describe('limits', () => {
 
   const limits: Record<string, { provider: ProviderName; expected: object }> =
     {
-      'success: codiv holds its window with no question cap': {
+      'success: codiv holds its window and the 256 questions it takes': {
         provider: 'codiv',
-        expected: { maxStateTokens: 60000, maxRequestTokens: 65536 },
+        expected: {
+          maxStateTokens: 60000,
+          maxRequestTokens: 65536,
+          maxQuestions: 256,
+        },
       },
       'success: perplexity holds its window and 128 questions': {
         provider: 'perplexity',

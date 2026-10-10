@@ -533,14 +533,19 @@ const TABLE: Record<ProviderName, Descriptor> = {
   // model of its own, not TypeSafe's Jev; at Codiv `jev-latest` is an alias
   // of it. Its window is 65,536 tokens for the state and the questions
   // together, and it advises about 60,000 for the state. It documents no
-  // fixed question cap and answered 129 questions in one request.
+  // fixed question cap, but on 2026-10-11 it refused 300 questions with
+  // HTTP 400 ("at most 256 questions per request").
   codiv: {
     title: 'Codiv',
     defaultModel: 'openjev-latest',
     models: ['openjev-latest'],
     family: model => (/^(?:open)?jev(?:-|$)/.test(model) ? 'openjev' : model),
     isGateway: false,
-    limits: { maxStateTokens: 60_000, maxRequestTokens: 65_536 },
+    limits: {
+      maxStateTokens: 60_000,
+      maxRequestTokens: 65_536,
+      maxQuestions: 256,
+    },
     needs: ['codivApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.codiv.ai/v1/systemone',

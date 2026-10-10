@@ -161,6 +161,7 @@ describe('budgetOf', () => {
     {
       want: [number, number]
       provider: 'typesafe' | 'openrouter' | 'cloudflare'
+      model?: string
       demand?: Demand
       expected: object
     }
@@ -189,12 +190,20 @@ describe('budgetOf', () => {
         // 27,200 less the envelope of 32 and the batch of 1,000.
         expected: { stateTokens: 26_168, requestTokens: 27_200 },
       },
-    'success: cloudflare holds both to 85% of 65,536 and brings its question count':
+    'success: cloudflare clef holds both to 85% of 64,000 and brings its question count':
       {
         want: [100_000, 100_000],
         provider: 'cloudflare',
-        // floor(65,536 x 0.85) = 55,705; less 32 and 1,000 for the state.
-        expected: { stateTokens: 54_673, requestTokens: 55_705, questions: 64 },
+        // floor(64,000 x 0.85) = 54,400; less 32 and 1,000 for the state.
+        expected: { stateTokens: 53_368, requestTokens: 54_400, questions: 64 },
+      },
+    'success: cloudflare clef-flash holds both to 85% of the 24,000 it reads':
+      {
+        want: [100_000, 100_000],
+        provider: 'cloudflare',
+        model: 'clef-flash',
+        // floor(24,000 x 0.85) = 20,400; less 32 and 1,000 for the state.
+        expected: { stateTokens: 19_368, requestTokens: 20_400, questions: 64 },
       },
     'success: a state budget equal to the request budget is lowered to leave a batch':
       {
@@ -227,14 +236,15 @@ describe('budgetOf', () => {
     },
   }
 
-  for (const [name, { want, provider, demand, expected }] of Object.entries(
-    budgets,
-  )) {
+  for (const [
+    name,
+    { want, provider, model, demand, expected },
+  ] of Object.entries(budgets)) {
     test(name, () => {
       expect(
         budgetOf(
           { maxStateTokens: want[0], maxRequestTokens: want[1] },
-          limitsOf(routeOf(provider)),
+          limitsOf(routeOf(provider, model)),
           demand ?? DEMAND,
         ),
       ).toEqual(expected)

@@ -159,7 +159,7 @@ A turn you interrupted, and a subagent's turn, request nothing.
 | `provider` | Endpoint | Model by default | Credentials | Documented limits |
 | --- | --- | --- | --- | --- |
 | `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
-| `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` is the other) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 65,536 tokens; 64 questions a request |
+| `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` is the other) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 64,000 tokens on `clef`, 24,000 on `clef-flash` (see below); 64 questions a request |
 | `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
 | `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no limit on questions |
 | `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
@@ -179,6 +179,12 @@ What differs between the providers beyond the table:
 - `openrouter`, `decisions-api-dev` and `decisionapi-net` are gateways to
   TypeSafe's Jev. `codiv`'s OpenJev is a model of its own, not TypeSafe's
   Jev: at Codiv `jev-latest` is an alias of OpenJev.
+- `cloudflare` holds each Clef model to the count a cut state reports,
+  measured on 2026-10-11: a text state too long for the window is cut
+  without a word, and the reply then counts exactly 64,000 input tokens on
+  `clef` and 24,000 on `clef-flash`. The catalogue states 65,536 for
+  `clef` and 24,576 for `clef-flash`; a limit at those figures would never
+  see the cut.
 - `perplexity` accepts only its own decider models. Any other name in
   `model`, `jev-latest` included, is refused with an HTTP 400 and the
   compaction uses the built-in summary. Its `usage.input_tokens`, and so
@@ -214,7 +220,10 @@ OpenRouter also serves Cloudflare's Clef (`cloudflare/clef`,
 `cloudflare/clef-flash`), and passes such a request on to Cloudflare, which
 refuses one with more than 64 questions. A model other than Jev on
 `openrouter` is therefore asked at most 64 questions (32 tool calls) a
-request, as on `cloudflare`, while the token limits stay OpenRouter's.
+request, as on `cloudflare`, while the token limits stay OpenRouter's,
+except where OpenRouter cuts a Clef state shorter: `cloudflare/clef` and
+`cloudflare/clef-flash` were cut at 16,384 tokens on 2026-10-11, so they
+are held to that.
 
 ### Credentials
 
@@ -272,7 +281,8 @@ The bounds below are fixed; they are not options.
   cuts a state that is too long without saying so. A budget is therefore
   held to 85% of the provider's documented limit: 27,200 tokens for the
   state plus the longest question and 54,400 a request on `typesafe`,
-  55,705 on `cloudflare`, 27,200 on `openrouter` and `openai`, 51,000 for
+  54,400 on `cloudflare` `clef` and 20,400 on `clef-flash`, 27,200 on
+  `openrouter` and `openai`, 51,000 for
   the state plus the longest question (85% of the 60,000 the vendor
   advises) and 55,705 a request on `codiv`, 222,821 on `perplexity`, and
   27,200 for the state plus the longest question and 54,400 a request on

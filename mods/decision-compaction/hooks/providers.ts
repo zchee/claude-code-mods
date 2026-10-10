@@ -34,7 +34,8 @@ export type Route = {
 
 /**
  * What a provider's documentation says a request may hold, in tokens as the
- * provider counts them.
+ * provider counts them, or the count a state cut short reports where that
+ * is lower.
  *
  * `maxStateTokens` bounds the state together with the longest single
  * question, which is how TypeSafe states its limit; `maxQuestions` is absent
@@ -120,6 +121,11 @@ type Descriptor = {
   isGateway: boolean
   limits: Limits
   /**
+   * The limits of a model that holds less or more than `limits`, for a
+   * provider whose models differ; `limits` stands for any other model.
+   */
+  modelLimitsOf?: (model: string) => Limits | undefined
+  /**
    * True for a provider whose `usage.input_tokens` counts the state once
    * for every question of the request, so that what one reading of the
    * state took is the count divided by the questions asked.
@@ -142,7 +148,26 @@ type Descriptor = {
   ) => unknown
 }
 
-const CLOUDFLARE_MODELS = ['clef', 'clef-flash'] as const
+/**
+ * What each Clef model holds, as measured on 2026-10-11. A text state too
+ * long for the window is cut without a word, and the reply then counts
+ * exactly the figures below: 64,000 on `clef`, 24,000 on `clef-flash`. Those are the limits, not the 65,536 and 24,576 the
+ * catalogue states for `clef` and `clef-flash`, since a cut is only seen
+ * at the count it reports. Every model takes 1 to 64 questions (HTTP 422
+ * above that).
+ */
+const CLOUDFLARE_LIMITS = {
+  clef: { maxStateTokens: 64_000, maxRequestTokens: 64_000, maxQuestions: 64 },
+  'clef-flash': {
+    maxStateTokens: 24_000,
+    maxRequestTokens: 24_000,
+    maxQuestions: 64,
+  },
+} as const satisfies Record<string, Limits>
+
+const CLOUDFLARE_MODELS = Object.keys(CLOUDFLARE_LIMITS) as readonly (
+  keyof typeof CLOUDFLARE_LIMITS
+)[]
 
 /**
  * What a request to a provider that documents no limit is held to: the
@@ -230,6 +255,17 @@ const JEV = /^jev(?:-|$)/
 const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
 
 /**
+ * The count a cut state reports for a Clef model OpenRouter forwards, below
+ * OpenRouter's own window, as measured on 2026-10-11. OpenRouter's Clef and
+ * Clef-flash cut a state at 16,384 tokens, not at the figures Cloudflare's
+ * own endpoint cuts it at.
+ */
+const OPENROUTER_CLEF_WINDOWS: Readonly<Record<string, number>> = {
+  'cloudflare/clef': 16_384,
+  'cloudflare/clef-flash': 16_384,
+}
+
+/**
  * The Workers AI catalogue prefix; a Cloudflare model is `clef` in the body
  * and this prefix plus `clef` in the URL.
  */
@@ -270,25 +306,45 @@ function textOf(value: unknown): string | undefined {
 }
 
 /**
- * Accepts a Cloudflare model by its short name or its catalogue id, and
- * answers the short name. The body's `model` must be `clef` or `clef-flash`,
- * so any other name is refused here rather than by a 4xx after the state was
- * sent.
+ * A Cloudflare model's short name, whether it was given so or by its
+ * catalogue id.
  */
-function cloudflareModelOf(model: string): string {
+function cloudflareShortOf(model: string): string {
   const named = model.trim()
-  const short = named.startsWith(CLOUDFLARE_PREFIX)
+
+  return named.startsWith(CLOUDFLARE_PREFIX)
     ? named.slice(CLOUDFLARE_PREFIX.length)
     : named
+}
+
+/**
+ * Accepts a Cloudflare model by its short name or its catalogue id, and
+ * answers the short name. The body's `model` must name one of the Clef
+ * models, so any other name is refused here rather than by a 4xx after the
+ * state was sent.
+ */
+function cloudflareModelOf(model: string): string {
+  const short = cloudflareShortOf(model)
 
   if (!CLOUDFLARE_MODELS.some(known => known === short)) {
     throw new Error(
-      `cloudflare serves ${CLOUDFLARE_MODELS.join(' and ')}, not ` +
-        JSON.stringify(named),
+      `cloudflare serves ${CLOUDFLARE_MODELS.slice(0, -1).join(', ')} and ` +
+        `${CLOUDFLARE_MODELS.at(-1)}, not ${JSON.stringify(model.trim())}`,
     )
   }
 
   return short
+}
+
+/**
+ * The limits of a Clef model, by its short name or its catalogue id.
+ */
+function cloudflareLimitsOf(model: string): Limits | undefined {
+  const short = cloudflareShortOf(model)
+
+  return Object.hasOwn(CLOUDFLARE_LIMITS, short)
+    ? CLOUDFLARE_LIMITS[short as keyof typeof CLOUDFLARE_LIMITS]
+    : undefined
 }
 
 /**
@@ -435,11 +491,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
     models: CLOUDFLARE_MODELS,
     family: model => model,
     isGateway: false,
-    limits: {
-      maxStateTokens: 65_536,
-      maxRequestTokens: 65_536,
-      maxQuestions: 64,
-    },
+    limits: CLOUDFLARE_LIMITS.clef,
+    modelLimitsOf: cloudflareLimitsOf,
     needs: ['cloudflareApiToken', 'cloudflareAccountId'],
     bodyModelOf: cloudflareModelOf,
     urlOf: (model, credentials) =>
@@ -580,27 +633,37 @@ export function providerOf(value: unknown): ProviderName | undefined {
 }
 
 /**
- * The limits a request over a route must keep to. OpenRouter is a gateway:
- * a request it forwards is also held to what the model's own host accepts.
- * Its Jev window is documented, and no question cap with it. Any other model
- * it serves is held to Cloudflare's 64 questions as well, because Clef, the
- * one other System One model, is served there and refuses a request with
- * more (HTTP 422, "Dictionary should have at most 64 items").
+ * The limits a request over a route must keep to. A provider whose models
+ * hold different amounts answers for the model named. OpenRouter is a
+ * gateway: a request it forwards is also held to what the model's own host
+ * accepts. Its Jev window is documented, and no question cap with it. Any
+ * other model it serves is held to Cloudflare's 64 questions as well,
+ * because Clef, the one other System One model, is served there and refuses
+ * a request with more (HTTP 422, "Dictionary should have at most 64
+ * items"). A Clef model that OpenRouter cuts short of its own window is
+ * held to where it cuts.
  *
  * @param route the provider and the model
  * @returns its limits
  */
 export function limitsOf(route: Route): Limits {
-  const limits = TABLE[route.provider].limits
+  const { limits, modelLimitsOf } = TABLE[route.provider]
 
   if (route.provider === 'openrouter' && !OPENROUTER_JEV.test(route.model)) {
+    const model = route.model.trim()
+    const window =
+      (Object.hasOwn(OPENROUTER_CLEF_WINDOWS, model)
+        ? OPENROUTER_CLEF_WINDOWS[model]
+        : undefined) ?? Infinity
+
     return {
-      ...limits,
+      maxStateTokens: Math.min(limits.maxStateTokens, window),
+      maxRequestTokens: Math.min(limits.maxRequestTokens, window),
       maxQuestions: TABLE.cloudflare.limits.maxQuestions,
     }
   }
 
-  return limits
+  return modelLimitsOf?.(route.model) ?? limits
 }
 
 /**
@@ -1122,8 +1185,8 @@ export function replyFrom(
   // is what a request cut to the limit reports, and answers about a state
   // the model saw part of are no ground for removing anything. A provider
   // that counts the state once a question is held to what one reading took.
-  const { limits, countsStatePerQuestion } = TABLE[route.provider]
-  const { maxRequestTokens } = limits
+  const { countsStatePerQuestion } = TABLE[route.provider]
+  const { maxRequestTokens } = limitsOf(route)
   const counted =
     reply.usage.input_tokens === undefined || !countsStatePerQuestion
       ? reply.usage.input_tokens

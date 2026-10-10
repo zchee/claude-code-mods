@@ -347,7 +347,7 @@ describe('routeOf', () => {
 })
 
 describe('limits', () => {
-  test('success: each provider states its documented limits', () => {
+  test('success: each provider states its limits', () => {
     expect(limitsOf(routeOf('typesafe'))).toEqual({
       maxStateTokens: 32000,
       maxRequestTokens: 64000,
@@ -357,11 +357,39 @@ describe('limits', () => {
       maxRequestTokens: 32000,
     })
     expect(limitsOf(routeOf('cloudflare'))).toEqual({
-      maxStateTokens: 65536,
-      maxRequestTokens: 65536,
+      maxStateTokens: 64000,
+      maxRequestTokens: 64000,
       maxQuestions: 64,
     })
   })
+
+  // A state past the window is cut without a word and the reply counts
+  // exactly 64,000 on clef and 24,000 on clef-flash, so those
+  // are the limits whatever the catalogue states.
+  const clefs: Record<string, { model: string; window: number }> = {
+    'success: clef holds the 64,000 it reads': {
+      model: 'clef',
+      window: 64000,
+    },
+    'success: clef-flash holds the 24,000 it reads': {
+      model: 'clef-flash',
+      window: 24000,
+    },
+    'success: a catalogue id holds the limits of the model it names': {
+      model: '@cf/cloudflare/clef-flash',
+      window: 24000,
+    },
+  }
+
+  for (const [name, { model, window }] of Object.entries(clefs)) {
+    test(name, () => {
+      expect(limitsOf(routeOf('cloudflare', model))).toEqual({
+        maxStateTokens: window,
+        maxRequestTokens: window,
+        maxQuestions: 64,
+      })
+    })
+  }
 
   const limits: Record<string, { provider: ProviderName; expected: object }> =
     {
@@ -411,13 +439,25 @@ describe('limits', () => {
     })
   }
 
-  const gateway: Record<string, { model: string; maxQuestions?: number }> = {
-    'success: clef over openrouter takes at most 64 questions': {
-      model: 'cloudflare/clef',
-      maxQuestions: 64,
-    },
-    'success: clef-flash over openrouter takes at most 64 questions': {
-      model: 'cloudflare/clef-flash',
+  const gateway: Record<
+    string,
+    { model: string; maxQuestions?: number; window?: number }
+  > = {
+    // OpenRouter's Clef and Clef-flash cut a state at 16,384 tokens.
+    'success: clef over openrouter takes 64 questions in the 16,384 it reads':
+      {
+        model: 'cloudflare/clef',
+        maxQuestions: 64,
+        window: 16384,
+      },
+    'success: clef-flash over openrouter takes 64 questions in the 16,384 it reads':
+      {
+        model: 'cloudflare/clef-flash',
+        maxQuestions: 64,
+        window: 16384,
+      },
+    'success: a model name that is also an object key is no window': {
+      model: 'constructor',
       maxQuestions: 64,
     },
     'success: a model openrouter does not route to jev is held to 64 questions':
@@ -430,11 +470,13 @@ describe('limits', () => {
     },
   }
 
-  for (const [name, { model, maxQuestions }] of Object.entries(gateway)) {
+  for (const [name, { model, maxQuestions, window }] of Object.entries(
+    gateway,
+  )) {
     test(name, () => {
       const expected: Record<string, number> = {
-        maxStateTokens: 32000,
-        maxRequestTokens: 32000,
+        maxStateTokens: window ?? 32000,
+        maxRequestTokens: window ?? 32000,
       }
 
       if (maxQuestions !== undefined) {
@@ -890,18 +932,31 @@ describe('replyFrom', () => {
         'may hold (32000): the state was probably cut short, so the answers ' +
         'decide nothing',
     },
-    'error: a cloudflare count of input tokens at its limit is refused': {
+    'error: a clef count of the 64,000 tokens it cuts a state to is refused': {
       route: routeOf('cloudflare'),
       status: 200,
       payload: {
         success: true,
-        result: { answers: ANSWERS, usage: { input_tokens: 65536 } },
+        result: { answers: ANSWERS, usage: { input_tokens: 64000 } },
       },
       message:
-        'cloudflare counted 65536 input tokens, all that a request of its ' +
-        'may hold (65536): the state was probably cut short, so the answers ' +
+        'cloudflare counted 64000 input tokens, all that a request of its ' +
+        'may hold (64000): the state was probably cut short, so the answers ' +
         'decide nothing',
     },
+    'error: a clef-flash count of the 24,000 tokens it cuts a state to is refused':
+      {
+        route: routeOf('cloudflare', 'clef-flash'),
+        status: 200,
+        payload: {
+          success: true,
+          result: { answers: ANSWERS, usage: { input_tokens: 24000 } },
+        },
+        message:
+          'cloudflare counted 24000 input tokens, all that a request of its ' +
+          'may hold (24000): the state was probably cut short, so the ' +
+          'answers decide nothing',
+      },
     'error: an envelope reporting failure is quoted with its message': {
       route: routeOf('decisions-api-dev'),
       status: 200,

@@ -58,6 +58,8 @@ type Reported = {
   /**
    * The largest `input_tokens` any batch reported. Every batch sends the
    * same state, so the largest is the one to hold against the estimate.
+   * A provider that counts the state once a question reports it multiplied
+   * by the questions of that batch.
    */
   inputTokens?: number
   /**

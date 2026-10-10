@@ -119,6 +119,12 @@ type Descriptor = {
    */
   isGateway: boolean
   limits: Limits
+  /**
+   * True for a provider whose `usage.input_tokens` counts the state once
+   * for every question of the request, so that what one reading of the
+   * state took is the count divided by the questions asked.
+   */
+  countsStatePerQuestion?: true
   needs: readonly (keyof Credentials)[]
   bodyModelOf: (model: string) => string
   urlOf: (model: string, credentials: Credentials) => string
@@ -485,6 +491,9 @@ const TABLE: Record<ProviderName, Descriptor> = {
   // Perplexity refuses any model but its own deciders (HTTP 400, "Invalid
   // model"), Jev included. A request must stay under 262,144 input tokens,
   // the state and every question counted, and holds 1 to 128 questions.
+  // Its `usage.input_tokens` counts the state again for every question: on
+  // 2026-10-11 the same state cost 108, 216 and 864 tokens with 1, 2 and 8
+  // questions, and 8 questions reported as 312,744 tokens were answered.
   perplexity: {
     title: 'Perplexity',
     defaultModel: 'pplx-decider-v1.1-27b',
@@ -497,6 +506,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxRequestTokens: 262_143,
       maxQuestions: 128,
     },
+    countsStatePerQuestion: true,
     needs: ['perplexityApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.perplexity.ai/v1/decisions',
@@ -1110,13 +1120,21 @@ export function replyFrom(
   // The size of a request is only estimated here, and a provider may cut a
   // state that is too long without saying so. A count that is at the limit
   // is what a request cut to the limit reports, and answers about a state
-  // the model saw part of are no ground for removing anything.
-  const counted = reply.usage.input_tokens
-  const { maxRequestTokens } = TABLE[route.provider].limits
+  // the model saw part of are no ground for removing anything. A provider
+  // that counts the state once a question is held to what one reading took.
+  const { limits, countsStatePerQuestion } = TABLE[route.provider]
+  const { maxRequestTokens } = limits
+  const counted =
+    reply.usage.input_tokens === undefined || !countsStatePerQuestion
+      ? reply.usage.input_tokens
+      : Math.ceil(
+          reply.usage.input_tokens / Math.max(Object.keys(asked).length, 1),
+        )
 
   if (counted !== undefined && counted >= maxRequestTokens) {
     throw new Error(
-      `${route.provider} counted ${counted} input tokens, all that a ` +
+      `${route.provider} counted ${counted} input tokens` +
+        `${countsStatePerQuestion ? ' a question' : ''}, all that a ` +
         `request of its may hold (${maxRequestTokens}): the state was ` +
         'probably cut short, so the answers decide nothing',
     )

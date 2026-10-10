@@ -1146,12 +1146,6 @@ describe('replyFrom', () => {
       answers: ANSWERS,
       wrap: bare,
     },
-    'error: perplexity counting its whole window is taken as a cut state': {
-      provider: 'perplexity',
-      window: 262143,
-      answers: ANSWERS,
-      wrap: bare,
-    },
     "error: decisions-api.dev counting Jev's whole window is taken as a cut state":
       {
         provider: 'decisions-api-dev',
@@ -1196,6 +1190,64 @@ describe('replyFrom', () => {
       })
     })
   }
+
+  describe('perplexity, which counts the state once a question', () => {
+    /**
+     * A request of `count` questions, each with its answer.
+     */
+    const askedOf = (count: number) => {
+      const asked: Questions = {}
+      const answers: Record<string, unknown> = {}
+
+      for (const index of Array.from({ length: count }, (_, i) => i)) {
+        asked[`call_t${index}`] = { type: 'noul', instructions: 'Is it?' }
+        answers[`call_t${index}`] = { type: 'noul', noul: 0.25 }
+      }
+
+      return { asked, answers }
+    }
+    const replying = (count: number, tokens: number) => {
+      const { asked, answers } = askedOf(count)
+
+      return replyFrom(
+        routeOf('perplexity'),
+        response(200, { answers, usage: { input_tokens: tokens } }),
+        ALL,
+        asked,
+      )
+    }
+
+    test('success: 128 questions counted as 1,532,288 tokens are 11,971 a question and a reply', () => {
+      expect(
+        replying(128, 1_532_288).usage,
+        'the count is kept as the provider billed it',
+      ).toEqual({ input_tokens: 1_532_288 })
+    })
+
+    test('success: 8 questions counted as one token under the window each are a reply', () => {
+      expect(replying(8, 8 * 262_142).usage).toEqual({
+        input_tokens: 8 * 262_142,
+      })
+    })
+
+    test('error: 8 questions counted as the whole window each are taken as a cut state', () => {
+      expect(() => replying(8, 8 * 262_143)).toThrow({
+        message:
+          'perplexity counted 262143 input tokens a question, all that a ' +
+          'request of its may hold (262143): the state was probably cut ' +
+          'short, so the answers decide nothing',
+      })
+    })
+
+    test('error: one question counted as the whole window is taken as a cut state', () => {
+      expect(() => replying(1, 262_143)).toThrow({
+        message:
+          'perplexity counted 262143 input tokens a question, all that a ' +
+          'request of its may hold (262143): the state was probably cut ' +
+          'short, so the answers decide nothing',
+      })
+    })
+  })
 
   for (const provider of ['decisions-api-dev', 'decisionapi-net'] as const) {
     test(`success: ${provider} counting more tokens than 32 KiB of English is not taken as a cut state`, () => {

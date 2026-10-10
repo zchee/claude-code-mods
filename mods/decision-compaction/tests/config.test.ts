@@ -9,7 +9,7 @@ const NONE_OF =
   'decisions-api-dev, decisionapi-net, openai'
 
 describe('configOf', () => {
-  test('success: unset options read as the documented defaults', () => {
+  test('success: unset options read as the documented defaults, and unset budgets stay absent for the route to fill', () => {
     expect(configOf({})).toEqual({
       provider: 'typesafe',
       providerDecision: false,
@@ -18,10 +18,15 @@ describe('configOf', () => {
       preserveRecentMessages: 6,
       compactAtPercent: 60,
       minReductionRatio: 0.25,
-      maxStateTokens: 25000,
-      maxRequestTokens: 30000,
       truncateHeadChars: 300,
     })
+  })
+
+  test('error: a budget typed as text is left to the route, as an unset one is', () => {
+    const config = configOf({ maxStateTokens: '9000', maxRequestTokens: '' })
+
+    expect('maxStateTokens' in config).toBe(false)
+    expect('maxRequestTokens' in config).toBe(false)
   })
 
   test('success: set options are taken as given', () => {
@@ -70,8 +75,8 @@ describe('configOf', () => {
       expected: { preserveRecentMessages: 4 },
     },
     'error: a number typed as text reads as the default': {
-      options: { maxStateTokens: '9000', compactAtPercent: 'high' },
-      expected: { maxStateTokens: 25000, compactAtPercent: 60 },
+      options: { compactAtPercent: 'high' },
+      expected: { compactAtPercent: 60 },
     },
     'error: a percent above 100 is held to 100': {
       options: { compactAtPercent: 250 },

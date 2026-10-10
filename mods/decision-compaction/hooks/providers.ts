@@ -50,6 +50,24 @@ export type Limits = {
 }
 
 /**
+ * The budgets a compaction asks for when the person set none: what a route
+ * reads quickly enough, as measured on 2026-10-11, for every request of a
+ * compaction to be answered before its deadline. Sixteen requests go out
+ * three at a time under thirty seconds, so each one is held to about four
+ * and a half seconds with 32 questions in it. Where the state is read once
+ * a request, the request takes the provider's whole window, so that a
+ * compaction needs fewer of them; where it is read once a question or once
+ * a chunk of questions, the request is held to the state and the questions
+ * of sixteen calls beside it, since a fuller one is only slower. The
+ * budget then holds both to the limits as it does any value the person
+ * sets.
+ */
+export type Wanted = {
+  maxStateTokens: number
+  maxRequestTokens: number
+}
+
+/**
  * The secrets and the account id the providers need, each present only when
  * one was configured.
  */
@@ -126,6 +144,15 @@ type Descriptor = {
    */
   modelLimitsOf?: (model: string) => Limits | undefined
   /**
+   * The budgets asked for when the person set none.
+   */
+  wanted: Wanted
+  /**
+   * The budgets of a model that reads faster or slower than `wanted`
+   * assumes; `wanted` stands for any other model.
+   */
+  modelWantedOf?: (model: string) => Wanted | undefined
+  /**
    * True for a provider whose `usage.input_tokens` counts the state once
    * for every question of the request, so that what one reading of the
    * state took is the count divided by the questions asked.
@@ -176,6 +203,18 @@ const CLOUDFLARE_LIMITS = {
     maxQuestions: 64,
   },
 } as const satisfies Record<string, Limits>
+
+/**
+ * What each Clef model is asked for. With 32 questions, `clef` answered a
+ * 30,000-token state in 4.1 seconds and a 49,000-token one in 7.4,
+ * `clef-flash` a 10,000-token one in 3.1 and a 19,000-token one in 5.3,
+ * and `clef-omni` a 49,000-token one in 3.4.
+ */
+const CLOUDFLARE_WANTED = {
+  clef: { maxStateTokens: 30_000, maxRequestTokens: 54_400 },
+  'clef-flash': { maxStateTokens: 14_000, maxRequestTokens: 20_400 },
+  'clef-omni': { maxStateTokens: 45_000, maxRequestTokens: 54_400 },
+} as const satisfies Record<keyof typeof CLOUDFLARE_LIMITS, Wanted>
 
 const CLOUDFLARE_MODELS = Object.keys(CLOUDFLARE_LIMITS) as readonly (
   keyof typeof CLOUDFLARE_LIMITS
@@ -350,6 +389,18 @@ function cloudflareLimitsOf(model: string): Limits | undefined {
 }
 
 /**
+ * The budgets a Clef model is asked for, by its short name or its
+ * catalogue id.
+ */
+function cloudflareWantedOf(model: string): Wanted | undefined {
+  const short = cloudflareShortOf(model)
+
+  return Object.hasOwn(CLOUDFLARE_WANTED, short)
+    ? CLOUDFLARE_WANTED[short as keyof typeof CLOUDFLARE_WANTED]
+    : undefined
+}
+
+/**
  * The first message of a Workers AI envelope's `errors` list.
  */
 function envelopeErrorOf(payload: Record<string, unknown>): string | undefined {
@@ -472,6 +523,13 @@ const AS_SENT = (payload: unknown) => payload
  */
 const JEV_FAMILY = (model: string) => (JEV.test(model) ? 'jev' : model)
 
+/**
+ * What the two resellers of Jev are asked for: their byte cap binds long
+ * before Jev's window does, so these only keep the token budget out of the
+ * way.
+ */
+const JEV_WANTED: Wanted = { maxStateTokens: 27_000, maxRequestTokens: 54_400 }
+
 const TABLE: Record<ProviderName, Descriptor> = {
   typesafe: {
     title: 'TypeSafe',
@@ -480,6 +538,10 @@ const TABLE: Record<ProviderName, Descriptor> = {
     family: () => 'jev',
     isGateway: false,
     limits: { maxStateTokens: 32_000, maxRequestTokens: 64_000 },
+    // Jev answered a 23,000-token state with 32 questions in 0.4 seconds,
+    // and 1,000 questions in one request. A state over its 32,000 is
+    // refused with HTTP 400 (`max_tokens_exceeded`), never cut.
+    wanted: { maxStateTokens: 27_000, maxRequestTokens: 54_400 },
     needs: ['typesafeApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.typesafe.ai/v1/systemone',
@@ -495,6 +557,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
     isGateway: false,
     limits: CLOUDFLARE_LIMITS.clef,
     modelLimitsOf: cloudflareLimitsOf,
+    wanted: CLOUDFLARE_WANTED.clef,
+    modelWantedOf: cloudflareWantedOf,
     needs: ['cloudflareApiToken', 'cloudflareAccountId'],
     bodyModelOf: cloudflareModelOf,
     urlOf: (model, credentials) =>
@@ -517,6 +581,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
     family: model => (OPENROUTER_JEV.test(model) ? 'jev' : model),
     isGateway: true,
     limits: { maxStateTokens: 32_000, maxRequestTokens: 32_000 },
+    wanted: { maxStateTokens: 27_000, maxRequestTokens: 27_200 },
     needs: ['openrouterApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://openrouter.ai/api/v1/systemone',
@@ -545,6 +610,9 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxQuestions: 256,
     },
     refusesOverlong: true,
+    // 32 questions on a 30,000-token state took 4.8 seconds, and 128 on a
+    // 49,000-token one took 24.
+    wanted: { maxStateTokens: 25_000, maxRequestTokens: 30_000 },
     needs: ['codivApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.codiv.ai/v1/systemone',
@@ -571,6 +639,11 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxQuestions: 128,
     },
     countsStatePerQuestion: true,
+    // 32 questions on a 15,000-token state took 6.3 seconds, and 8 on a
+    // 30,000-token one 3.1: the time goes with the state times the questions.
+    // A call's two questions name it and nothing of its input, about 120
+    // tokens, so the 4,000 beside the state hold 16 to 32 calls.
+    wanted: { maxStateTokens: 10_000, maxRequestTokens: 14_000 },
     needs: ['perplexityApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.perplexity.ai/v1/decisions',
@@ -588,6 +661,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
     family: JEV_FAMILY,
     isGateway: true,
     limits: RESELLER,
+    wanted: JEV_WANTED,
     needs: ['decisionsApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://decisions-api.dev/v1/systemone',
@@ -605,6 +679,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
     family: JEV_FAMILY,
     isGateway: true,
     limits: RESELLER,
+    wanted: JEV_WANTED,
     needs: ['decisionapiApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://decisionapi.net/v1/systemone',
@@ -631,6 +706,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxRequestTokens: 272_000,
       maxQuestions: 200,
     },
+    // A 225,000-token state with 32 questions took 1.6 seconds.
+    wanted: { maxStateTokens: 200_000, maxRequestTokens: 231_200 },
     needs: ['openaiApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.openai.com/v1/decisions',
@@ -682,6 +759,18 @@ export function limitsOf(route: Route): Limits {
   }
 
   return modelLimitsOf?.(route.model) ?? limits
+}
+
+/**
+ * The budgets a compaction over a route asks for when the person set none.
+ *
+ * @param route the provider and the model
+ * @returns the state and request budgets, before the limits hold them
+ */
+export function wantedOf(route: Route): Wanted {
+  const { wanted, modelWantedOf } = TABLE[route.provider]
+
+  return modelWantedOf?.(route.model) ?? wanted
 }
 
 /**

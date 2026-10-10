@@ -44,6 +44,7 @@ without. What you and the assistant wrote stays word for word.
   - [Redaction](#redaction)
 - [Options](#options)
 - [Limits](#limits)
+  - [Budgets by route](#budgets-by-route)
   - [How large a conversation can be decided](#how-large-a-conversation-can-be-decided)
 - [`providerDecision`](#providerdecision)
 - [What a compaction reports](#what-a-compaction-reports)
@@ -270,8 +271,8 @@ ordinary words.
 | `preserveRecentMessages` | `6` | Newest messages that are never changed. |
 | `compactAtPercent` | `60` | Context usage at which a compaction is requested; `0` turns the trigger off. |
 | `minReductionRatio` | `0.25` | Smallest share of characters the decisions must remove. |
-| `maxStateTokens` | `25000` | Most estimated tokens the state may take, a whole number; see [Limits](#limits). |
-| `maxRequestTokens` | `30000` | Most estimated tokens one request may take, state and questions together, a whole number; see [Limits](#limits). |
+| `maxStateTokens` | the route's own | Most estimated tokens the state may take, a whole number; unset, each route asks for its own (see [Budgets by route](#budgets-by-route)). |
+| `maxRequestTokens` | the route's own | Most estimated tokens one request may take, state and questions together, a whole number; unset, each route asks for its own (see [Budgets by route](#budgets-by-route)). |
 | `truncateHeadChars` | `300` | Characters kept of a shortened output; at `0` only the note remains. |
 
 ## Limits
@@ -297,8 +298,8 @@ The bounds below are fixed; they are not options.
   tokens is billed at twice the rate, so it is held to 272,000 and 200
   questions before the margin. `codiv` documents no question limit but
   refused 300 questions (at most 256 a request), so it is held to 256.
-  Where the margin leaves less than the default `maxRequestTokens` of
-  30,000 (`openrouter`), the default is lowered there.
+  A budget you set is held to these figures, and so is the one a route
+  asks for when you set none (see [Budgets by route](#budgets-by-route)).
 - **A byte cap.** `decisions-api-dev` and `decisionapi-net` also hold a
   request to the 85% share of their 32 KiB cap, 27,852 of 32,768 bytes,
   measured as UTF-8 of the encoded request body, since a body over the cap
@@ -358,18 +359,51 @@ The bounds below are fixed; they are not options.
   stays paused waiting on the providers. A request cannot be withdrawn, so
   a late answer is ignored.
 
+### Budgets by route
+
+Leave `maxStateTokens` and `maxRequestTokens` unset and each route asks
+for its own, sized from what it was measured to read on 2026-10-11. A
+compaction sends at most 16 requests, three at a time, under a 30-second
+deadline, so each request should be answered in about four and a half
+seconds with 32 questions in it; the state is the largest that does.
+Where the state is read once a request (Jev, Clef, OpenAI), the request
+budget takes the provider's whole window, so that a compaction needs
+fewer requests, each of which carries the state. Where it is read once a
+question (`perplexity`) or once a chunk of about thirteen questions
+(`codiv`), a fuller request is only slower, so the request budget is the
+state and the questions of 16 calls beside it. The margin above then
+holds both, as it does a budget you set.
+
+| Route | `maxStateTokens` | `maxRequestTokens` | Measured with 32 questions |
+| --- | --- | --- | --- |
+| `typesafe` | 27,000 | 54,400 | a 23,000-token state in 0.4 s; a longer state than 32,000 is refused, not cut |
+| `cloudflare` `clef` | 30,000 | 54,400 | 30,000 tokens in 4.1 s, 49,000 in 7.4 s |
+| `cloudflare` `clef-flash` | 14,000 | 20,400 | 10,000 tokens in 3.1 s, 19,000 in 5.3 s |
+| `cloudflare` `clef-omni` | 45,000 | 54,400 | 49,000 tokens in 3.4 s |
+| `openrouter` | 27,000 (26,168 beside a batch) | 27,200 | as `typesafe`; its Clef models are held to the 16,384 it reads |
+| `codiv` | 25,000 | 30,000 | 30,000 tokens in 4.8 s; 128 questions on 49,000 in 24 s |
+| `perplexity` | 10,000 | 14,000 | 15,000 tokens in 6.3 s; 8 questions on 30,000 in 3.1 s |
+| `decisions-api-dev`, `decisionapi-net` | 27,000 | 54,400 | not measured; the 32 KiB byte cap binds first |
+| `openai` | 200,000 | 231,200 | 225,000 tokens in 1.6 s; costs $0.10 per million input tokens for every request |
+
+A budget you set applies to every route alike. With `providerDecision` on
+and the budgets unset, each route is held to its own, so a route that
+asks for a smaller state than the one fitted for the configured provider
+is ruled out ("the state is about … tokens and it takes …").
+
 ### How large a conversation can be decided
 
-At the default budgets the state holds about 25,000 estimated tokens after
-every reduction, and 16 requests ask about a bounded number of calls. Past
+At budgets of 25,000 and 30,000 tokens, the defaults before each route
+had its own, the state holds about 25,000 estimated tokens after every
+reduction, and 16 requests ask about a bounded number of calls. Past
 either bound the result is always the built-in summary.
 
-The table is a measurement, not a guarantee. It was taken with a fake
-provider on a synthetic session made only of `Read` calls with short file
-paths and 600-character outputs, between one opening and one closing
-prompt. A real session has longer inputs, more varied tools and more text,
-so its limits are lower, and differ from one session to the next; read the
-numbers as rough orders of size.
+The table is a measurement at those budgets, not a guarantee. It was
+taken with a fake provider on a synthetic session made only of `Read`
+calls with short file paths and 600-character outputs, between one
+opening and one closing prompt. A real session has longer inputs, more
+varied tools and more text, so its limits are lower, and differ from one
+session to the next; read the numbers as rough orders of size.
 
 | `provider` | Calls whose assistant message also carries a sentence of text | Call-only messages |
 | --- | --- | --- |
@@ -410,8 +444,11 @@ original three providers, set `decisionProviders` to
 `typesafe,cloudflare,openrouter`.
 
 The mod first drops every route it can rule out in code: a provider whose
-credentials are unset, whose limits the fitted state exceeds, or that would
-need more than 16 requests. Cloudflare contributes three routes (`clef`,
+credentials are unset, whose limits or budget the fitted state exceeds,
+or that would need more than 16 requests. With the budgets unset each
+route has its own (see [Budgets by route](#budgets-by-route)), so a route
+that asks for a smaller state than the configured provider's is dropped
+when the conversation fills the larger one. Cloudflare contributes three routes (`clef`,
 `clef-flash` and `clef-omni`). Among routes to the same model one is
 offered: the direct route when it is usable, otherwise the first gateway
 in the order `openrouter`, `decisions-api-dev`, `decisionapi-net`. Jev is

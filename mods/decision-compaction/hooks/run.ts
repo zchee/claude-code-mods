@@ -19,6 +19,7 @@ import {
   limitsOf,
   messageOf,
   routeOf,
+  wantedOf,
   wireOf,
 } from './providers'
 import type { Credentials, Route } from './providers'
@@ -97,8 +98,18 @@ export async function run(job: Job): Promise<Result> {
 
   const demandFor = (route: Route) =>
     demandOf(unpinned, wireOf(route), limitsOf(route).maxQuestions)
+  // A budget the person left unset is the one the route asks for, so a
+  // provider decision weighs each route by its own.
   const budgetFor = (route: Route) =>
-    budgetOf(config, limitsOf(route), demandFor(route))
+    budgetOf(
+      {
+        maxStateTokens: config.maxStateTokens ?? wantedOf(route).maxStateTokens,
+        maxRequestTokens:
+          config.maxRequestTokens ?? wantedOf(route).maxRequestTokens,
+      },
+      limitsOf(route),
+      demandFor(route),
+    )
   const goal = goalOf(messages, job.instructions)
   const { maxRequestBytes } = limitsOf(configured)
   const fitted = stateWithin(messages, calls, {

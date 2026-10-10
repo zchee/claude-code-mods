@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { configOf } from '../hooks/config'
 import { run } from '../hooks/run'
+import { estimatedTokensOf } from '../hooks/state'
 import type { Job } from '../hooks/run'
 import { listenersOf, readsOf } from './fixtures'
 
@@ -249,4 +250,51 @@ describe('run', () => {
       ).toBe(0)
     })
   }
+})
+
+describe('budgets left unset', () => {
+  /**
+   * Compacts 200 answered Read calls, about 17,500 estimated tokens of
+   * conversation, with these options, and resolves with the estimated size
+   * of the state the first request carried.
+   */
+  async function firstStateOf(options: Record<string, string | number>) {
+    let first: string | undefined
+    const { ports } = worldOf(init => {
+      first ??= init.body
+
+      return answeredAll(init)
+    })
+
+    await run({
+      messages: readsOf(200),
+      config: configOf({ ...OPTIONS, ...options }),
+      credentials: CREDENTIALS,
+      ports,
+    }).catch(() => undefined)
+
+    expect(first, 'a request was sent').toBeDefined()
+
+    const { state } = JSON.parse(first ?? '{}') as { state?: unknown }
+
+    return estimatedTokensOf(JSON.stringify(state))
+  }
+
+  test('success: each Clef model is held to the state budget it asks for', async () => {
+    const flash = await firstStateOf({ model: 'clef-flash' })
+    const omni = await firstStateOf({ model: 'clef-omni' })
+
+    expect(flash <= 14_000, `clef-flash sent ${flash}`).toBe(true)
+    expect(omni > 14_000, `clef-omni sent ${omni}`).toBe(true)
+    expect(omni <= 45_000, `clef-omni sent ${omni}`).toBe(true)
+  })
+
+  test('success: a state budget the person set applies to every model alike', async () => {
+    const omni = await firstStateOf({
+      model: 'clef-omni',
+      maxStateTokens: 8_000,
+    })
+
+    expect(omni <= 8_000, `clef-omni sent ${omni}`).toBe(true)
+  })
 })

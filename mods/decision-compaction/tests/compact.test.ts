@@ -19,8 +19,10 @@ import {
   exchangeOf,
   limitsOf,
   routeOf,
+  wantedOf,
   wireOf,
 } from '../hooks/providers'
+import type { ProviderName } from '../hooks/providers'
 import { estimatedTokensOf, stateWithin, pairCalls } from '../hooks/state'
 import type { Call } from '../hooks/state'
 import { BARE, bytesOf } from '../hooks/systemone'
@@ -254,6 +256,84 @@ describe('budgetOf', () => {
           demand ?? DEMAND,
         ),
       ).toEqual(expected)
+    })
+  }
+
+  // What each route asks for when the person set no budget, held to its
+  // limits beside DEMAND's batch of 1,000 tokens and longest question of 40.
+  const unset: Record<
+    string,
+    { provider: ProviderName; model?: string; expected: object }
+  > = {
+    'success: typesafe asks for its whole request window': {
+      provider: 'typesafe',
+      expected: { stateTokens: 27_000, requestTokens: 54_400 },
+    },
+    'success: cloudflare clef asks for a state it reads within the deadline': {
+      provider: 'cloudflare',
+      expected: { stateTokens: 30_000, requestTokens: 54_400, questions: 64 },
+    },
+    'success: cloudflare clef-flash asks for a smaller state still': {
+      provider: 'cloudflare',
+      model: 'clef-flash',
+      expected: { stateTokens: 14_000, requestTokens: 20_400, questions: 64 },
+    },
+    'success: a cloudflare catalogue id asks for what the model it names does':
+      {
+        provider: 'cloudflare',
+        model: '@cf/cloudflare/clef-flash',
+        expected: { stateTokens: 14_000, requestTokens: 20_400, questions: 64 },
+      },
+    'success: cloudflare clef-omni asks for most of its window': {
+      provider: 'cloudflare',
+      model: 'clef-omni',
+      expected: { stateTokens: 45_000, requestTokens: 54_400, questions: 64 },
+    },
+    'success: openrouter jev leaves its window room for a batch': {
+      provider: 'openrouter',
+      // 27,200 less the envelope of 32 and the batch of 1,000.
+      expected: { stateTokens: 26_168, requestTokens: 27_200 },
+    },
+    "success: openrouter clef is held to the 16,384 OpenRouter reads": {
+      provider: 'openrouter',
+      model: 'cloudflare/clef',
+      // floor(16,384 x 0.85) = 13,926, less 32 and 1,000 for the state.
+      expected: { stateTokens: 12_894, requestTokens: 13_926, questions: 64 },
+    },
+    "success: openrouter clef-omni is held to the gateway's window": {
+      provider: 'openrouter',
+      model: 'cloudflare/clef-omni',
+      expected: { stateTokens: 26_168, requestTokens: 27_200, questions: 64 },
+    },
+    'success: codiv asks for a request no fuller than its state and a batch': {
+      provider: 'codiv',
+      expected: { stateTokens: 25_000, requestTokens: 30_000, questions: 256 },
+    },
+    'success: perplexity asks for a small state, since it reads it once a question': {
+      provider: 'perplexity',
+      expected: { stateTokens: 10_000, requestTokens: 14_000, questions: 128 },
+    },
+    'success: decisions-api.dev asks for what its byte cap will bound anyway': {
+      provider: 'decisions-api-dev',
+      expected: { stateTokens: 27_000, requestTokens: 54_400, questions: 8 },
+    },
+    'success: openai asks for most of its window below the price step': {
+      provider: 'openai',
+      expected: {
+        stateTokens: 200_000,
+        requestTokens: 231_200,
+        questions: 200,
+      },
+    },
+  }
+
+  for (const [name, { provider, model, expected }] of Object.entries(unset)) {
+    test(name, () => {
+      const route = routeOf(provider, model)
+
+      expect(budgetOf(wantedOf(route), limitsOf(route), DEMAND)).toEqual(
+        expected,
+      )
     })
   }
 

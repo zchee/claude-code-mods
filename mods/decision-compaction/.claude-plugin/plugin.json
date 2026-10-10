@@ -128,15 +128,13 @@
     "maxStateTokens": {
       "type": "number",
       "title": "State budget (tokens)",
-      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Held to 85% of the provider's documented limit, and to what the request budget leaves beside the questions of 16 tool calls. For a provider whose limit is stated in bytes the description is also shrunk until it fits that cap beside one request's questions; see Limits in the README. A fraction is rounded down.",
-      "default": 25000,
+      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Leave unset for the route's own, sized so that every request of a compaction is answered before its 30-second deadline: 27000 (typesafe, openrouter, decisions-api-dev, decisionapi-net), 30000 (cloudflare clef), 14000 (clef-flash), 45000 (clef-omni), 25000 (codiv), 10000 (perplexity), 200000 (openai). Held to 85% of the provider's limit, and to what the request budget leaves beside the questions of 16 tool calls. For a provider whose limit is stated in bytes the description is also shrunk until it fits that cap beside one request's questions; see Limits in the README. A fraction is rounded down.",
       "min": 1
     },
     "maxRequestTokens": {
       "type": "number",
       "title": "Request budget (tokens)",
-      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Held to 85% of the provider's documented limit and, for a provider whose limit is stated in bytes, to its byte cap as well; see Limits in the README. A fraction is rounded down.",
-      "default": 30000,
+      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Leave unset for the route's own: 54400 (typesafe, cloudflare clef and clef-omni, decisions-api-dev, decisionapi-net), 27200 (openrouter), 20400 (clef-flash), 30000 (codiv), 14000 (perplexity), 231200 (openai). Held to 85% of the provider's limit and, for a provider whose limit is stated in bytes, to its byte cap as well; see Limits in the README. A fraction is rounded down.",
       "min": 1
     },
     "truncateHeadChars": {

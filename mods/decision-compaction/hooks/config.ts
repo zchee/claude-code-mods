@@ -35,14 +35,24 @@ export type Config = {
   preserveRecentMessages: number
   compactAtPercent: number
   minReductionRatio: number
-  maxStateTokens: number
-  maxRequestTokens: number
+  /**
+   * The state budget the person set; absent for the one each route asks
+   * for (`wantedOf`).
+   */
+  maxStateTokens?: number
+  /**
+   * The request budget the person set; absent for the one each route asks
+   * for (`wantedOf`).
+   */
+  maxRequestTokens?: number
   truncateHeadChars: number
 }
 
 /**
  * What an option reads as when it is unset or unusable; the manifest's
- * `userConfig` states the same values to the person.
+ * `userConfig` states the same values to the person. The two budgets have
+ * none here: each route has its own (`wantedOf`), and the manifest states
+ * no default for them, so that one never set stays absent.
  */
 const DEFAULTS = {
   provider: 'typesafe',
@@ -52,8 +62,6 @@ const DEFAULTS = {
   preserveRecentMessages: 6,
   compactAtPercent: 60,
   minReductionRatio: 0.25,
-  maxStateTokens: 25_000,
-  maxRequestTokens: 30_000,
   truncateHeadChars: 300,
 } as const satisfies Config
 
@@ -124,6 +132,16 @@ export function eligibleOf(config: Config): ProviderName[] {
 }
 
 /**
+ * A budget option: a whole number of tokens from 1 up, or absent when it is
+ * unset or not a number, so that the route's own budget stands.
+ */
+function budgetOptionOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.floor(value))
+    : undefined
+}
+
+/**
  * Says whether an option was left unset: absent, or text with nothing in
  * it, which is what a cleared field holds.
  */
@@ -177,12 +195,6 @@ export function configOf(options: PluginOptions): Config {
       0,
       1,
     ),
-    maxStateTokens: Math.floor(
-      within(options.maxStateTokens, DEFAULTS.maxStateTokens, 1, Infinity),
-    ),
-    maxRequestTokens: Math.floor(
-      within(options.maxRequestTokens, DEFAULTS.maxRequestTokens, 1, Infinity),
-    ),
     truncateHeadChars: Math.floor(
       within(
         options.truncateHeadChars,
@@ -205,6 +217,17 @@ export function configOf(options: PluginOptions): Config {
 
   if (typeof options.model === 'string' && options.model.trim() !== '') {
     config.model = options.model.trim()
+  }
+
+  const maxStateTokens = budgetOptionOf(options.maxStateTokens)
+  const maxRequestTokens = budgetOptionOf(options.maxRequestTokens)
+
+  if (maxStateTokens !== undefined) {
+    config.maxStateTokens = maxStateTokens
+  }
+
+  if (maxRequestTokens !== undefined) {
+    config.maxRequestTokens = maxRequestTokens
   }
 
   return config

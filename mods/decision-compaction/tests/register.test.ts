@@ -648,7 +648,7 @@ describe('session.compact', () => {
       options: { provider: 'cloudflare', model: 'jev-latest' },
       setup: { env: ENV },
       requests: 0,
-      said: 'built-in summary used instead: cloudflare serves clef and clef-flash, not "jev-latest"',
+      said: 'built-in summary used instead: cloudflare serves clef, clef-flash and clef-omni, not "jev-latest"',
     },
     'error: a conversation that cannot fit the state budget falls back': {
       options: { maxStateTokens: 10 },
@@ -1162,7 +1162,9 @@ describe('provider decision', () => {
         'provider decision: one model is available (cloudflare/clef: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and ' +
-          `CLOUDFLARE_ACCOUNT_ID unset; ${ADDED_UNSET}; ` +
+          'CLOUDFLARE_ACCOUNT_ID unset; ' +
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+          `${ADDED_UNSET}; ` +
           'openrouter/~typesafe/jev-latest: the same model as ' +
           'typesafe/jev-latest); using the configured ' +
           'openrouter/~typesafe/jev-latest',
@@ -1189,6 +1191,7 @@ describe('provider decision', () => {
         'typesafe.jev-latest',
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
       ])
       expect(deciding?.url).toBe(TYPESAFE_URL)
     },
@@ -1308,6 +1311,7 @@ describe('provider decision', () => {
         'typesafe.jev-latest',
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
       ])
       expect(profile.candidate_calls).toBe(3)
       expect(profile.messages).toBe(11)
@@ -1345,6 +1349,7 @@ describe('provider decision', () => {
         'provider decision: one route is available (cloudflare/clef: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset; ' +
           `${ADDED_UNSET}); using the configured typesafe/jev-latest`,
       )
@@ -1422,6 +1427,7 @@ describe('provider decision', () => {
         'typesafe.jev-latest',
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
       ])
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
       expect(world.lines[0]).toBe(
@@ -1451,6 +1457,7 @@ describe('provider decision', () => {
         'provider decision: one route is available (cloudflare/clef: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset); ' +
           'using the configured typesafe/jev-latest',
       )
@@ -1489,6 +1496,7 @@ describe('provider decision', () => {
           'typesafe/jev-latest: TYPESAFE_API_KEY unset; ' +
           'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset; ' +
           ADDED_UNSET,
       ])
@@ -1830,6 +1838,7 @@ describe('provider decision over every provider', () => {
         'typesafe.jev-latest',
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
         'codiv.openjev-latest',
         'perplexity.pplx-decider-v1.1-27b',
         'openai.gpt-6-luna',
@@ -2131,8 +2140,8 @@ describe('provider decision over every provider', () => {
       expect(world.fetches).toBe(0)
       expect(out.messages).toEqual([SUMMARY])
       expect(world.toasts).toEqual([
-        'built-in summary used instead: cloudflare serves clef and ' +
-          'clef-flash, not "llama-3-8b"',
+        'built-in summary used instead: cloudflare serves clef, ' +
+          'clef-flash and clef-omni, not "llama-3-8b"',
       ])
     },
   )
@@ -2162,6 +2171,7 @@ describe('provider decision over every provider', () => {
       expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
       ])
       expect(world.requests.map(seen => seen.url)).toEqual([
         `${CLOUDFLARE_URL}clef-flash`,

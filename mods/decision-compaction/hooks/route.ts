@@ -76,6 +76,9 @@ const ABOUT: Record<string, string> = {
   'clef-flash':
     'Clef-flash, a 9B model. Cloudflare recommends it for latency-critical ' +
     'decisions on a hot path. It is the fastest of the models offered here.',
+  'clef-omni':
+    'Clef-omni, a 30B mixture-of-experts model with 3B active parameters. ' +
+    'It costs less per token than Clef and more than Clef-flash.',
   jev:
     "Jev, TypeSafe's flagship System One model. It reads text only, and " +
     'English is its primary training language: TypeSafe reports lower ' +

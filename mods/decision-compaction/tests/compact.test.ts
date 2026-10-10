@@ -205,6 +205,12 @@ describe('budgetOf', () => {
         // floor(24,000 x 0.85) = 20,400; less 32 and 1,000 for the state.
         expected: { stateTokens: 19_368, requestTokens: 20_400, questions: 64 },
       },
+    'success: cloudflare clef-omni holds both to 85% of 64,000': {
+      want: [100_000, 100_000],
+      provider: 'cloudflare',
+      model: 'clef-omni',
+      expected: { stateTokens: 53_368, requestTokens: 54_400, questions: 64 },
+    },
     'success: a state budget equal to the request budget is lowered to leave a batch':
       {
         want: [26_000, 26_000],

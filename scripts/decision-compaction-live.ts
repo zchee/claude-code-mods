@@ -1,9 +1,10 @@
-// Sends one synthetic decision request to every decision-compaction provider
-// whose credentials are set in the environment, through the mod's own request
-// builder and reply parser, and prints one verdict line per provider.
+// Sends one synthetic decision request to every model of every
+// decision-compaction provider whose credentials are set in the environment,
+// through the mod's own request builder and reply parser, and prints one
+// verdict line per model.
 //
 // Usage: bun scripts/decision-compaction-live.ts
-// Exit status: 1 when any provider that was called failed, 0 otherwise.
+// Exit status: 1 when any model that was called failed, 0 otherwise.
 import type { HttpResponse } from 'claude-code'
 
 import {
@@ -12,6 +13,7 @@ import {
   exchangeOf,
   messageOf,
   missingOf,
+  modelsOf,
   PROVIDERS,
   redacted,
   replyFrom,
@@ -61,19 +63,20 @@ type Verdict = { line: string; failed: boolean }
 
 async function probe(
   provider: ProviderName,
+  model: string,
   credentials: Credentials,
 ): Promise<Verdict> {
   const missing = missingOf(provider, credentials)
 
   if (missing.length > 0) {
     return {
-      line: `skip ${provider}: ${missing.join(' and ')} unset`,
+      line: `skip ${provider}/${model}: ${missing.join(' and ')} unset`,
       failed: false,
     }
   }
 
   try {
-    const route = routeOf(provider)
+    const route = routeOf(provider, model)
     // Only this provider's own credential goes into its request.
     const exchange = exchangeOf(
       route,
@@ -113,7 +116,7 @@ async function probe(
     const reason = messageOf(error)
 
     return {
-      line: `FAIL ${provider}: ${reason.replace(/\s+/g, ' ').trim()}`,
+      line: `FAIL ${provider}/${model}: ${reason.replace(/\s+/g, ' ').trim()}`,
       failed: true,
     }
   }
@@ -121,7 +124,9 @@ async function probe(
 
 const credentials = credentialsOf({}, process.env)
 const verdicts = await Promise.all(
-  PROVIDERS.map(provider => probe(provider, credentials)),
+  PROVIDERS.flatMap(provider =>
+    modelsOf(provider).map(model => probe(provider, model, credentials)),
+  ),
 )
 
 for (const verdict of verdicts) {

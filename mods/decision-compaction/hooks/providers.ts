@@ -151,7 +151,8 @@ type Descriptor = {
 /**
  * What each Clef model holds, as measured on 2026-10-11. A text state too
  * long for the window is cut without a word, and the reply then counts
- * exactly the figures below: 64,000 on `clef`, 24,000 on `clef-flash`. Those are the limits, not the 65,536 and 24,576 the
+ * exactly the figures below: 64,000 on `clef` and `clef-omni`, 24,000 on
+ * `clef-flash`. Those are the limits, not the 65,536 and 24,576 the
  * catalogue states for `clef` and `clef-flash`, since a cut is only seen
  * at the count it reports. Every model takes 1 to 64 questions (HTTP 422
  * above that).
@@ -161,6 +162,11 @@ const CLOUDFLARE_LIMITS = {
   'clef-flash': {
     maxStateTokens: 24_000,
     maxRequestTokens: 24_000,
+    maxQuestions: 64,
+  },
+  'clef-omni': {
+    maxStateTokens: 64_000,
+    maxRequestTokens: 64_000,
     maxQuestions: 64,
   },
 } as const satisfies Record<string, Limits>
@@ -258,7 +264,8 @@ const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
  * The count a cut state reports for a Clef model OpenRouter forwards, below
  * OpenRouter's own window, as measured on 2026-10-11. OpenRouter's Clef and
  * Clef-flash cut a state at 16,384 tokens, not at the figures Cloudflare's
- * own endpoint cuts it at.
+ * own endpoint cuts it at; its Clef-omni cut at 64,000, above the window
+ * the gateway is held to anyway.
  */
 const OPENROUTER_CLEF_WINDOWS: Readonly<Record<string, number>> = {
   'cloudflare/clef': 16_384,

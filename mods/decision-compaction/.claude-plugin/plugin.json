@@ -17,7 +17,7 @@
     "model": {
       "type": "string",
       "title": "Model",
-      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash is the other), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev and decisionapi-net), gpt-6-luna (openai)."
+      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash and clef-omni are the others), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev and decisionapi-net), gpt-6-luna (openai)."
     },
     "providerDecision": {
       "type": "boolean",

@@ -328,7 +328,7 @@ describe('exchangeOf', () => {
 describe('routeOf', () => {
   test('error: a model cloudflare does not serve is refused before any request', () => {
     expect(() => routeOf('cloudflare', 'jev-latest')).toThrow(
-      'cloudflare serves clef and clef-flash, not "jev-latest"',
+      'cloudflare serves clef, clef-flash and clef-omni, not "jev-latest"',
     )
   })
 
@@ -364,7 +364,7 @@ describe('limits', () => {
   })
 
   // A state past the window is cut without a word and the reply counts
-  // exactly 64,000 on clef and 24,000 on clef-flash, so those
+  // exactly 64,000 on clef and clef-omni and 24,000 on clef-flash, so those
   // are the limits whatever the catalogue states.
   const clefs: Record<string, { model: string; window: number }> = {
     'success: clef holds the 64,000 it reads': {
@@ -374,6 +374,10 @@ describe('limits', () => {
     'success: clef-flash holds the 24,000 it reads': {
       model: 'clef-flash',
       window: 24000,
+    },
+    'success: clef-omni holds its 64,000 window': {
+      model: 'clef-omni',
+      window: 64000,
     },
     'success: a catalogue id holds the limits of the model it names': {
       model: '@cf/cloudflare/clef-flash',
@@ -456,6 +460,10 @@ describe('limits', () => {
         maxQuestions: 64,
         window: 16384,
       },
+    "success: clef-omni over openrouter is held to the gateway's window": {
+      model: 'cloudflare/clef-omni',
+      maxQuestions: 64,
+    },
     'success: a model name that is also an object key is no window': {
       model: 'constructor',
       maxQuestions: 64,
@@ -487,8 +495,8 @@ describe('limits', () => {
     })
   }
 
-  test('success: only cloudflare offers two models', () => {
-    expect(modelsOf('cloudflare')).toEqual(['clef', 'clef-flash'])
+  test('success: only cloudflare offers more than one model', () => {
+    expect(modelsOf('cloudflare')).toEqual(['clef', 'clef-flash', 'clef-omni'])
     expect(modelsOf('typesafe')).toEqual(['jev-latest'])
     expect(modelsOf('openrouter')).toEqual(['~typesafe/jev-latest'])
   })
@@ -957,6 +965,18 @@ describe('replyFrom', () => {
           'may hold (24000): the state was probably cut short, so the ' +
           'answers decide nothing',
       },
+    'error: a clef-omni count of its 64,000 window is refused': {
+      route: routeOf('cloudflare', 'clef-omni'),
+      status: 200,
+      payload: {
+        success: true,
+        result: { answers: ANSWERS, usage: { input_tokens: 64000 } },
+      },
+      message:
+        'cloudflare counted 64000 input tokens, all that a request of its ' +
+        'may hold (64000): the state was probably cut short, so the answers ' +
+        'decide nothing',
+    },
     'error: an envelope reporting failure is quoted with its message': {
       route: routeOf('decisions-api-dev'),
       status: 200,

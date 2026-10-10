@@ -20,6 +20,7 @@ const OPENROUTER: Route = {
 }
 const CLEF: Route = { provider: 'cloudflare', model: 'clef' }
 const CLEF_FLASH: Route = { provider: 'cloudflare', model: 'clef-flash' }
+const CLEF_OMNI: Route = { provider: 'cloudflare', model: 'clef-omni' }
 
 const TYPESAFE_KEY: Credentials = { typesafeApiKey: 'test-typesafe-key' }
 const OPENROUTER_KEY: Credentials = { openrouterApiKey: 'test-openrouter-key' }
@@ -96,6 +97,7 @@ describe('candidatesOf', () => {
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
       ],
       usable: true,
@@ -103,7 +105,7 @@ describe('candidatesOf', () => {
     'success: cloudflare offers both of its models': {
       configured: CLEF,
       credentials: CLOUDFLARE_KEYS,
-      keys: ['cloudflare.clef', 'cloudflare.clef-flash'],
+      keys: ['cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: [
         'typesafe/jev-latest: TYPESAFE_API_KEY unset',
         'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
@@ -117,6 +119,7 @@ describe('candidatesOf', () => {
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
       ],
       usable: true,
@@ -127,6 +130,7 @@ describe('candidatesOf', () => {
       keys: [
         'cloudflare.clef',
         'cloudflare.clef-flash',
+        'cloudflare.clef-omni',
         'openrouter.-typesafe-jev-latest',
       ],
       refused: ['typesafe/jev-latest: TYPESAFE_API_KEY unset'],
@@ -135,14 +139,14 @@ describe('candidatesOf', () => {
     'success: a bare jev id on the gateway is the model typesafe serves': {
       configured: { provider: 'openrouter', model: 'jev-1.13' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY, ...CLOUDFLARE_KEYS },
-      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash'],
+      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: ['openrouter/jev-1.13: the same model as typesafe/jev-latest'],
       usable: true,
     },
     'success: the pinned gateway id of jev is the model typesafe serves': {
       configured: { provider: 'openrouter', model: 'typesafe/jev-1.13' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY, ...CLOUDFLARE_KEYS },
-      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash'],
+      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: [
         'openrouter/typesafe/jev-1.13: the same model as typesafe/jev-latest',
       ],
@@ -155,6 +159,7 @@ describe('candidatesOf', () => {
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
       ],
       usable: true,
     },
@@ -166,6 +171,7 @@ describe('candidatesOf', () => {
         refused: [
           'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         ],
         usable: true,
       },
@@ -176,6 +182,7 @@ describe('candidatesOf', () => {
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
       ],
       usable: true,
     },
@@ -186,6 +193,7 @@ describe('candidatesOf', () => {
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'openrouter/typesafe/jev: the same model as typesafe/jev-latest',
       ],
       usable: true,
@@ -193,7 +201,7 @@ describe('candidatesOf', () => {
     'success: the configured model is the one offered for its provider': {
       configured: { provider: 'typesafe', model: 'jev-1.13.0' },
       credentials: { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
-      keys: ['typesafe.jev-1.13.0', 'cloudflare.clef', 'cloudflare.clef-flash'],
+      keys: ['typesafe.jev-1.13.0', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: ['openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset'],
       usable: true,
     },
@@ -205,6 +213,7 @@ describe('candidatesOf', () => {
         'typesafe/jev-latest: TYPESAFE_API_KEY unset',
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
       ],
       usable: false,
@@ -238,6 +247,7 @@ describe('candidatesOf', () => {
     expect(found.candidates.map(candidate => candidate.route)).toEqual([
       CLEF,
       CLEF_FLASH,
+      CLEF_OMNI,
     ])
     expect(found.refused).toContain(
       'typesafe/jev-latest: the state is about 40000 tokens and it takes 31960',
@@ -258,6 +268,7 @@ describe('candidatesOf', () => {
 
     expect(about['cloudflare.clef']).toContain('highest-precision')
     expect(about['cloudflare.clef-flash']).toContain('latency-critical')
+    expect(about['cloudflare.clef-omni']).toContain('mixture-of-experts')
     expect(about['openrouter.-typesafe-jev-latest']).toContain(
       "TypeSafe's flagship",
     )
@@ -386,6 +397,7 @@ describe('chooseRoute', () => {
         'typesafe/jev-latest: TYPESAFE_API_KEY unset; ' +
         'cloudflare/clef: the state is about 70000 tokens and it takes 55705; ' +
         'cloudflare/clef-flash: the state is about 70000 tokens and it takes 55705; ' +
+        'cloudflare/clef-omni: the state is about 70000 tokens and it takes 55705; ' +
         'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
     })
     expect(asked).toEqual([])
@@ -409,6 +421,8 @@ describe('chooseRoute', () => {
         'one model is available (cloudflare/clef: CLOUDFLARE_API_TOKEN and ' +
         'CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
         'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
+        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and ' +
+        'CLOUDFLARE_ACCOUNT_ID unset; ' +
         'openrouter/~typesafe/jev-latest: the same model as ' +
         'typesafe/jev-latest); using the configured ' +
         'openrouter/~typesafe/jev-latest',
@@ -459,6 +473,7 @@ describe('chooseRoute', () => {
       'typesafe.jev-latest',
       'cloudflare.clef',
       'cloudflare.clef-flash',
+      'cloudflare.clef-omni',
     ])
     expect(routed).toEqual({
       route: CLEF,
@@ -543,6 +558,7 @@ describe('candidatesOf, over every provider', () => {
       'typesafe.jev-latest',
       'cloudflare.clef',
       'cloudflare.clef-flash',
+      'cloudflare.clef-omni',
       'codiv.openjev-latest',
       'perplexity.pplx-decider-v1.1-27b',
       'openai.gpt-6-luna',

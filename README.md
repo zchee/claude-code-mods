@@ -5,7 +5,7 @@ mods: plugins that run TypeScript hooks inside the Claude Code process and
 change how a session behaves.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Plugin API: Claude Code 2.1.295](https://img.shields.io/badge/plugin%20API-Claude%20Code%202.1.295-8A2BE2.svg)](mods/types/claude-code/index.d.ts)
+[![Plugin API: Claude Code 2.1.296](https://img.shields.io/badge/plugin%20API-Claude%20Code%202.1.296-8A2BE2.svg)](mods/types/claude-code/index.d.ts)
 
 A mod is a plugin whose `hooks/hooks.json` names JavaScript or TypeScript
 modules. Those modules subscribe to events (`session.compact`,
@@ -81,7 +81,7 @@ has a `.claude-plugin/plugin.json`, and stops at the first failure.
 Claude Code writes the type declarations for its plugin API only when it
 loads a mod, into that mod's git-ignored `.claude-plugin/types/`. The copy
 in `mods/types/` lets `tsc -p mods` check every mod without starting
-Claude Code, and names the version it came from (2.1.295 today). After
+Claude Code, and names the version it came from (2.1.296 today). After
 upgrading Claude Code, run `pnpm run types:update`, then `pnpm run check`,
 and commit the new snapshot with whatever it breaks.
 

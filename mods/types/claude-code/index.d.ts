@@ -1,4 +1,4 @@
-// Written by Claude Code 2.1.295.
+// Written by Claude Code 2.1.296.
 // Claude Code function hooks: the plugin API's TypeScript declarations.
 //
 // EARLY ACCESS: this surface may change between releases without notice.
@@ -498,6 +498,12 @@ declare module 'claude-code' {
        * The most turns the agent takes before it stops.
        */
       maxTurns?: number;
+      /**
+       * Token count, 100000 to 1000000, at which the agent compacts its own
+       * conversation as a subagent. It only lowers the window the agent would
+       * otherwise get.
+       */
+      autoCompactWindow?: number;
       /**
        * Preloaded into the agent's context before its first turn: skill names.
        */
@@ -2717,11 +2723,12 @@ declare module 'claude-code' {
            */
           call: (server: string, tool: string, args?: Record<string, unknown>) => Promise<McpToolResult>;
           /**
-           * Connects one of the MCP servers this plugin's own manifest lists; a
-           * server already connected answers at once.
+           * Connects one of the MCP servers this plugin's own manifest lists, if
+           * the session has not already: a listed server joins it at its start.
            *
-           * The same server run under another name answers with that name. Never
-           * rejects for a refusal: the result says why (`reason`, `message`).
+           * So listing a server defers nothing: to hold its tools back, refuse
+           * their calls at `tool.check`. The same server run under another name
+           * answers with that name; a refusal resolves with `reason`, `message`.
            *
            * @param server the server's key in this plugin's manifest
            * @returns connected, with the name `call` takes, or why not
@@ -5880,7 +5887,8 @@ declare module 'claude-code' {
   } & Record<PropertyKey, never>;
 
   /**
-   * Why `$.mcp.connect` left a server unconnected, in one word.
+   * Why `$.mcp.connect` left a server unconnected, in one word; `unlisted`
+   * too where the session's host runs the plugin's servers itself.
    *
    * `unlisted`: not in the caller's own manifest. `unapproved`: a repository
    * server not approved. `disabled`: turned off. `policy`: enterprise MCP

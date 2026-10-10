@@ -328,7 +328,10 @@ The bounds below are fixed; they are not options.
   `perplexity` counts the state again for every question of
   a request, so its count is divided by the number of questions before it
   is held to the limit: 128 questions on a 12,000-token state report about
-  1,530,000 input tokens and were read whole.
+  1,530,000 input tokens and were read whole. `codiv` refuses a request too
+  long for its window with HTTP 400 rather than cutting it, and counts the
+  state once for every chunk of about thirteen questions, so its count is
+  not held to the limit at all.
 - **Room for a batch.** The state may take at most the request budget less
   the questions of 16 tool calls (of all of them, when there are fewer).
   Every request carries the whole state, so without this a state that
@@ -447,7 +450,9 @@ Each compaction ends with one line, in a toast and in the log, for example
 happened to the tool calls, the provider and model used, the estimated size
 of the state, and the input tokens the provider counted. On `perplexity`
 that count is the state times the questions of the largest request, which
-is what Perplexity bills, not the size of one reading. A `per-call
+is what Perplexity bills, not the size of one reading; on `codiv` it is
+the state times the chunks of about thirteen questions it answers in, which
+is what its quota counts. A `per-call
 verdicts:` line lists both probabilities for every call asked about.
 
 ## Development

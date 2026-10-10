@@ -131,6 +131,12 @@ type Descriptor = {
    * state took is the count divided by the questions asked.
    */
   countsStatePerQuestion?: true
+  /**
+   * True for a provider that refuses a request too long for its window
+   * rather than cutting the state, so that its count of input tokens is
+   * never read as a cut.
+   */
+  refusesOverlong?: true
   needs: readonly (keyof Credentials)[]
   bodyModelOf: (model: string) => string
   urlOf: (model: string, credentials: Credentials) => string
@@ -523,7 +529,10 @@ const TABLE: Record<ProviderName, Descriptor> = {
   // of it. Its window is 65,536 tokens for the state and the questions
   // together, and it advises about 60,000 for the state. It documents no
   // fixed question cap, but on 2026-10-11 it refused 300 questions with
-  // HTTP 400 ("at most 256 questions per request").
+  // HTTP 400 ("at most 256 questions per request"). It answers questions in
+  // chunks of about thirteen and its `usage.input_tokens` counts the state
+  // once a chunk: 32 questions on a 30,000-token state counted 90,946. A
+  // state too long for the window is refused with HTTP 400, never cut.
   codiv: {
     title: 'Codiv',
     defaultModel: 'openjev-latest',
@@ -535,6 +544,7 @@ const TABLE: Record<ProviderName, Descriptor> = {
       maxRequestTokens: 65_536,
       maxQuestions: 256,
     },
+    refusesOverlong: true,
     needs: ['codivApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.codiv.ai/v1/systemone',
@@ -1192,8 +1202,9 @@ export function replyFrom(
   // state that is too long without saying so. A count that is at the limit
   // is what a request cut to the limit reports, and answers about a state
   // the model saw part of are no ground for removing anything. A provider
-  // that counts the state once a question is held to what one reading took.
-  const { countsStatePerQuestion } = TABLE[route.provider]
+  // that counts the state once a question is held to what one reading took;
+  // one that refuses a request too long has nothing to be held to.
+  const { countsStatePerQuestion, refusesOverlong } = TABLE[route.provider]
   const { maxRequestTokens } = limitsOf(route)
   const counted =
     reply.usage.input_tokens === undefined || !countsStatePerQuestion
@@ -1202,7 +1213,11 @@ export function replyFrom(
           reply.usage.input_tokens / Math.max(Object.keys(asked).length, 1),
         )
 
-  if (counted !== undefined && counted >= maxRequestTokens) {
+  if (
+    !refusesOverlong &&
+    counted !== undefined &&
+    counted >= maxRequestTokens
+  ) {
     throw new Error(
       `${route.provider} counted ${counted} input tokens` +
         `${countsStatePerQuestion ? ' a question' : ''}, all that a ` +

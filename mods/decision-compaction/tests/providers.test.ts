@@ -1219,12 +1219,6 @@ describe('replyFrom', () => {
       wrap: (body: object) => object
     }
   > = {
-    'error: codiv counting its whole window is taken as a cut state': {
-      provider: 'codiv',
-      window: 65536,
-      answers: ANSWERS,
-      wrap: bare,
-    },
     "error: decisions-api.dev counting Jev's whole window is taken as a cut state":
       {
         provider: 'decisions-api-dev',
@@ -1269,6 +1263,39 @@ describe('replyFrom', () => {
       })
     })
   }
+
+  describe('codiv, which counts the state once a chunk and refuses an overlong request', () => {
+    test('success: 32 questions on a 30,000-token state counted as 90,946 tokens are a reply', () => {
+      const asked: Questions = {}
+      const answers: Record<string, unknown> = {}
+
+      for (const index of Array.from({ length: 32 }, (_, i) => i)) {
+        asked[`call_t${index}`] = { type: 'noul', instructions: 'Is it?' }
+        answers[`call_t${index}`] = { type: 'noul', noul: 0.25 }
+      }
+
+      expect(
+        replyFrom(
+          routeOf('codiv'),
+          response(200, { answers, usage: { input_tokens: 90_946 } }),
+          ALL,
+          asked,
+        ).usage,
+        'the count is kept as the provider reported it',
+      ).toEqual({ input_tokens: 90_946 })
+    })
+
+    test('success: one question counted as the whole window is a reply', () => {
+      expect(
+        replyFrom(
+          routeOf('codiv'),
+          response(200, { answers: ANSWERS, usage: { input_tokens: 65_536 } }),
+          ALL,
+          QUESTIONS,
+        ).usage,
+      ).toEqual({ input_tokens: 65_536 })
+    })
+  })
 
   describe('perplexity, which counts the state once a question', () => {
     /**

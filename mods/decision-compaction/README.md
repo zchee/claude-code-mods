@@ -165,7 +165,7 @@ A turn you interrupted, and a subagent's turn, request nothing.
 | `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
 | `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
 | `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, counted in bytes; 8 questions a request |
-| `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | not documented for the Decisions API; the mod holds a request to 32,000 tokens and 64 questions |
+| `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | not documented for the Decisions API; the mod holds a request to 272,000 tokens (where the price doubles) and 200 questions (measured) |
 
 The `provider` option takes exactly these eight names. Any other value is
 not replaced by the default: nothing is sent anywhere, and every compaction
@@ -284,19 +284,21 @@ The bounds below are fixed; they are not options.
   held to 85% of the provider's documented limit: 27,200 tokens for the
   state plus the longest question and 54,400 a request on `typesafe`,
   54,400 on `cloudflare` `clef` and `clef-omni` and 20,400 on
-  `clef-flash`, 27,200 on `openrouter` and `openai`, 51,000 for
+  `clef-flash`, 27,200 on `openrouter`, 231,200 on `openai`, 51,000 for
   the state plus the longest question (85% of the 60,000 the vendor
   advises) and 55,705 a request on `codiv`, 222,821 on `perplexity`, and
   27,200 for the state plus the longest question and 54,400 a request on
   `decisions-api-dev` and `decisionapi-net`. Both serve TypeSafe's Jev
   1.13 and state their own limit in bytes, so they are held to the token
   window TypeSafe documents for Jev, and the byte cap below is the bound
-  that decides. `openai` documents no limit, so it is
-  held to the tightest figures of the others, 32,000 tokens and 64
-  questions, before the margin. `codiv` documents no question limit but
+  that decides. `openai` documents no limit for its Decisions API. On
+  2026-10-11 it refused more than 200 questions and answered a state of
+  300,000 tokens in under two seconds; a request over 272,000 input
+  tokens is billed at twice the rate, so it is held to 272,000 and 200
+  questions before the margin. `codiv` documents no question limit but
   refused 300 questions (at most 256 a request), so it is held to 256.
   Where the margin leaves less than the default `maxRequestTokens` of
-  30,000 (`openrouter` and `openai`), the default is lowered there.
+  30,000 (`openrouter`), the default is lowered there.
 - **A byte cap.** `decisions-api-dev` and `decisionapi-net` also hold a
   request to the 85% share of their 32 KiB cap, 27,852 of 32,768 bytes,
   measured as UTF-8 of the encoded request body, since a body over the cap
@@ -320,9 +322,10 @@ The bounds below are fixed; they are not options.
   was probably cut short. The answers are discarded and the built-in
   summary runs. On `decisions-api-dev` and `decisionapi-net` that limit is
   Jev's own 64,000 tokens, which a body within 32 KiB does not reach. On
-  `openai` it is the mod's fallback of 32,000, not a window OpenAI states,
-  so a reply counting that many is discarded even if the model read the
-  state whole. `perplexity` counts the state again for every question of
+  `openai` it is the 272,000 where the price doubles: OpenAI refuses a
+  request too long rather than cutting it, so a reply counting that many
+  is one whose estimate drifted, and is discarded all the same.
+  `perplexity` counts the state again for every question of
   a request, so its count is divided by the number of questions before it
   is held to the limit: 128 questions on a 12,000-token state report about
   1,530,000 input tokens and were read whole.

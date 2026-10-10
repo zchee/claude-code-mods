@@ -431,12 +431,12 @@ describe('limits', () => {
           maxRequestBytes: 32768,
         },
       },
-      'success: openai documents none and is held to the fallback': {
+      'success: openai holds 200 questions within its price step': {
         provider: 'openai',
         expected: {
-          maxStateTokens: 32000,
-          maxRequestTokens: 32000,
-          maxQuestions: 64,
+          maxStateTokens: 272000,
+          maxRequestTokens: 272000,
+          maxQuestions: 200,
         },
       },
     }
@@ -1239,9 +1239,9 @@ describe('replyFrom', () => {
         answers: ANSWERS,
         wrap: enveloped,
       },
-    'error: openai counting the fallback window is taken as a cut state': {
+    'error: openai counting its whole window is discarded': {
       provider: 'openai',
-      window: 32000,
+      window: 272000,
       answers: [{ type: 'predicate', name: 'call_t1', probability: 0.25 }],
       wrap: bare,
     },

@@ -176,17 +176,6 @@ const CLOUDFLARE_MODELS = Object.keys(CLOUDFLARE_LIMITS) as readonly (
 )[]
 
 /**
- * What a request to a provider that documents no limit is held to: the
- * tightest window and question cap among the documented ones (OpenRouter's
- * 32,000 tokens for Jev, Clef's 64 questions).
- */
-const UNDOCUMENTED: Limits = {
-  maxStateTokens: 32_000,
-  maxRequestTokens: 32_000,
-  maxQuestions: 64,
-}
-
-/**
  * How many questions one request to either Decisions reseller may hold.
  */
 const RESELLER_QUESTIONS = 8
@@ -614,17 +603,24 @@ const TABLE: Record<ProviderName, Descriptor> = {
     unwrap: unwrapDataEnvelope,
   },
   // OpenAI takes the same questions in a body of its own shape and answers
-  // in a list. Its Decisions API documents no limits, so it is held to the
-  // fallback. Those figures are this mod's, not a window OpenAI states: a
-  // reply counting all of them is taken as a cut state although the model
-  // may have read it whole, which errs toward the built-in summary.
+  // in a list. Its Decisions API documents no limits. On 2026-10-11 it
+  // refused more than 200 questions (HTTP 400, "maximum length 200") and
+  // answered a state of 300,162 input tokens in under two seconds. A
+  // request over 272,000 input tokens is billed at twice the rate, so that
+  // is the window it is held to. It refuses a request too long rather than
+  // cutting it, so a reply counting the whole window is one whose estimate
+  // drifted past the price step, and is discarded all the same.
   openai: {
     title: 'OpenAI',
     defaultModel: 'gpt-6-luna',
     models: ['gpt-6-luna'],
     family: model => model,
     isGateway: false,
-    limits: UNDOCUMENTED,
+    limits: {
+      maxStateTokens: 272_000,
+      maxRequestTokens: 272_000,
+      maxQuestions: 200,
+    },
     needs: ['openaiApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.openai.com/v1/decisions',

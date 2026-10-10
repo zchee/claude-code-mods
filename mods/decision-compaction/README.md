@@ -181,7 +181,10 @@ What differs between the providers beyond the table:
   Jev: at Codiv `jev-latest` is an alias of OpenJev.
 - `perplexity` accepts only its own decider models. Any other name in
   `model`, `jev-latest` included, is refused with an HTTP 400 and the
-  compaction uses the built-in summary.
+  compaction uses the built-in summary. Its `usage.input_tokens`, and so
+  its bill at $0.02 per million, counts the state once for every question:
+  a compaction of a 200,000-token state with 300 questions is billed about
+  60 million input tokens.
 - `decisions-api-dev` and `decisionapi-net` wrap the answer in a
   `{code, message, data}` envelope. A `code` other than 0, or an envelope
   without `data.result`, ends the compaction with the vendor's message

@@ -6,6 +6,7 @@ import {
   credentialsOf,
   environmentOf,
   exchangeOf,
+  familyOf,
   isRetryable,
   limitsOf,
   missingOf,
@@ -16,6 +17,7 @@ import {
   replyFrom,
   routeOf,
   unresolvedOf,
+  wantedOf,
   wireOf,
 } from '../hooks/providers'
 import type { Credentials, ProviderName, Route } from '../hooks/providers'
@@ -346,6 +348,113 @@ describe('routeOf', () => {
   })
 })
 
+describe('familyOf', () => {
+  // Each Jev release is a model of its own; an alias is the release the
+  // provider named by it on 2026-10-16, which is not the same everywhere.
+  const families: Record<
+    string,
+    { provider: ProviderName; model: string; family: string }
+  > = {
+    "success: typesafe's jev-latest is jev 1.13": {
+      provider: 'typesafe',
+      model: 'jev-latest',
+      family: 'jev-1.13',
+    },
+    "success: typesafe's jev-preview is jev 1.14": {
+      provider: 'typesafe',
+      model: 'jev-preview',
+      family: 'jev-1.14',
+    },
+    'success: a pinned typesafe id is its release': {
+      provider: 'typesafe',
+      model: 'jev-1.14.0',
+      family: 'jev-1.14',
+    },
+    "success: openrouter's alias for the newest jev is jev 1.14": {
+      provider: 'openrouter',
+      model: '~typesafe/jev-latest',
+      family: 'jev-1.14',
+    },
+    'success: a bare jev-latest on openrouter is its alias, jev 1.14': {
+      provider: 'openrouter',
+      model: 'jev-latest',
+      family: 'jev-1.14',
+    },
+    "success: a gateway's pinned id is its release": {
+      provider: 'openrouter',
+      model: 'typesafe/jev-1.13',
+      family: 'jev-1.13',
+    },
+    'success: the dated id a gateway answers with is its release': {
+      provider: 'decisions-api-dev',
+      model: 'typesafe/jev-1.14-20261014',
+      family: 'jev-1.14',
+    },
+    "success: decisions-api.dev's jev-latest is jev 1.13": {
+      provider: 'decisions-api-dev',
+      model: 'jev-latest',
+      family: 'jev-1.13',
+    },
+    "success: decisionapi.net's jev-latest is its documented default, jev 1.14":
+      {
+        provider: 'decisionapi-net',
+        model: 'jev-latest',
+        family: 'jev-1.14',
+      },
+    'success: a jev id that names no known release is jev': {
+      provider: 'openrouter',
+      model: 'typesafe/jev',
+      family: 'jev',
+    },
+    'success: a name that only begins like jev is a model of its own': {
+      provider: 'openrouter',
+      model: '~typesafe/jevons-1',
+      family: '~typesafe/jevons-1',
+    },
+    "success: codiv's jev-latest is its own open jev": {
+      provider: 'codiv',
+      model: 'jev-latest',
+      family: 'openjev',
+    },
+  }
+
+  for (const [name, { provider, model, family }] of Object.entries(
+    families,
+  )) {
+    test(name, () => {
+      expect(familyOf({ provider, model })).toBe(family)
+    })
+  }
+})
+
+describe('wantedOf', () => {
+  test('success: every jev release at typesafe asks for its default-mode windows', () => {
+    for (const model of ['jev-latest', 'jev-1.13.0', 'jev-1.14.0']) {
+      expect(wantedOf(routeOf('typesafe', model))).toEqual({
+        maxStateTokens: 27_000,
+        maxRequestTokens: 54_400,
+      })
+    }
+  })
+
+  test("success: openrouter's jev asks for a body it keeps out of the long-context mode", () => {
+    for (const model of ['~typesafe/jev-latest', 'typesafe/jev-1.14', 'jev-1.13']) {
+      expect(wantedOf(routeOf('openrouter', model))).toEqual({
+        maxStateTokens: 27_000,
+        maxRequestTokens: 54_400,
+        maxRequestBytes: 32_000,
+      })
+    }
+  })
+
+  test('success: a model openrouter forwards that is not jev asks for no byte cap', () => {
+    expect(wantedOf(routeOf('openrouter', 'cloudflare/clef-omni'))).toEqual({
+      maxStateTokens: 27_000,
+      maxRequestTokens: 27_200,
+    })
+  })
+})
+
 describe('limits', () => {
   test('success: each provider states its limits', () => {
     expect(limitsOf(routeOf('typesafe'))).toEqual({
@@ -353,8 +462,8 @@ describe('limits', () => {
       maxRequestTokens: 64000,
     })
     expect(limitsOf(routeOf('openrouter'))).toEqual({
-      maxStateTokens: 32000,
-      maxRequestTokens: 32000,
+      maxStateTokens: 262144,
+      maxRequestTokens: 262144,
     })
     expect(limitsOf(routeOf('cloudflare'))).toEqual({
       maxStateTokens: 64000,
@@ -447,11 +556,13 @@ describe('limits', () => {
     })
   }
 
+  // Jev over OpenRouter has its documented window and no question cap; a
+  // Clef model is held to where OpenRouter cuts it, and any other model to
+  // the window of a model whose limit no one documented.
   const gateway: Record<
     string,
-    { model: string; maxQuestions?: number; window?: number }
+    { model: string; maxQuestions?: number; window: number }
   > = {
-    // OpenRouter's Clef and Clef-flash cut a state at 16,384 tokens.
     'success: clef over openrouter takes 64 questions in the 16,384 it reads':
       {
         model: 'cloudflare/clef',
@@ -464,21 +575,26 @@ describe('limits', () => {
         maxQuestions: 64,
         window: 16384,
       },
-    "success: clef-omni over openrouter is held to the gateway's window": {
-      model: 'cloudflare/clef-omni',
-      maxQuestions: 64,
-    },
+    'success: clef-omni over openrouter takes 64 questions in the 64,000 it reads':
+      {
+        model: 'cloudflare/clef-omni',
+        maxQuestions: 64,
+        window: 64000,
+      },
     'success: a model name that is also an object key is no window': {
       model: 'constructor',
       maxQuestions: 64,
+      window: 32000,
     },
-    'success: a model openrouter does not route to jev is held to 64 questions':
-      { model: 'someone/other-model', maxQuestions: 64 },
-    'success: jev over openrouter by its alias has no question cap': {
-      model: '~typesafe/jev-latest',
-    },
-    'success: jev over openrouter by a bare id has no question cap': {
-      model: 'jev-1.13',
+    'success: a model openrouter does not route to jev is held to 64 questions and 32,000 tokens':
+      { model: 'someone/other-model', maxQuestions: 64, window: 32000 },
+    'success: jev over openrouter by its alias has its window and no question cap':
+      { model: '~typesafe/jev-latest', window: 262144 },
+    'success: jev over openrouter by a bare id has its window and no question cap':
+      { model: 'jev-1.13', window: 262144 },
+    'success: jev 1.14 over openrouter by its pinned id has its window': {
+      model: 'typesafe/jev-1.14',
+      window: 262144,
     },
   }
 
@@ -487,8 +603,8 @@ describe('limits', () => {
   )) {
     test(name, () => {
       const expected: Record<string, number> = {
-        maxStateTokens: window ?? 32000,
-        maxRequestTokens: window ?? 32000,
+        maxStateTokens: window,
+        maxRequestTokens: window,
       }
 
       if (maxQuestions !== undefined) {
@@ -499,17 +615,20 @@ describe('limits', () => {
     })
   }
 
-  test('success: only cloudflare offers more than one model', () => {
+  test('success: a provider offers each model of its own, and each jev release once', () => {
     expect(modelsOf('cloudflare')).toEqual(['clef', 'clef-flash', 'clef-omni'])
-    expect(modelsOf('typesafe')).toEqual(['jev-latest'])
+    expect(modelsOf('typesafe')).toEqual(['jev-latest', 'jev-1.14.0'])
     expect(modelsOf('openrouter')).toEqual(['~typesafe/jev-latest'])
+    expect(modelsOf('decisions-api-dev')).toEqual([
+      'jev-latest',
+      'typesafe/jev-1.14',
+    ])
+    expect(modelsOf('decisionapi-net')).toEqual(['jev-latest'])
   })
 
-  test('success: each is offered with its default model', () => {
+  test('success: each other provider is offered with its default model', () => {
     expect(modelsOf('codiv')).toEqual(['openjev-latest'])
     expect(modelsOf('perplexity')).toEqual(['pplx-decider-v1.1-27b'])
-    expect(modelsOf('decisions-api-dev')).toEqual(['jev-latest'])
-    expect(modelsOf('decisionapi-net')).toEqual(['jev-latest'])
     expect(modelsOf('openai')).toEqual(['gpt-6-luna'])
   })
 
@@ -938,10 +1057,10 @@ describe('replyFrom', () => {
     'error: an openrouter count of input tokens past its limit is refused': {
       route: routeOf('openrouter'),
       status: 200,
-      payload: { answers: ANSWERS, usage: { input_tokens: 32001 } },
+      payload: { answers: ANSWERS, usage: { input_tokens: 262145 } },
       message:
-        'openrouter counted 32001 input tokens, all that a request of its ' +
-        'may hold (32000): the state was probably cut short, so the answers ' +
+        'openrouter counted 262145 input tokens, all that a request of its ' +
+        'may hold (262144): the state was probably cut short, so the answers ' +
         'decide nothing',
     },
     'error: a clef count of the 64,000 tokens it cuts a state to is refused': {

@@ -179,18 +179,21 @@ describe('budgetOf', () => {
         provider: 'typesafe',
         expected: { stateTokens: 27_160, requestTokens: 54_400 },
       },
-    'success: openrouter holds a request to 85% of 32,000, the default included':
+    'success: openrouter jev holds a raised request to 85% of its 262,144 window':
       {
-        want: [25_000, 30_000],
+        want: [1_000_000, 1_000_000],
         provider: 'openrouter',
-        expected: { stateTokens: 25_000, requestTokens: 27_200 },
+        // floor(262,144 x 0.85) = 222,822; less 32 and 1,000 for the state.
+        expected: { stateTokens: 221_790, requestTokens: 222_822 },
       },
     'success: at openrouter a raised state gives way to the batch it must leave room for':
       {
         want: [100_000, 100_000],
         provider: 'openrouter',
-        // 27,200 less the envelope of 32 and the batch of 1,000.
-        expected: { stateTokens: 26_168, requestTokens: 27_200 },
+        model: 'someone/other-model',
+        // 85% of 32,000 is 27,200, less the envelope of 32 and the batch
+        // of 1,000.
+        expected: { stateTokens: 26_168, requestTokens: 27_200, questions: 64 },
       },
     'success: cloudflare clef holds both to 85% of 64,000 and brings its question count':
       {
@@ -289,22 +292,24 @@ describe('budgetOf', () => {
       model: 'clef-omni',
       expected: { stateTokens: 45_000, requestTokens: 54_400, questions: 64 },
     },
-    'success: openrouter jev leaves its window room for a batch': {
-      provider: 'openrouter',
-      // 27,200 less the envelope of 32 and the batch of 1,000.
-      expected: { stateTokens: 26_168, requestTokens: 27_200 },
-    },
+    "success: openrouter jev asks for typesafe's default-mode windows, its byte cap aside":
+      {
+        provider: 'openrouter',
+        expected: { stateTokens: 27_000, requestTokens: 54_400 },
+      },
     "success: openrouter clef is held to the 16,384 OpenRouter reads": {
       provider: 'openrouter',
       model: 'cloudflare/clef',
       // floor(16,384 x 0.85) = 13,926, less 32 and 1,000 for the state.
       expected: { stateTokens: 12_894, requestTokens: 13_926, questions: 64 },
     },
-    "success: openrouter clef-omni is held to the gateway's window": {
-      provider: 'openrouter',
-      model: 'cloudflare/clef-omni',
-      expected: { stateTokens: 26_168, requestTokens: 27_200, questions: 64 },
-    },
+    'success: openrouter clef-omni asks for what a model other than jev does there':
+      {
+        provider: 'openrouter',
+        model: 'cloudflare/clef-omni',
+        // 27,200 less the envelope of 32 and the batch of 1,000.
+        expected: { stateTokens: 26_168, requestTokens: 27_200, questions: 64 },
+      },
     'success: codiv asks for a request no fuller than its state and a batch': {
       provider: 'codiv',
       expected: { stateTokens: 25_000, requestTokens: 30_000, questions: 256 },

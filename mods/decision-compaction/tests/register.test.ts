@@ -101,6 +101,7 @@ const ADDED_UNSET =
   'codiv/openjev-latest: CODIV_API_KEY unset; ' +
   'perplexity/pplx-decider-v1.1-27b: PERPLEXITY_API_KEY unset; ' +
   'decisions-api-dev/jev-latest: DECISIONS_API_KEY unset; ' +
+  'decisions-api-dev/typesafe/jev-1.14: DECISIONS_API_KEY unset; ' +
   'decisionapi-net/jev-latest: DECISIONAPI_API_KEY unset; ' +
   'openai/gpt-6-luna: OPENAI_API_KEY unset'
 
@@ -827,12 +828,177 @@ function requestTokensOf(seen: World['requests'][number]): number {
   )
 }
 
+/**
+ * The UTF-8 bytes of one request body as the fake provider received it.
+ */
+function bodyBytesOf(seen: World['requests'][number]): number {
+  return new TextEncoder().encode(JSON.stringify(seen.body)).length
+}
+
+describe("openrouter's jev and TypeSafe's long-context mode", () => {
+  test(
+    'success: a conversation that fits keeps every request within the bytes OpenRouter sends in the default mode',
+    { options: { provider: 'openrouter', preserveRecentMessages: 0 } },
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, answer: () => 0.1 })
+      const out = await $.session.compact({
+        trigger: 'auto',
+        messages: wordyReadsOf(60, 100),
+      })
+      const bytes = world.requests.map(bodyBytesOf)
+
+      expect(world.problems).toEqual([])
+      expect(world.builtIn.length, 'the decisions stood').toBe(0)
+      expect(out.messages?.length, 'every call and result is gone').toBe(62)
+      // 85% of the about 32,000 bytes past which OpenRouter runs Jev in
+      // TypeSafe's long-context mode.
+      expect(
+        bytes.every(size => size <= 27_200),
+        `body bytes: ${bytes.join(', ')}`,
+      ).toBe(true)
+      expect(world.toasts[0]).toContain(
+        'requests within the 27200 bytes openrouter asks for',
+      )
+    },
+  )
+
+  test(
+    'success: a conversation the bytes cannot hold is decided past them rather than left to the summary',
+    { options: { provider: 'openrouter', preserveRecentMessages: 0 } },
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, answer: () => 0.1 })
+      const out = await $.session.compact({
+        trigger: 'auto',
+        messages: wordyReadsOf(240, 100),
+      })
+      const bytes = world.requests.map(bodyBytesOf)
+
+      expect(world.problems).toEqual([])
+      expect(world.builtIn.length, 'the decisions stood').toBe(0)
+      expect(out.messages?.length, 'every call and result is gone').toBe(242)
+      expect(world.requests.length <= 16).toBe(true)
+      expect(
+        bytes.some(size => size > 27_200),
+        `body bytes: ${bytes.join(', ')}`,
+      ).toBe(true)
+
+      for (const seen of world.requests) {
+        expect(requestTokensOf(seen) <= 54_400).toBe(true)
+      }
+
+      expect(world.toasts[0]).toContain(
+        'requests past the 27200 bytes openrouter asks for, which the ' +
+          'conversation does not fit',
+      )
+    },
+  )
+
+  test(
+    'success: a state that fits the bytes but whose calls would need a seventeenth request is fitted again without them',
+    { options: { provider: 'openrouter', preserveRecentMessages: 0 } },
+    async ($, on) => {
+      // 400 call-only Read calls: folded, the state fits the bytes, but the
+      // questions of 400 calls do not go in 16 requests beside it.
+      const world = worldOf(on, { env: ENV, answer: () => 0.1 })
+      const out = await $.session.compact({
+        trigger: 'auto',
+        messages: readsOf(400),
+      })
+
+      expect(world.problems).toEqual([])
+      expect(world.builtIn.length, 'the decisions stood').toBe(0)
+      expect(out.messages?.length, 'every call and result is gone').toBe(2)
+      expect(world.requests.length <= 16).toBe(true)
+      expect(world.toasts[0]).toContain(
+        'requests past the 27200 bytes openrouter asks for',
+      )
+
+      // Under the bytes the calls are folded into rows; fitted to the
+      // tokens alone they only go on one line each.
+      expect(world.toasts[0]).toContain('(old calls on one line)')
+    },
+  )
+
+  test(
+    'success: a request budget the person sets lifts the byte cap, whatever the conversation',
+    {
+      options: {
+        provider: 'openrouter',
+        preserveRecentMessages: 0,
+        maxRequestTokens: 54_400,
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, answer: () => 0.1 })
+
+      await $.session.compact({
+        trigger: 'auto',
+        messages: wordyReadsOf(60, 100),
+      })
+
+      const bytes = world.requests.map(bodyBytesOf)
+
+      expect(world.problems).toEqual([])
+      expect(world.builtIn.length, 'the decisions stood').toBe(0)
+      expect(
+        bytes.some(size => size > 27_200),
+        `body bytes: ${bytes.join(', ')}`,
+      ).toBe(true)
+      expect(
+        world.toasts[0]?.includes('bytes openrouter asks for'),
+        'no cap was asked for, so none is reported',
+      ).toBe(false)
+    },
+  )
+
+  test(
+    'success: openrouter is still offered when the state does not fit the bytes it asks for',
+    {
+      options: {
+        providerDecision: true,
+        preserveRecentMessages: 0,
+        model: 'jev-1.13.0',
+        decisionProviders: 'openrouter',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY,
+          OPENROUTER_API_KEY: ENV.OPENROUTER_API_KEY,
+        },
+        answer: id => (id === 'route' ? 'openrouter.-typesafe-jev-latest' : 0.1),
+      })
+      const out = await $.session.compact({
+        trigger: 'auto',
+        messages: wordyReadsOf(240, 100),
+      })
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
+        'typesafe.jev-1.13.0',
+        'openrouter.-typesafe-jev-latest',
+      ])
+      expect(world.builtIn.length, 'the decisions stood').toBe(0)
+      expect(out.messages?.length, 'every call and result is gone').toBe(242)
+      expect(
+        world.requests.slice(1).every(seen => seen.url === OPENROUTER_URL),
+      ).toBe(true)
+      expect(world.toasts[0]).toContain(
+        'requests past the 27200 bytes openrouter asks for',
+      )
+    },
+  )
+})
+
 describe('the bounds on one compaction', () => {
   test(
     'success: a state that fills its budget still leaves every request room for sixteen calls',
     {
       options: {
         provider: 'openrouter',
+        model: 'someone/other-model',
         maxStateTokens: 1_000_000,
         maxRequestTokens: 1_000_000,
         preserveRecentMessages: 0,
@@ -863,7 +1029,8 @@ describe('the bounds on one compaction', () => {
         new Set(world.requests.map(seen => JSON.stringify(seen.state))).size,
       ).toBe(1)
 
-      // 85% of the 32,000 tokens OpenRouter documents for a request.
+      // 85% of the 32,000 tokens a model OpenRouter forwards is held to
+      // when no one documented its limit.
       for (const seen of world.requests) {
         expect(requestTokensOf(seen) <= 27_200).toBe(true)
       }
@@ -1138,15 +1305,21 @@ describe('provider decision', () => {
   const DECIDING = { ...OPTIONS, providerDecision: true }
 
   test(
-    'success: a configured gateway and the direct route to its model are one model, not a choice',
-    { options: { ...DECIDING, provider: 'openrouter' } },
+    'success: a configured gateway and the route offered to the same jev release are one model, not a choice',
+    {
+      options: {
+        ...DECIDING,
+        provider: 'decisionapi-net',
+        decisionProviders: 'openrouter',
+      },
+    },
     async ($, on) => {
       const world = worldOf(on, {
         env: {
-          TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY,
           OPENROUTER_API_KEY: ENV.OPENROUTER_API_KEY,
+          DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
         },
-        answer: DECIDED,
+        answer: DECIDED_BY_TEXT,
       })
       const out = await $.session.compact({
         trigger: 'manual',
@@ -1155,19 +1328,13 @@ describe('provider decision', () => {
 
       expect(world.problems).toEqual([])
       expect(world.requests.map(seen => [seen.url, seen.model])).toEqual([
-        [OPENROUTER_URL, '~typesafe/jev-latest'],
+        [DECISIONAPI_URL, 'jev-latest'],
       ])
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
       expect(world.lines[0]).toBe(
-        'provider decision: one model is available (cloudflare/clef: ' +
-          'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
-          'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and ' +
-          'CLOUDFLARE_ACCOUNT_ID unset; ' +
-          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
-          `${ADDED_UNSET}; ` +
-          'openrouter/~typesafe/jev-latest: the same model as ' +
-          'typesafe/jev-latest); using the configured ' +
-          'openrouter/~typesafe/jev-latest',
+        'provider decision: one model is available (decisionapi-net/' +
+          'jev-latest: the same model as openrouter/~typesafe/jev-latest); ' +
+          'using the configured decisionapi-net/jev-latest',
       )
     },
   )
@@ -1189,6 +1356,7 @@ describe('provider decision', () => {
       expect(world.problems).toEqual([])
       expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
         'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
         'cloudflare.clef',
         'cloudflare.clef-flash',
         'cloudflare.clef-omni',
@@ -1234,7 +1402,14 @@ describe('provider decision', () => {
 
   test(
     'success: a route that would need more than sixteen requests is not offered',
-    { options: { providerDecision: true, preserveRecentMessages: 0 } },
+    {
+      options: {
+        providerDecision: true,
+        preserveRecentMessages: 0,
+        model: 'jev-1.13.0',
+        decisionProviders: 'typesafe,cloudflare',
+      },
+    },
     async ($, on) => {
       const world = worldOf(on, { env: ENV, answer: () => 0.1 })
       const out = await $.session.compact({
@@ -1261,7 +1436,7 @@ describe('provider decision', () => {
 
   test(
     'success: settings that cannot be read are logged and the environment is used',
-    { options: DECIDING },
+    { options: { ...DECIDING, model: 'jev-1.13.0' } },
     async ($, on) => {
       const world = worldOf(on, {
         env: { TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY },
@@ -1309,6 +1484,7 @@ describe('provider decision', () => {
         'openrouter is left out: typesafe reaches the same model directly',
       ).toEqual([
         'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
         'cloudflare.clef',
         'cloudflare.clef-flash',
         'cloudflare.clef-omni',
@@ -1332,7 +1508,7 @@ describe('provider decision', () => {
 
   test(
     'success: one usable provider is used without a routing request',
-    { options: DECIDING },
+    { options: { ...DECIDING, model: 'jev-1.13.0' } },
     async ($, on) => {
       const world = worldOf(on, {
         env: { TYPESAFE_API_KEY: ENV.TYPESAFE_API_KEY },
@@ -1351,7 +1527,7 @@ describe('provider decision', () => {
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset; ' +
-          `${ADDED_UNSET}); using the configured typesafe/jev-latest`,
+          `${ADDED_UNSET}); using the configured typesafe/jev-1.13.0`,
       )
       expect(
         world.settingsReads,
@@ -1398,7 +1574,7 @@ describe('provider decision', () => {
   )
 
   test(
-    'success: narrowed to the original three providers, the choice and its routing question are what they always were',
+    'success: narrowed to the original three providers, the choice is over their models and both jev releases',
     {
       options: {
         ...DECIDING,
@@ -1425,6 +1601,7 @@ describe('provider decision', () => {
       expect(Object.keys(routing?.questions ?? {})).toEqual(['route'])
       expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
         'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
         'cloudflare.clef',
         'cloudflare.clef-flash',
         'cloudflare.clef-omni',
@@ -1441,6 +1618,7 @@ describe('provider decision', () => {
     {
       options: {
         ...DECIDING,
+        model: 'jev-1.13.0',
         decisionProviders: 'typesafe,cloudflare,openrouter',
       },
     },
@@ -1459,7 +1637,7 @@ describe('provider decision', () => {
           'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset); ' +
-          'using the configured typesafe/jev-latest',
+          'using the configured typesafe/jev-1.13.0',
       )
     },
   )
@@ -1494,6 +1672,7 @@ describe('provider decision', () => {
       expect(world.toasts).toEqual([
         'built-in summary used instead: no route can take this job: ' +
           'typesafe/jev-latest: TYPESAFE_API_KEY unset; ' +
+          'typesafe/jev-1.14.0: TYPESAFE_API_KEY unset; ' +
           'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
           'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
@@ -1836,6 +2015,7 @@ describe('provider decision over every provider', () => {
         'the three gateways to jev are left out for typesafe',
       ).toEqual([
         'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
         'cloudflare.clef',
         'cloudflare.clef-flash',
         'cloudflare.clef-omni',
@@ -1875,6 +2055,7 @@ describe('provider decision over every provider', () => {
       expect(Object.keys(routing?.questions ?? {})).toEqual(['route'])
       expect(Object.keys(routing?.questions.route?.criteria ?? {})).toEqual([
         'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
         'openai.gpt-6-luna',
       ])
       expect(world.lines[0]).toBe(
@@ -1920,7 +2101,11 @@ describe('provider decision over every provider', () => {
           choices: [
             {
               value: 'typesafe.jev-latest',
-              description: expect.stringContaining("TypeSafe's flagship"),
+              description: expect.stringContaining('Jev 1.13'),
+            },
+            {
+              value: 'typesafe.jev-1.14.0',
+              description: expect.stringContaining('Jev 1.14'),
             },
             {
               value: 'openai.gpt-6-luna',
@@ -1941,7 +2126,7 @@ describe('provider decision over every provider', () => {
   )
 
   test(
-    'success: of three gateways to jev the first is offered and the line says which it stands for',
+    'success: of the gateways to one jev release the first is offered and the line says which it stands for',
     {
       options: {
         ...DECIDING,
@@ -1956,6 +2141,50 @@ describe('provider decision over every provider', () => {
           DECISIONS_API_KEY: ADDED_ENV.DECISIONS_API_KEY,
           DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
         },
+        answer: (id, question, seen) =>
+          id === 'route'
+            ? 'decisions-api-dev.jev-latest'
+            : DECIDED_BY_TEXT(id, question, seen),
+      })
+
+      await $.session.compact({ trigger: 'manual', messages: sessionOf() })
+
+      const [routing] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(
+        Object.keys(routing?.questions.route?.criteria ?? {}),
+        "jev 1.14 once, over openrouter, and decisions-api.dev's jev 1.13",
+      ).toEqual([
+        'openrouter.-typesafe-jev-latest',
+        'decisions-api-dev.jev-latest',
+      ])
+      expect(world.requests.map(seen => seen.url)).toEqual([
+        OPENROUTER_URL,
+        DECISIONS_URL,
+      ])
+      expect(world.lines[0]).toBe(
+        'provider decision: openrouter/~typesafe/jev-latest picked ' +
+          'decisions-api-dev/jev-latest, confidence 0.75',
+      )
+    },
+  )
+
+  test(
+    'success: a gateway to a jev release another gateway is offered for is left out, and the line says why',
+    {
+      options: {
+        ...DECIDING,
+        provider: 'openrouter',
+        decisionProviders: 'openrouter,decisionapi-net',
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: {
+          OPENROUTER_API_KEY: ENV.OPENROUTER_API_KEY,
+          DECISIONAPI_API_KEY: ADDED_ENV.DECISIONAPI_API_KEY,
+        },
         answer: DECIDED,
       })
 
@@ -1963,11 +2192,9 @@ describe('provider decision over every provider', () => {
 
       expect(world.requests.map(seen => seen.url)).toEqual([OPENROUTER_URL])
       expect(world.lines[0]).toBe(
-        'provider decision: one route is available (decisions-api-dev/' +
-          'jev-latest: the same model as openrouter/~typesafe/jev-latest; ' +
-          'decisionapi-net/jev-latest: the same model as ' +
-          'openrouter/~typesafe/jev-latest); using the configured ' +
-          'openrouter/~typesafe/jev-latest',
+        'provider decision: one route is available (decisionapi-net/' +
+          'jev-latest: the same model as openrouter/~typesafe/jev-latest); ' +
+          'using the configured openrouter/~typesafe/jev-latest',
       )
     },
   )
@@ -1977,6 +2204,7 @@ describe('provider decision over every provider', () => {
     {
       options: {
         ...DECIDING,
+        model: 'jev-1.13.0',
         decisionProviders: 'decisionapi-net',
       },
     },
@@ -2000,7 +2228,7 @@ describe('provider decision over every provider', () => {
       expect(world.problems).toEqual([])
       expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
       expect(world.lines[0]).toMatch(
-        /^provider decision: one route is available \(decisionapi-net\/jev-latest: no question fits beside the state: the request takes 3\d{4} of the 27852 bytes it may hold before any question\); using the configured typesafe\/jev-latest$/,
+        /^provider decision: one route is available \(decisionapi-net\/jev-latest: no question fits beside the state: the request takes 3\d{4} of the 27852 bytes it may hold before any question\); using the configured typesafe\/jev-1\.13\.0$/,
       )
     },
   )
@@ -2010,6 +2238,7 @@ describe('provider decision over every provider', () => {
     {
       options: {
         ...DECIDING,
+        model: 'jev-1.13.0',
         decisionProviders: 'decisions-api-dev,decisionapi-net',
       },
     },
@@ -2041,7 +2270,7 @@ describe('provider decision over every provider', () => {
       ).toBe(true)
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
       expect(world.lines[0]).toMatch(
-        /^provider decision: one route is available \(decisions-api-dev\/jev-latest: .+; decisionapi-net\/jev-latest: .+\); using the configured typesafe\/jev-latest$/,
+        /^provider decision: one route is available \(decisions-api-dev\/jev-latest: .+; decisions-api-dev\/typesafe\/jev-1\.14: .+; decisionapi-net\/jev-latest: .+\); using the configured typesafe\/jev-1\.13\.0$/,
       )
     },
   )
@@ -2051,6 +2280,7 @@ describe('provider decision over every provider', () => {
     {
       options: {
         ...DECIDING,
+        model: 'jev-1.13.0',
         decisionProviders: `typesafe, nope ,${ENV.TYPESAFE_API_KEY}`,
       },
     },

@@ -90,10 +90,10 @@ describe('candidatesOf', () => {
       usable: boolean
     }
   > = {
-    'success: one key gives one candidate': {
+    'success: a typesafe key gives both jev releases': {
       configured: TYPESAFE,
       credentials: TYPESAFE_KEY,
-      keys: ['typesafe.jev-latest'],
+      keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0'],
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
@@ -108,6 +108,7 @@ describe('candidatesOf', () => {
       keys: ['cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: [
         'typesafe/jev-latest: TYPESAFE_API_KEY unset',
+        'typesafe/jev-1.14.0: TYPESAFE_API_KEY unset',
         'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
       ],
       usable: true,
@@ -115,12 +116,12 @@ describe('candidatesOf', () => {
     'success: the gateway to a model reached directly is left out': {
       configured: OPENROUTER,
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
-      keys: ['typesafe.jev-latest'],
+      keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0'],
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
-        'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
+        'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-1.14.0',
       ],
       usable: true,
     },
@@ -133,20 +134,23 @@ describe('candidatesOf', () => {
         'cloudflare.clef-omni',
         'openrouter.-typesafe-jev-latest',
       ],
-      refused: ['typesafe/jev-latest: TYPESAFE_API_KEY unset'],
+      refused: [
+        'typesafe/jev-latest: TYPESAFE_API_KEY unset',
+        'typesafe/jev-1.14.0: TYPESAFE_API_KEY unset',
+      ],
       usable: true,
     },
     'success: a bare jev id on the gateway is the model typesafe serves': {
       configured: { provider: 'openrouter', model: 'jev-1.13' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY, ...CLOUDFLARE_KEYS },
-      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
+      keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: ['openrouter/jev-1.13: the same model as typesafe/jev-latest'],
       usable: true,
     },
     'success: the pinned gateway id of jev is the model typesafe serves': {
       configured: { provider: 'openrouter', model: 'typesafe/jev-1.13' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY, ...CLOUDFLARE_KEYS },
-      keys: ['typesafe.jev-latest', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
+      keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0', 'cloudflare.clef', 'cloudflare.clef-flash', 'cloudflare.clef-omni'],
       refused: [
         'openrouter/typesafe/jev-1.13: the same model as typesafe/jev-latest',
       ],
@@ -155,7 +159,7 @@ describe('candidatesOf', () => {
     'success: another model on the gateway is offered beside jev': {
       configured: { provider: 'openrouter', model: 'acme/decider-1' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
-      keys: ['typesafe.jev-latest', 'openrouter.acme-decider-1'],
+      keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0', 'openrouter.acme-decider-1'],
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
@@ -167,7 +171,11 @@ describe('candidatesOf', () => {
       {
         configured: { provider: 'openrouter', model: 'typesafe/decider-2' },
         credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
-        keys: ['typesafe.jev-latest', 'openrouter.typesafe-decider-2'],
+        keys: [
+          'typesafe.jev-latest',
+          'typesafe.jev-1.14.0',
+          'openrouter.typesafe-decider-2',
+        ],
         refused: [
           'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
           'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
@@ -178,7 +186,11 @@ describe('candidatesOf', () => {
     'success: a name that only begins like jev is not jev': {
       configured: { provider: 'openrouter', model: '~typesafe/jevons-1' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
-      keys: ['typesafe.jev-latest', 'openrouter.-typesafe-jevons-1'],
+      keys: [
+        'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
+        'openrouter.-typesafe-jevons-1',
+      ],
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
@@ -186,18 +198,34 @@ describe('candidatesOf', () => {
       ],
       usable: true,
     },
-    'success: the bare family name on the gateway is jev': {
+    'success: a jev id that names no known release is not taken for one': {
       configured: { provider: 'openrouter', model: 'typesafe/jev' },
       credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
-      keys: ['typesafe.jev-latest'],
+      keys: [
+        'typesafe.jev-latest',
+        'typesafe.jev-1.14.0',
+        'openrouter.typesafe-jev',
+      ],
       refused: [
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
-        'openrouter/typesafe/jev: the same model as typesafe/jev-latest',
       ],
       usable: true,
     },
+    'success: the pinned 1.14 id of the gateway is the release typesafe serves as jev-1.14.0':
+      {
+        configured: { provider: 'openrouter', model: 'typesafe/jev-1.14' },
+        credentials: { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
+        keys: ['typesafe.jev-latest', 'typesafe.jev-1.14.0'],
+        refused: [
+          'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+          'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+          'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
+          'openrouter/typesafe/jev-1.14: the same model as typesafe/jev-1.14.0',
+        ],
+        usable: true,
+      },
     'success: the configured model is the one offered for its provider': {
       configured: { provider: 'typesafe', model: 'jev-1.13.0' },
       credentials: { ...TYPESAFE_KEY, ...CLOUDFLARE_KEYS },
@@ -211,6 +239,7 @@ describe('candidatesOf', () => {
       keys: [],
       refused: [
         'typesafe/jev-latest: TYPESAFE_API_KEY unset',
+        'typesafe/jev-1.14.0: TYPESAFE_API_KEY unset',
         'cloudflare/clef: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-flash: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
         'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset',
@@ -358,9 +387,10 @@ describe('profileOf', () => {
 
 describe('chooseRoute', () => {
   test('success: with one candidate nothing is asked and the configured route is used', async () => {
+    const pinned: Route = { provider: 'typesafe', model: 'jev-1.13.0' }
     const { asked, askOn } = askingFor('unused')
     const routed = await chooseRoute(
-      TYPESAFE,
+      pinned,
       ORIGINAL,
       TYPESAFE_KEY,
       FITS,
@@ -369,10 +399,10 @@ describe('chooseRoute', () => {
     )
 
     expect(asked).toEqual([])
-    expect(routed.route).toEqual(TYPESAFE)
+    expect(routed.route).toEqual(pinned)
     expect(routed.why.startsWith('one route is available (')).toBe(true)
     expect(
-      routed.why.endsWith('; using the configured typesafe/jev-latest'),
+      routed.why.endsWith('; using the configured typesafe/jev-1.13.0'),
     ).toBe(true)
   })
 
@@ -395,6 +425,7 @@ describe('chooseRoute', () => {
       message:
         'no route can take this job: ' +
         'typesafe/jev-latest: TYPESAFE_API_KEY unset; ' +
+        'typesafe/jev-1.14.0: TYPESAFE_API_KEY unset; ' +
         'cloudflare/clef: the state is about 70000 tokens and it takes 55705; ' +
         'cloudflare/clef-flash: the state is about 70000 tokens and it takes 55705; ' +
         'cloudflare/clef-omni: the state is about 70000 tokens and it takes 55705; ' +
@@ -403,12 +434,13 @@ describe('chooseRoute', () => {
     expect(asked).toEqual([])
   })
 
-  test('success: the configured gateway is kept when the direct route is the one candidate', async () => {
+  test('success: the configured gateway is kept when another route to its model is the one candidate', async () => {
+    const configured: Route = { provider: 'decisionapi-net', model: 'jev-latest' }
     const { asked, askOn } = askingFor('unused')
     const routed = await chooseRoute(
-      OPENROUTER,
-      ORIGINAL,
-      { ...TYPESAFE_KEY, ...OPENROUTER_KEY },
+      configured,
+      ['openrouter', 'decisionapi-net'],
+      { ...OPENROUTER_KEY, decisionapiApiKey: 'test-decisionapi-key' },
       FITS,
       PROFILE,
       askOn,
@@ -416,16 +448,11 @@ describe('chooseRoute', () => {
 
     expect(asked).toEqual([])
     expect(routed).toEqual({
-      route: OPENROUTER,
+      route: configured,
       why:
-        'one model is available (cloudflare/clef: CLOUDFLARE_API_TOKEN and ' +
-        'CLOUDFLARE_ACCOUNT_ID unset; cloudflare/clef-flash: ' +
-        'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID unset; ' +
-        'cloudflare/clef-omni: CLOUDFLARE_API_TOKEN and ' +
-        'CLOUDFLARE_ACCOUNT_ID unset; ' +
-        'openrouter/~typesafe/jev-latest: the same model as ' +
-        'typesafe/jev-latest); using the configured ' +
-        'openrouter/~typesafe/jev-latest',
+        'one model is available (decisionapi-net/jev-latest: the same ' +
+        'model as openrouter/~typesafe/jev-latest); using the configured ' +
+        'decisionapi-net/jev-latest',
     })
     expect(
       routed.why.includes('reached directly'),
@@ -471,6 +498,7 @@ describe('chooseRoute', () => {
     expect(asked[0]?.questions.route?.type).toBe('choice')
     expect(Object.keys(asked[0]?.questions.route?.criteria ?? {})).toEqual([
       'typesafe.jev-latest',
+      'typesafe.jev-1.14.0',
       'cloudflare.clef',
       'cloudflare.clef-flash',
       'cloudflare.clef-omni',
@@ -556,6 +584,7 @@ describe('candidatesOf, over every provider', () => {
 
     expect(found.candidates.map(candidate => candidate.key)).toEqual([
       'typesafe.jev-latest',
+      'typesafe.jev-1.14.0',
       'cloudflare.clef',
       'cloudflare.clef-flash',
       'cloudflare.clef-omni',
@@ -564,14 +593,15 @@ describe('candidatesOf, over every provider', () => {
       'openai.gpt-6-luna',
     ])
     expect(found.refused).toEqual([
-      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
+      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-1.14.0',
       'decisions-api-dev/jev-latest: the same model as typesafe/jev-latest',
-      'decisionapi-net/jev-latest: the same model as typesafe/jev-latest',
+      'decisions-api-dev/typesafe/jev-1.14: the same model as typesafe/jev-1.14.0',
+      'decisionapi-net/jev-latest: the same model as typesafe/jev-1.14.0',
     ])
     expect(found.isConfiguredUsable).toBe(true)
   })
 
-  test('success: without typesafe the first gateway to jev is the one offered', () => {
+  test('success: without typesafe the first gateway to each jev release is the one offered', () => {
     const found = candidatesOf(
       OPENROUTER,
       ['openrouter', 'decisions-api-dev', 'decisionapi-net'],
@@ -581,9 +611,10 @@ describe('candidatesOf, over every provider', () => {
 
     expect(found.candidates.map(candidate => candidate.key)).toEqual([
       'openrouter.-typesafe-jev-latest',
+      'decisions-api-dev.jev-latest',
     ])
     expect(found.refused).toEqual([
-      'decisions-api-dev/jev-latest: the same model as ' +
+      'decisions-api-dev/typesafe/jev-1.14: the same model as ' +
         'openrouter/~typesafe/jev-latest',
       'decisionapi-net/jev-latest: the same model as ' +
         'openrouter/~typesafe/jev-latest',
@@ -600,11 +631,13 @@ describe('candidatesOf, over every provider', () => {
 
     expect(found.candidates.map(candidate => candidate.key)).toEqual([
       'typesafe.jev-latest',
+      'typesafe.jev-1.14.0',
     ])
     expect(found.refused).toEqual([
-      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-latest',
+      'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-1.14.0',
       'decisions-api-dev/jev-latest: the same model as typesafe/jev-latest',
-      'decisionapi-net/jev-latest: the same model as typesafe/jev-latest',
+      'decisions-api-dev/typesafe/jev-1.14: the same model as typesafe/jev-1.14.0',
+      'decisionapi-net/jev-latest: the same model as typesafe/jev-1.14.0',
     ])
     expect(
       found.isConfiguredUsable,
@@ -622,10 +655,12 @@ describe('candidatesOf, over every provider', () => {
 
     expect(found.candidates.map(candidate => candidate.key)).toEqual([
       'decisions-api-dev.jev-latest',
+      'decisions-api-dev.typesafe-jev-1.14',
     ])
     expect(found.refused).toEqual([
       'openrouter/~typesafe/jev-latest: OPENROUTER_API_KEY unset',
-      'decisionapi-net/jev-latest: the same model as decisions-api-dev/jev-latest',
+      'decisionapi-net/jev-latest: the same model as ' +
+        'decisions-api-dev/typesafe/jev-1.14',
     ])
   })
 
@@ -634,6 +669,7 @@ describe('candidatesOf, over every provider', () => {
 
     expect(found.candidates.map(candidate => candidate.key)).toEqual([
       'typesafe.jev-latest',
+      'typesafe.jev-1.14.0',
       'openai.gpt-6-luna',
     ])
     expect(found.refused).toEqual([])
@@ -701,6 +737,7 @@ describe('chooseRoute, over every provider', () => {
     ).toEqual([TYPESAFE])
     expect(Object.keys(asked[0]?.questions.route?.criteria ?? {})).toEqual([
       'typesafe.jev-latest',
+      'typesafe.jev-1.14.0',
       'openai.gpt-6-luna',
     ])
     expect(routed.why).toBe(

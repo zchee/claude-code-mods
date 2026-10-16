@@ -17,12 +17,12 @@
     "model": {
       "type": "string",
       "title": "Model",
-      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe), clef (cloudflare; clef-flash and clef-omni are the others), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev and decisionapi-net), gpt-6-luna (openai)."
+      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe; jev-1.14.0 names Jev 1.14), clef (cloudflare; clef-flash and clef-omni are the others), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev, where typesafe/jev-1.14 names Jev 1.14, and decisionapi-net), gpt-6-luna (openai)."
     },
     "providerDecision": {
       "type": "boolean",
       "title": "Decide the provider per compaction",
-      "description": "When on, the providers that have credentials and can hold the conversation are compared, and if more than one remains a single routing question picks which decides this compaction. A provider is a candidate as soon as its credentials resolve, so a key you exported for another tool (OPENAI_API_KEY, for example) makes that vendor eligible to receive the conversation; decisionProviders narrows the set. The routing question goes to Cloudflare only when cloudflare is among the providers considered and its credentials are set, otherwise to the configured provider; it carries a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
+      "description": "When on, the providers that have credentials and can hold the conversation are compared, each with the models it offers, and if more than one model remains a single routing question picks which decides this compaction. TypeSafe offers two, Jev 1.13 (jev-latest) and Jev 1.14 (jev-1.14.0), so with its key set that question is asked even when no other provider has one; set model to one release to offer only it. A provider is a candidate as soon as its credentials resolve, so a key you exported for another tool (OPENAI_API_KEY, for example) makes that vendor eligible to receive the conversation; decisionProviders narrows the set. The routing question goes to Cloudflare only when cloudflare is among the providers considered and its credentials are set, otherwise to the configured provider; it carries a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
       "default": false
     },
     "decisionProviders": {
@@ -134,7 +134,7 @@
     "maxRequestTokens": {
       "type": "number",
       "title": "Request budget (tokens)",
-      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Leave unset for the route's own: 54400 (typesafe, cloudflare clef and clef-omni, decisions-api-dev, decisionapi-net), 27200 (openrouter), 20400 (clef-flash), 30000 (codiv), 14000 (perplexity), 231200 (openai). Held to 85% of the provider's limit and, for a provider whose limit is stated in bytes, to its byte cap as well; see Limits in the README. A fraction is rounded down.",
+      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Leave unset for the route's own: 54400 (typesafe, cloudflare clef and clef-omni, openrouter's Jev, decisions-api-dev, decisionapi-net), 27200 (any other openrouter model), 20400 (clef-flash), 30000 (codiv), 14000 (perplexity), 231200 (openai). Held to 85% of the provider's limit and, for a provider whose limit is stated in bytes, to its byte cap as well. Left unset, openrouter's Jev is also asked to keep a request body within 27200 bytes, the size OpenRouter keeps out of TypeSafe's long-context mode, while the conversation fits them; setting this drops that. See Limits in the README. A fraction is rounded down.",
       "min": 1
     },
     "truncateHeadChars": {

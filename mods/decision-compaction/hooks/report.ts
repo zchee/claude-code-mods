@@ -89,6 +89,17 @@ export function summaryOf(result: Result): string {
       `state about ${outcome.stateTokens} tokens estimated ` +
         `(${outcome.stage ?? 'whole'})${counted}${cost}`,
     )
+
+    if (result.askedBytes !== undefined) {
+      const { limit, isHeld } = result.askedBytes
+
+      parts.push(
+        isHeld
+          ? `requests within the ${limit} bytes ${route.provider} asks for`
+          : `requests past the ${limit} bytes ${route.provider} asks for, ` +
+              'which the conversation does not fit',
+      )
+    }
   }
 
   return parts.join('; ')

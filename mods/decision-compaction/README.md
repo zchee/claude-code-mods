@@ -159,14 +159,14 @@ A turn you interrupted, and a subagent's turn, request nothing.
 
 | `provider` | Endpoint | Model by default | Credentials | Documented limits |
 | --- | --- | --- | --- | --- |
-| `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question |
+| `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` (Jev 1.13; `jev-1.14.0` is Jev 1.14) | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question; the same for Jev 1.13 and 1.14 |
 | `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` and `clef-omni` are the others) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 64,000 tokens on `clef` and `clef-omni`, 24,000 on `clef-flash` (see below); 64 questions a request |
-| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` | 32,000 tokens for the state plus the questions; 64 questions a request for any model other than Jev |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` (Jev 1.14) | `OPENROUTER_API_KEY` | 262,144 tokens for the state plus the questions, with a request of more than about 32,000 bytes of text run in TypeSafe's slower, less accurate long-context mode; 64 questions a request for any model other than Jev |
 | `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no question limit documented, 256 a request measured |
 | `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
-| `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
-| `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, counted in bytes; 8 questions a request |
-| `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | not documented for the Decisions API; the mod holds a request to 272,000 tokens (where the price doubles) and 200 questions (measured) |
+| `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev 1.13, through this gateway; `typesafe/jev-1.14` is Jev 1.14) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
+| `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev 1.14 as documented, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, state and questions together, counted in bytes; 8 questions a request |
+| `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | 1 to 200 questions a request; no token limit documented for the Decisions API, so the mod holds a request to 272,000 tokens, where the price doubles |
 
 The `provider` option takes exactly these eight names. Any other value is
 not replaced by the default: nothing is sent anywhere, and every compaction
@@ -180,6 +180,15 @@ What differs between the providers beyond the table:
 - `openrouter`, `decisions-api-dev` and `decisionapi-net` are gateways to
   TypeSafe's Jev. `codiv`'s OpenJev is a model of its own, not TypeSafe's
   Jev: at Codiv `jev-latest` is an alias of OpenJev.
+- Jev 1.13 and Jev 1.14 are two models, and an alias names a different one
+  at each provider. On 2026-10-16 TypeSafe's `jev-latest`, "the most recent
+  stable, official release", was Jev 1.13 and its `jev-preview` Jev 1.14
+  (available from 2026-10-14); OpenRouter's `~typesafe/jev-latest`, which
+  "tracks the newest release", and decisionapi.net's default were Jev 1.14;
+  decisions-api.dev's `jev-latest` answered as Jev 1.13. TypeSafe takes
+  `jev-1.14.0`, the gateways `typesafe/jev-1.14`. To keep answers from one
+  release, name it rather than an alias: an alias moves when a release
+  ships.
 - `cloudflare` holds each Clef model to the count a cut state reports,
   measured on 2026-10-11: a text state too long for the window is cut
   without a word, and the reply then counts exactly 64,000 input tokens on
@@ -214,19 +223,29 @@ What differs between the providers beyond the table:
   summary and the line names the question or the field.
 
 `~typesafe/jev-latest` is OpenRouter's alias for the newest Jev;
-`typesafe/jev-1.13` pins a release. OpenRouter also takes TypeSafe's bare
-ids and maps them itself (`jev-latest` to `~typesafe/jev-latest`,
-`jev-1.13` to `typesafe/jev-1.13`). An id that already has an author prefix
-is used as written.
+`typesafe/jev-1.14` and `typesafe/jev-1.13` pin a release. OpenRouter also
+takes TypeSafe's bare ids and maps them itself (`jev-latest` to
+`~typesafe/jev-latest`, `jev-1.13` to `typesafe/jev-1.13`). An id that
+already has an author prefix is used as written.
+
+OpenRouter documents a window of 262,144 tokens for Jev, and sends a
+request "with more than about 32,000 bytes of text" to TypeSafe's
+long-context mode, which TypeSafe calls slower and less accurate than its
+default limits. The mod therefore asks OpenRouter's Jev for a body within
+that (see [Budgets by route](#budgets-by-route)), and holds a request to
+the window only when the conversation does not fit it or you set a request
+budget.
 
 OpenRouter also serves Cloudflare's Clef (`cloudflare/clef`,
-`cloudflare/clef-flash`), and passes such a request on to Cloudflare, which
-refuses one with more than 64 questions. A model other than Jev on
-`openrouter` is therefore asked at most 64 questions (32 tool calls) a
-request, as on `cloudflare`, while the token limits stay OpenRouter's,
-except where OpenRouter cuts a Clef state shorter: `cloudflare/clef` and
-`cloudflare/clef-flash` were cut at 16,384 tokens on 2026-10-11, so they
-are held to that, and `cloudflare/clef-omni` to OpenRouter's 32,000.
+`cloudflare/clef-flash`, `cloudflare/clef-omni`), and passes such a request
+on to Cloudflare, which refuses one with more than 64 questions. A model
+other than Jev on `openrouter` is therefore asked at most 64 questions (32
+tool calls) a request, as on `cloudflare`, and held to where OpenRouter cuts
+its state: `cloudflare/clef` and `cloudflare/clef-flash` were cut at 16,384
+tokens on 2026-10-11, the window of the cheapest host OpenRouter sends them
+to, and `cloudflare/clef-omni`, which only Cloudflare hosts, at 64,000. Any
+other model it forwards is held to 32,000 tokens, since no limit of its is
+documented here.
 
 ### Credentials
 
@@ -285,18 +304,20 @@ The bounds below are fixed; they are not options.
   held to 85% of the provider's documented limit: 27,200 tokens for the
   state plus the longest question and 54,400 a request on `typesafe`,
   54,400 on `cloudflare` `clef` and `clef-omni` and 20,400 on
-  `clef-flash`, 27,200 on `openrouter`, 231,200 on `openai`, 51,000 for
-  the state plus the longest question (85% of the 60,000 the vendor
-  advises) and 55,705 a request on `codiv`, 222,821 on `perplexity`, and
-  27,200 for the state plus the longest question and 54,400 a request on
-  `decisions-api-dev` and `decisionapi-net`. Both serve TypeSafe's Jev
-  1.13 and state their own limit in bytes, so they are held to the token
-  window TypeSafe documents for Jev, and the byte cap below is the bound
-  that decides. `openai` documents no limit for its Decisions API. On
-  2026-10-11 it refused more than 200 questions and answered a state of
-  300,000 tokens in under two seconds; a request over 272,000 input
-  tokens is billed at twice the rate, so it is held to 272,000 and 200
-  questions before the margin. `codiv` documents no question limit but
+  `clef-flash`, 222,822 on `openrouter`'s Jev (13,926 on its `clef` and
+  `clef-flash`, 54,400 on its `clef-omni` and 27,200 on any other model
+  it forwards), 231,200 on `openai`, 51,000 for the state plus the longest
+  question (85% of the 60,000 the vendor advises) and 55,705 a request on
+  `codiv`, 222,821 on `perplexity`, and 27,200 for the state plus the
+  longest question and 54,400 a request on `decisions-api-dev` and
+  `decisionapi-net`. Both serve TypeSafe's Jev and state their own limit
+  in bytes, so they are held to the token window TypeSafe documents for
+  Jev, and the byte cap below is the bound that decides. `openai`
+  documents 1 to 200 questions and no token limit for its Decisions API.
+  On 2026-10-11 it answered a state of 300,000 tokens in under two
+  seconds; a request over "272K" input tokens is billed at twice the
+  rate, so it is held to 272,000 tokens and 200 questions before the
+  margin. `codiv` documents no question limit but
   refused 300 questions (at most 256 a request), so it is held to 256.
   A budget you set is held to these figures, and so is the one a route
   asks for when you set none (see [Budgets by route](#budgets-by-route)).
@@ -318,6 +339,20 @@ The bounds below are fixed; they are not options.
   provider, so one of these two offered as another route may have no room
   for a question within the cap; it is then ruled out, and the line says
   how many of the 27,852 bytes the request takes before any question.
+- **A byte cap that is asked for, not required.** `openrouter`'s Jev
+  answers a body of any size within its window, but runs one of more than
+  about 32,000 bytes in TypeSafe's long-context mode. With
+  `maxRequestTokens` unset, a request to it is therefore held to 27,200
+  bytes (85% of 32,000) the way the two resellers are held to theirs, with
+  two differences: when the conversation cannot be fitted under it, or its
+  calls would then take more than 16 requests, the cap is dropped, the
+  state is fitted again without it and the requests run in the
+  long-context mode, rather than the built-in summary running; and with
+  `providerDecision` on, it never rules `openrouter` out. A small session
+  is thus decided in the default mode from a tighter state, and a larger
+  one in the long-context mode from a fuller state. The line of each
+  compaction says which (`requests within the 27200 bytes openrouter asks
+  for`, or `past` them). A request budget you set drops the cap.
 - **A reply that shows a cut.** If a provider reports as many input tokens
   as the request limit the mod holds for it (before the margin), the state
   was probably cut short. The answers are discarded and the built-in
@@ -376,11 +411,12 @@ holds both, as it does a budget you set.
 
 | Route | `maxStateTokens` | `maxRequestTokens` | Measured with 32 questions |
 | --- | --- | --- | --- |
-| `typesafe` | 27,000 | 54,400 | a 23,000-token state in 0.4 s; a longer state than 32,000 is refused, not cut |
+| `typesafe` (`jev-latest`, Jev 1.13, and `jev-1.14.0`) | 27,000 | 54,400 | a 23,000-token state in 0.4 s (2026-10-11); 27,000 in 0.36 s on both releases, and 1,500 questions on 24,000 in 0.85 s on Jev 1.14 (2026-10-16); a state over 32,000 is refused, not cut |
 | `cloudflare` `clef` | 30,000 | 54,400 | 30,000 tokens in 4.1 s, 49,000 in 7.4 s |
 | `cloudflare` `clef-flash` | 14,000 | 20,400 | 10,000 tokens in 3.1 s, 19,000 in 5.3 s |
 | `cloudflare` `clef-omni` | 45,000 | 54,400 | 49,000 tokens in 3.4 s |
-| `openrouter` | 27,000 (26,168 beside a batch) | 27,200 | as `typesafe`; its Clef models are held to the 16,384 it reads |
+| `openrouter` Jev | 27,000 | 54,400, and 27,200 bytes a body while the conversation fits them | as `typesafe`; the bytes keep a request out of the long-context mode |
+| `openrouter`, any other model | 27,000 | 27,200 | held to the window it reads: 16,384 on `cloudflare/clef` and `cloudflare/clef-flash`, 64,000 on `cloudflare/clef-omni`, 32,000 on any other |
 | `codiv` | 25,000 | 30,000 | 30,000 tokens in 4.8 s; 128 questions on 49,000 in 24 s |
 | `perplexity` | 10,000 | 14,000 | 15,000 tokens in 6.3 s; 8 questions on 30,000 in 3.1 s |
 | `decisions-api-dev`, `decisionapi-net` | 27,000 | 54,400 | not measured; the 32 KiB byte cap binds first |
@@ -390,6 +426,35 @@ A budget you set applies to every route alike. With `providerDecision` on
 and the budgets unset, each route is held to its own, so a route that
 asks for a smaller state than the one fitted for the configured provider
 is ruled out ("the state is about … tokens and it takes …").
+
+What the providers themselves recommend, read on 2026-10-16, changes
+only `openrouter`'s Jev; everywhere else the measured speed above binds
+tighter than anything they document:
+
+- TypeSafe gives no state size to aim for. It says to send only what a
+  question needs, since unrelated state costs accuracy, and to turn on its
+  long-context mode only for requests that need it, as it is slower and
+  less accurate; the mod never sends its header for it.
+- OpenRouter documents Jev's window as 262,144 tokens and sends a request
+  of more than about 32,000 bytes of text to that long-context mode,
+  hence the byte cap it is asked to stay within.
+- Cloudflare documents each Clef model's window and 64 questions, and
+  that the questions share the window with the state, which is cut to fit
+  what they leave. It recommends no state size.
+- Codiv advises keeping the state at about 60,000 tokens of its 65,536,
+  which is the limit the mod holds it to; the measured speed asks for
+  less.
+- Perplexity documents its latency (5 seconds at about 90,000 tokens, 23
+  seconds near the limit) and advises a client timeout of 30
+  seconds, 10 for small inputs; at 32 questions the measured speed above
+  asks for far less.
+- decisions-api.dev and decisionapi.net document only their 32 KiB and 8
+  questions.
+- OpenAI documents 1 to 200 questions and that independent questions
+  about one input belong in one request. Its rate limits are per account
+  tier: on the lowest, 2,000,000 tokens a minute, a compaction of more
+  than eight requests at the default 231,200 tokens each can be answered
+  HTTP 429. Lower `maxRequestTokens` if you see that.
 
 ### How large a conversation can be decided
 
@@ -409,14 +474,18 @@ session to the next; read the numbers as rough orders of size.
 | --- | --- | --- |
 | `typesafe` | roughly 400 (then the state no longer fits) | roughly 900 (then a 17th request) |
 | `cloudflare` | roughly 400 (then the state no longer fits) | 512 (32 calls a request) |
-| `openrouter` | roughly 290 (then a 17th request) | roughly 820 (then a 17th request) |
+
+`openrouter` had a row here, measured against the 32,000-token window the
+mod held it to before 2026-10-16; neither that window nor those budgets
+exist any more, and it has not been measured since.
 
 Longer tool inputs and longer tool names lower these numbers. Raising
 `maxStateTokens` and `maxRequestTokens` raises them, up to the margins
 above.
 
-The table has no rows for `codiv`, `perplexity`, `decisions-api-dev`,
-`decisionapi-net` and `openai`; it was not measured on them.
+The table has no rows for `openrouter`, `codiv`, `perplexity`,
+`decisions-api-dev`, `decisionapi-net` and `openai`; it was not measured
+on them.
 `decisions-api-dev` and `decisionapi-net` take 8 questions and 32 KiB a
 request, so of a long conversation the model sees only what is left once
 the state is shrunk to the cap. The cap counts bytes, so text that is not
@@ -449,14 +518,21 @@ or that would need more than 16 requests. With the budgets unset each
 route has its own (see [Budgets by route](#budgets-by-route)), so a route
 that asks for a smaller state than the configured provider's is dropped
 when the conversation fills the larger one. Cloudflare contributes three routes (`clef`,
-`clef-flash` and `clef-omni`). Among routes to the same model one is
-offered: the direct route when it is usable, otherwise the first gateway
-in the order `openrouter`, `decisions-api-dev`, `decisionapi-net`. Jev is
-reached directly through `typesafe` and through those three gateways;
-on OpenRouter an id that names Jev (`jev`, `jev-…`, alone or under
-`typesafe/` or `~typesafe/`) is Jev. Every other route to that model is
+`clef-flash` and `clef-omni`), and TypeSafe two (`jev-latest`, Jev 1.13,
+and `jev-1.14.0`), as does `decisions-api-dev` (`jev-latest` and
+`typesafe/jev-1.14`). Among routes to the same model one is offered: the
+direct route when it is usable, otherwise the first gateway in the order
+`openrouter`, `decisions-api-dev`, `decisionapi-net`. Each Jev release is
+a model of its own, reached directly through `typesafe` and through those
+three gateways. An id that names Jev (`jev-…`, alone or under `typesafe/`
+or `~typesafe/`) is the release it pins, or for an alias the release that
+provider's alias named on 2026-10-16 (see [Providers](#providers)); a Jev
+id that names no known release is taken for none of them. Every other route to that model is
 left out, with the reason "the same model as" the one offered. Any other
-OpenRouter id, under `typesafe/` included, is a model of its own. If two
+OpenRouter id, under `typesafe/` included, is a model of its own. With
+TypeSafe's key set, there are always two Jev releases to choose between,
+so the routing question below is asked even when no other provider has a
+key; name a release in `model` (`jev-1.13.0`) to offer only that one. If two
 or more routes remain, one `choice` question is asked over a small
 profile of the job (message and call counts, state size, tool mix, error
 share, share of non-ASCII text, and the goal), not over the conversation.
@@ -472,8 +548,8 @@ state only what the providers document about their models.
 With one route left, or when the routing request fails, the configured
 provider is used and the reason is logged. That includes the case where the
 configured provider is a gateway to Jev (`openrouter`, `decisions-api-dev`
-or `decisionapi-net`) and the one route left is TypeSafe's direct route to
-the same model. The one exception: if the configured
+or `decisionapi-net`) and the one route left is another route to the same
+release. The one exception: if the configured
 provider cannot take the job and exactly one other route can, that route is
 used. With no route left at all the built-in summary runs, and its line
 lists every route with the reason it was ruled out. A routing question
@@ -489,7 +565,9 @@ of the state, and the input tokens the provider counted. On `perplexity`
 that count is the state times the questions of the largest request, which
 is what Perplexity bills, not the size of one reading; on `codiv` it is
 the state times the chunks of about thirteen questions it answers in, which
-is what its quota counts. A `per-call
+is what its quota counts. On `openrouter`'s Jev the line also says
+whether every request stayed within the 27,200 bytes that keep it in
+TypeSafe's default mode. A `per-call
 verdicts:` line lists both probabilities for every call asked about.
 
 ## Development

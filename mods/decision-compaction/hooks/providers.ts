@@ -61,10 +61,20 @@ export type Limits = {
  * of sixteen calls beside it, since a fuller one is only slower. The
  * budget then holds both to the limits as it does any value the person
  * sets.
+ *
+ * `maxRequestBytes` is a cap on the UTF-8 bytes of the request body that a
+ * route asks for but does not require: past it the provider still answers,
+ * only in a mode it documents as slower and less accurate. It is held to
+ * the same share as a cap in `Limits`, and lifted when the person sets a
+ * request budget of their own, and when the conversation cannot be fitted
+ * under it or its calls would then not go in the requests a compaction may
+ * send: that mode is for the requests that need it, and the built-in
+ * summary is a worse outcome than a slower decision.
  */
 export type Wanted = {
   maxStateTokens: number
   maxRequestTokens: number
+  maxRequestBytes?: number
 }
 
 /**
@@ -226,13 +236,14 @@ const CLOUDFLARE_MODELS = Object.keys(CLOUDFLARE_LIMITS) as readonly (
 const RESELLER_QUESTIONS = 8
 
 /**
- * The two Decisions resellers state their cap in bytes: the text and the
+ * The two Decisions resellers state their cap in bytes: the state and the
  * questions of a request within 32 KiB, and at most eight questions. Both
- * serve TypeSafe's Jev 1.13, so the token figures are the window TypeSafe
- * documents for it. They do not bind: 32 KiB of English is far fewer
- * tokens, and the state is fitted to the byte cap as well. They stand
- * against what the provider counts, so a reply that counts the whole window
- * is still read as a state that was cut short.
+ * serve TypeSafe's Jev 1.13 and 1.14, which TypeSafe documents with the
+ * same window, so the token figures are that window. They do not bind:
+ * 32 KiB of English is far fewer tokens, and the state is fitted to the
+ * byte cap as well. They stand against what the provider counts, so a
+ * reply that counts the whole window is still read as a state that was cut
+ * short.
  */
 const RESELLER: Limits = {
   maxStateTokens: 32_000,
@@ -281,30 +292,91 @@ const ALIASED: Wire = {
 }
 
 /**
- * A Jev id as TypeSafe names it: `jev`, `jev-latest`, `jev-1.13`.
+ * A Jev id as TypeSafe or a gateway to it names it: bare (`jev-latest`,
+ * `jev-1.14.0`), which OpenRouter maps onto TypeSafe's namespace before
+ * routing, or under that namespace (`typesafe/jev-1.14`) or its alias
+ * (`~typesafe/jev-latest`). The namespace alone does not make a model Jev:
+ * any other model TypeSafe publishes there is a model of its own.
  */
-const JEV = /^jev(?:-|$)/
+const JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
 
 /**
- * The ids OpenRouter routes to Jev: a Jev id (`jev`, `jev-latest`,
- * `jev-1.13`) either bare, which OpenRouter maps onto TypeSafe's namespace
- * before routing, or under that namespace (`typesafe/`) or its alias
- * (`~typesafe/`). The namespace alone does not make a model Jev: any other
- * model TypeSafe publishes there is a model of its own.
+ * A Jev id that pins a release, captured as major and minor version: the
+ * `jev-1.14.0` TypeSafe takes, the `typesafe/jev-1.14` of the gateways, and
+ * the `typesafe/jev-1.14-20261014` a gateway's reply names.
  */
-const OPENROUTER_JEV = /^(?:~?typesafe\/)?jev(?:-|$)/
+const JEV_RELEASE = /^(?:~?typesafe\/)?jev-(\d+\.\d+)(?:[.-]|$)/
 
 /**
- * The count a cut state reports for a Clef model OpenRouter forwards, below
- * OpenRouter's own window, as measured on 2026-10-11. OpenRouter's Clef and
- * Clef-flash cut a state at 16,384 tokens, not at the figures Cloudflare's
- * own endpoint cuts it at; its Clef-omni cut at 64,000, above the window
- * the gateway is held to anyway.
+ * The release each provider's Jev aliases named on 2026-10-16. An alias
+ * moves when a release ships, and not at every provider at once: TypeSafe's
+ * own `jev-latest` was still Jev 1.13, its `jev-preview` Jev 1.14, while
+ * OpenRouter's `~typesafe/jev-latest`, which "tracks the newest release",
+ * already answered as Jev 1.14. decisions-api.dev's `jev-latest` answered
+ * as Jev 1.13.
+ * decisionapi.net documents Jev 1.14 as its default and its
+ * `~typesafe/jev-latest` as 1.14; its reply names no model, so that is
+ * documented, not measured.
+ */
+const JEV_ALIASES: Partial<
+  Record<ProviderName, Readonly<Record<string, string>>>
+> = {
+  typesafe: { 'jev-latest': '1.13', 'jev-preview': '1.14' },
+  openrouter: { 'jev-latest': '1.14', '~typesafe/jev-latest': '1.14' },
+  'decisions-api-dev': { 'jev-latest': '1.13' },
+  'decisionapi-net': { 'jev-latest': '1.14', '~typesafe/jev-latest': '1.14' },
+}
+
+/**
+ * The family of a model at a provider that serves TypeSafe's Jev: one
+ * family for each Jev release, since two releases are two models, and the
+ * model itself for anything that is not Jev. A Jev alias whose release is
+ * not known is the family `jev`, which no pinned release joins.
+ */
+function jevFamilyOf(provider: ProviderName): (model: string) => string {
+  return model => {
+    const named = model.trim()
+
+    if (!JEV.test(named)) {
+      return named
+    }
+
+    const aliases = JEV_ALIASES[provider] ?? {}
+    const release =
+      JEV_RELEASE.exec(named)?.[1] ??
+      (Object.hasOwn(aliases, named) ? aliases[named] : undefined)
+
+    return release === undefined ? 'jev' : `jev-${release}`
+  }
+}
+
+/**
+ * The window a model OpenRouter forwards is held to when it is not Jev, as
+ * measured on 2026-10-11 where it cuts a state, below the window its
+ * listing states. OpenRouter's Clef and Clef-flash cut a state at 16,384
+ * tokens, the window of the cheapest host it routes them to, not at the
+ * figures Cloudflare's own endpoint cuts it at; its Clef-omni, which only
+ * Cloudflare hosts, cut at 64,000.
  */
 const OPENROUTER_CLEF_WINDOWS: Readonly<Record<string, number>> = {
   'cloudflare/clef': 16_384,
   'cloudflare/clef-flash': 16_384,
+  'cloudflare/clef-omni': 64_000,
 }
+
+/**
+ * The window of any other model OpenRouter forwards that is not Jev: what
+ * the mod holds a model to whose limit no one documented.
+ */
+const OPENROUTER_OTHER_WINDOW = 32_000
+
+/**
+ * The text OpenRouter sends to Jev in TypeSafe's default mode: "Requests
+ * with more than about 32,000 bytes of text, and every request with an
+ * image, run in TypeSafe's long-context mode, which TypeSafe says is slower
+ * and less accurate than staying within its default limits."
+ */
+const OPENROUTER_DEFAULT_MODE_BYTES = 32_000
 
 /**
  * The Workers AI catalogue prefix; a Cloudflare model is `clef` in the body
@@ -518,30 +590,53 @@ const TRIMMED = (model: string) => model.trim()
 const AS_SENT = (payload: unknown) => payload
 
 /**
- * The family of a model at a reseller of TypeSafe's Jev: Jev for a Jev id,
- * the model itself otherwise.
- */
-const JEV_FAMILY = (model: string) => (JEV.test(model) ? 'jev' : model)
-
-/**
- * What the two resellers of Jev are asked for: their byte cap binds long
- * before Jev's window does, so these only keep the token budget out of the
- * way.
+ * What Jev is asked for in TypeSafe's default mode, which holds a request
+ * to 64,000 tokens and the state with any one question to 32,000: both
+ * windows, since Jev reads either in well under a second. The two resellers
+ * are asked for the same; their byte cap binds long before it does.
  */
 const JEV_WANTED: Wanted = { maxStateTokens: 27_000, maxRequestTokens: 54_400 }
 
+/**
+ * What OpenRouter's Jev is asked for: a body small enough that OpenRouter
+ * keeps it in TypeSafe's default mode, whose windows the token budgets are
+ * then those of. Where the cap is lifted (`Wanted`), a request runs in the
+ * long-context mode, held to the same token budgets unless the person set
+ * larger ones, up to OpenRouter's window.
+ */
+const OPENROUTER_JEV_WANTED: Wanted = {
+  ...JEV_WANTED,
+  maxRequestBytes: OPENROUTER_DEFAULT_MODE_BYTES,
+}
+
+/**
+ * What a model OpenRouter forwards that is not Jev is asked for, before the
+ * window it is held to.
+ */
+const OPENROUTER_OTHER_WANTED: Wanted = {
+  maxStateTokens: 27_000,
+  maxRequestTokens: 27_200,
+}
+
 const TABLE: Record<ProviderName, Descriptor> = {
+  // TypeSafe documents Jev 1.13 and Jev 1.14 alike: a request within 64,000
+  // tokens, the state with any one question within 32,000, and no cap on
+  // the questions. A request over either is refused with HTTP 400
+  // (`max_tokens_exceeded`), never cut; on 2026-10-16 both releases did
+  // so. Its `TypeSafe-Danger-Zone-Long-Context` header raises both windows
+  // to "262k" tokens in a mode TypeSafe calls slower and less accurate, so
+  // it is never sent.
   typesafe: {
     title: 'TypeSafe',
     defaultModel: 'jev-latest',
-    models: ['jev-latest'],
-    family: () => 'jev',
+    models: ['jev-latest', 'jev-1.14.0'],
+    family: jevFamilyOf('typesafe'),
     isGateway: false,
     limits: { maxStateTokens: 32_000, maxRequestTokens: 64_000 },
-    // Jev answered a 23,000-token state with 32 questions in 0.4 seconds,
-    // and 1,000 questions in one request. A state over its 32,000 is
-    // refused with HTTP 400 (`max_tokens_exceeded`), never cut.
-    wanted: { maxStateTokens: 27_000, maxRequestTokens: 54_400 },
+    // With 32 questions, Jev 1.13 answered a 27,000-token state in 0.36
+    // seconds at most and Jev 1.14 in 0.36; 1,500 questions on 24,000
+    // tokens took Jev 1.14 0.85 seconds (2026-10-16). Time never binds.
+    wanted: JEV_WANTED,
     needs: ['typesafeApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://api.typesafe.ai/v1/systemone',
@@ -569,19 +664,25 @@ const TABLE: Record<ProviderName, Descriptor> = {
     wire: BARE,
     unwrap: unwrapCloudflare,
   },
-  // OpenRouter documents Jev's window as 32,000 tokens for the state and the
-  // questions together, which is tighter than TypeSafe's own 64,000 a request.
-  // Its alias for the newest Jev is `~typesafe/jev-latest`. An id that has an
-  // author prefix is sent on as written, so the same name without the `~` is
-  // an id its documentation does not list.
+  // OpenRouter documents Jev's window as 262,144 tokens for the state and
+  // the questions together, on Jev 1.13 and 1.14 alike, with no question
+  // cap. A request of more than about 32,000 bytes of text runs in
+  // TypeSafe's long-context mode, so Jev is asked for a body within that
+  // (`OPENROUTER_JEV_WANTED`). Its alias for the newest Jev is
+  // `~typesafe/jev-latest`. An id that has an author prefix is sent on as
+  // written, so the same name without the `~` is an id its documentation
+  // does not list. Any other model it forwards has limits of its own
+  // (`limitsOf`).
   openrouter: {
     title: 'OpenRouter',
     defaultModel: '~typesafe/jev-latest',
     models: ['~typesafe/jev-latest'],
-    family: model => (OPENROUTER_JEV.test(model) ? 'jev' : model),
+    family: jevFamilyOf('openrouter'),
     isGateway: true,
-    limits: { maxStateTokens: 32_000, maxRequestTokens: 32_000 },
-    wanted: { maxStateTokens: 27_000, maxRequestTokens: 27_200 },
+    limits: { maxStateTokens: 262_144, maxRequestTokens: 262_144 },
+    wanted: OPENROUTER_JEV_WANTED,
+    modelWantedOf: model =>
+      JEV.test(model.trim()) ? undefined : OPENROUTER_OTHER_WANTED,
     needs: ['openrouterApiKey'],
     bodyModelOf: TRIMMED,
     urlOf: () => 'https://openrouter.ai/api/v1/systemone',
@@ -653,12 +754,15 @@ const TABLE: Record<ProviderName, Descriptor> = {
   },
   // The two Decisions resellers forward to TypeSafe's Jev and wrap the
   // reply in an envelope of their own. decisions-api.dev alone restricts
-  // question ids, so its requests name questions by their place.
+  // question ids, so its requests name questions by their place. It names
+  // Jev 1.14 `typesafe/jev-1.14` and refuses TypeSafe's own ids for it
+  // (`jev-1.14.0`, `jev-preview`); its `jev-latest` answered as Jev 1.13 on
+  // 2026-10-16.
   'decisions-api-dev': {
     title: 'decisions-api.dev',
     defaultModel: 'jev-latest',
-    models: ['jev-latest'],
-    family: JEV_FAMILY,
+    models: ['jev-latest', 'typesafe/jev-1.14'],
+    family: jevFamilyOf('decisions-api-dev'),
     isGateway: true,
     limits: RESELLER,
     wanted: JEV_WANTED,
@@ -669,14 +773,14 @@ const TABLE: Record<ProviderName, Descriptor> = {
     wire: ALIASED,
     unwrap: unwrapAliased,
   },
-  // decisionapi.net states its 32 KiB body limit only where it describes
-  // image input; it is the platform's one stated body limit, so text is
-  // held to it as well.
+  // decisionapi.net states "1–8 questions per request and a JSON request
+  // body of at most 32 KiB, including state and questions". It documents
+  // Jev 1.14 as its default.
   'decisionapi-net': {
     title: 'decisionapi.net',
     defaultModel: 'jev-latest',
     models: ['jev-latest'],
-    family: JEV_FAMILY,
+    family: jevFamilyOf('decisionapi-net'),
     isGateway: true,
     limits: RESELLER,
     wanted: JEV_WANTED,
@@ -688,11 +792,12 @@ const TABLE: Record<ProviderName, Descriptor> = {
     unwrap: unwrapDataEnvelope,
   },
   // OpenAI takes the same questions in a body of its own shape and answers
-  // in a list. Its Decisions API documents no limits. On 2026-10-11 it
-  // refused more than 200 questions (HTTP 400, "maximum length 200") and
-  // answered a state of 300,162 input tokens in under two seconds. A
-  // request over 272,000 input tokens is billed at twice the rate, so that
-  // is the window it is held to. It refuses a request too long rather than
+  // in a list. Its Decisions API documents 1 to 200 questions a request and
+  // no token limit of its own. On 2026-10-11 it refused more than 200
+  // questions (HTTP 400, "maximum length 200") and answered a state of
+  // 300,162 input tokens in under two seconds. A request over "272K" input
+  // tokens is billed at twice the rate, so that is the window it is held
+  // to. It refuses a request too long rather than
   // cutting it, so a reply counting the whole window is one whose estimate
   // drifted past the price step, and is discarded all the same.
   openai: {
@@ -735,8 +840,8 @@ export function providerOf(value: unknown): ProviderName | undefined {
  * other model it serves is held to Cloudflare's 64 questions as well,
  * because Clef, the one other System One model, is served there and refuses
  * a request with more (HTTP 422, "Dictionary should have at most 64
- * items"). A Clef model that OpenRouter cuts short of its own window is
- * held to where it cuts.
+ * items"). A Clef model is held to where OpenRouter cuts it, and any other
+ * model to the window of a model whose limit no one documented.
  *
  * @param route the provider and the model
  * @returns its limits
@@ -744,16 +849,16 @@ export function providerOf(value: unknown): ProviderName | undefined {
 export function limitsOf(route: Route): Limits {
   const { limits, modelLimitsOf } = TABLE[route.provider]
 
-  if (route.provider === 'openrouter' && !OPENROUTER_JEV.test(route.model)) {
+  if (route.provider === 'openrouter' && !JEV.test(route.model.trim())) {
     const model = route.model.trim()
     const window =
       (Object.hasOwn(OPENROUTER_CLEF_WINDOWS, model)
         ? OPENROUTER_CLEF_WINDOWS[model]
-        : undefined) ?? Infinity
+        : undefined) ?? OPENROUTER_OTHER_WINDOW
 
     return {
-      maxStateTokens: Math.min(limits.maxStateTokens, window),
-      maxRequestTokens: Math.min(limits.maxRequestTokens, window),
+      maxStateTokens: window,
+      maxRequestTokens: window,
       maxQuestions: TABLE.cloudflare.limits.maxQuestions,
     }
   }

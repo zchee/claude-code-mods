@@ -49,6 +49,12 @@ export type Result = {
   outcome: Outcome
   route: Route
   routing?: string
+  /**
+   * The bytes the route asks a request body to stay within, at the share
+   * it is held to, and whether every request did; absent for a route that
+   * asks for no such cap.
+   */
+  askedBytes?: { limit: number; isHeld: boolean }
 }
 
 /**
@@ -110,52 +116,121 @@ export async function run(job: Job): Promise<Result> {
       limitsOf(route),
       demandFor(route),
     )
-  const goal = goalOf(messages, job.instructions)
-  const { maxRequestBytes } = limitsOf(configured)
-  const fitted = stateWithin(messages, calls, {
-    maxStateTokens: budgetFor(configured).stateTokens,
-    preserveRecentMessages: config.preserveRecentMessages,
-    goal,
-    wire: wireOf(configured),
-    // Held to the same share of a byte cap as the request is below, with
-    // the bytes of one request's questions left free.
-    ...(maxRequestBytes === undefined
-      ? {}
-      : {
-          bytes: {
-            limit:
-              Math.floor(maxRequestBytes * LIMIT_SHARE) -
-              demandFor(configured).batchBytes,
-            besideOf: (state: unknown) => bytesBesideOf(configured, state),
-          },
-        }),
-  })
-  const stateJson = JSON.stringify(fitted.state)
-  const fittedFor = (route: Route): Fitted =>
-    wireOf(route) === wireOf(configured)
-      ? fitted
-      : {
-          ...fitted,
-          tokens: estimatedTokensOf(wireOf(route).stateJsonOf(stateJson)),
-        }
-  // A provider that caps the body in bytes is held to the bytes the state
-  // takes in its request as written, counted exactly, and to the same share
-  // of its cap as of its token limits: what a question will take is still
-  // an estimate, and a body over the cap is refused whole.
-  const budgetOn = (route: Route): Budget => {
-    const budget = budgetFor(route)
-    const { maxRequestBytes } = limitsOf(route)
+  // The cap on the body in bytes a route asks for but does not require,
+  // while the person has set no request budget of their own.
+  const askedBytesOf = (route: Route) =>
+    limitsOf(route).maxRequestBytes === undefined &&
+    config.maxRequestTokens === undefined
+      ? wantedOf(route).maxRequestBytes
+      : undefined
+  // What each route is held to over one fitted state: the state as its wire
+  // format carries it, the cap on its body in bytes when it has one, and
+  // its budget.
+  const planOf = (fitted: Fitted) => {
+    const stateJson = JSON.stringify(fitted.state)
+    const fittedFor = (route: Route): Fitted =>
+      wireOf(route) === wireOf(configured)
+        ? fitted
+        : {
+            ...fitted,
+            tokens: estimatedTokensOf(wireOf(route).stateJsonOf(stateJson)),
+          }
+    // A route that caps the body in bytes is held to the bytes the state
+    // takes in its request as written, counted exactly, and to the same
+    // share of its cap as of its token limits: what a question will take is
+    // still an estimate, and a body over the cap is refused whole.
+    const heldTo = (route: Route, maxRequestBytes?: number): Budget => {
+      const budget = budgetFor(route)
 
-    return maxRequestBytes === undefined
-      ? budget
-      : {
-          ...budget,
-          bytes: {
-            limit: Math.floor(maxRequestBytes * LIMIT_SHARE),
-            state: bytesBesideOf(route, fitted.state),
-          },
-        }
+      return maxRequestBytes === undefined
+        ? budget
+        : {
+            ...budget,
+            bytes: {
+              limit: Math.floor(maxRequestBytes * LIMIT_SHARE),
+              state: bytesBesideOf(route, fitted.state),
+            },
+          }
+    }
+    // The cap the provider requires; or the one the route asks for, where
+    // the questions about every call go in the requests a compaction may
+    // send under it; or none.
+    const bytesOn = (route: Route): number | undefined => {
+      const routeAsked = askedBytesOf(route)
+
+      if (routeAsked === undefined) {
+        return limitsOf(route).maxRequestBytes
+      }
+
+      try {
+        batchesOf(
+          unpinned,
+          fittedFor(route).tokens,
+          heldTo(route, routeAsked),
+          wireOf(route),
+        )
+      } catch {
+        return undefined
+      }
+
+      return routeAsked
+    }
+
+    return {
+      fittedFor,
+      bytesOn,
+      budgetOn: (route: Route) => heldTo(route, bytesOn(route)),
+    }
   }
+  const goal = goalOf(messages, job.instructions)
+  const fitTo = (maxRequestBytes: number | undefined) =>
+    stateWithin(messages, calls, {
+      maxStateTokens: budgetFor(configured).stateTokens,
+      preserveRecentMessages: config.preserveRecentMessages,
+      goal,
+      wire: wireOf(configured),
+      // Held to the same share of a byte cap as the request is below, with
+      // the bytes of one request's questions left free.
+      ...(maxRequestBytes === undefined
+        ? {}
+        : {
+            bytes: {
+              limit:
+                Math.floor(maxRequestBytes * LIMIT_SHARE) -
+                demandFor(configured).batchBytes,
+              besideOf: (state: unknown) => bytesBesideOf(configured, state),
+            },
+          }),
+    })
+  const asked = askedBytesOf(configured)
+  let fitted: Fitted
+  let isFittedToAsked = asked !== undefined
+
+  // A cap the route only asks for gives way when the conversation cannot be
+  // fitted under it, rather than fail the compaction the way a cap the
+  // provider requires does.
+  try {
+    fitted = fitTo(limitsOf(configured).maxRequestBytes ?? asked)
+  } catch (error) {
+    if (asked === undefined) {
+      throw error
+    }
+
+    fitted = fitTo(undefined)
+    isFittedToAsked = false
+  }
+
+  let plan = planOf(fitted)
+
+  // A state fitted under an asked-for cap whose calls would still not go
+  // in the requests a compaction may send is fitted again without it: the
+  // cap is not kept, so the detail given up for it need not be.
+  if (isFittedToAsked && plan.bytesOn(configured) === undefined) {
+    fitted = fitTo(undefined)
+    plan = planOf(fitted)
+  }
+
+  const { fittedFor, budgetOn, bytesOn } = plan
   const attempt = attemptOf(ports)
 
   try {
@@ -216,8 +291,18 @@ export async function run(job: Job): Promise<Result> {
         halt: attempt.fail,
       },
     )
+    const routeAsked = askedBytesOf(result.route)
 
-    return { ...result, outcome }
+    return routeAsked === undefined
+      ? { ...result, outcome }
+      : {
+          ...result,
+          outcome,
+          askedBytes: {
+            limit: Math.floor(routeAsked * LIMIT_SHARE),
+            isHeld: bytesOn(result.route) !== undefined,
+          },
+        }
   } finally {
     attempt.close()
   }

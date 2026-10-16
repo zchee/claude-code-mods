@@ -83,6 +83,17 @@ const ABOUT: Record<string, string> = {
     "Jev, TypeSafe's flagship System One model. It reads text only, and " +
     'English is its primary training language: TypeSafe reports lower ' +
     'accuracy on other languages, CJK scripts included.',
+  'jev-1.13':
+    "Jev 1.13, TypeSafe's flagship System One model, which TypeSafe " +
+    'serves as `jev-latest`, its most recent stable official release. ' +
+    'English is its primary training language: TypeSafe reports lower ' +
+    'accuracy on other languages, CJK scripts included.',
+  'jev-1.14':
+    "Jev 1.14, the newest release of TypeSafe's flagship System One " +
+    'model, available from 2026-10-14; TypeSafe serves it as ' +
+    '`jev-preview`, "a preview version of `jev-latest`: should be better ' +
+    'in most ways". English is its primary training language: TypeSafe ' +
+    'reports lower accuracy on other languages, CJK scripts included.',
   openjev:
     'OpenJev, DiffusionGemma 26B-A4B made into a System One model; it ' +
     'reads a distribution for every answer in one denoising step.',

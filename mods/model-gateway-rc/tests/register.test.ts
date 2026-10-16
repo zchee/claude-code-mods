@@ -73,7 +73,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     world.sets.push(e.name)
     if (e.value === undefined) world.env.delete(e.name)
     else world.env.set(e.name, e.value)
-    return { value: undefined }
+    return { value: {} }
   })
   on('process.run', async ($, e) => {
     world.runs.push([...e.argv])

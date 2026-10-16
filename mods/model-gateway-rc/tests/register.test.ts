@@ -43,6 +43,7 @@ type World = {
   commands: { command: string; baseUrl: string | undefined }[]
   duringRc: (() => Promise<void>) | undefined
   sets: string[]
+  held: Set<string>
   isHanging: boolean
   envExitCode: number
   envStdout: string
@@ -64,6 +65,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     commands: [],
     duringRc: undefined,
     sets: [],
+    held: new Set(),
     isHanging: false,
     envExitCode: 0,
     envStdout: ENV_STDOUT,
@@ -71,6 +73,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
   on('env.get', async ($, e) => ({ value: world.env.get(e.name) }))
   on('env.set', async ($, e) => {
     world.sets.push(e.name)
+    if (world.held.has(e.name)) return { value: { deny: `${e.name} is managed by your organization` } }
     if (e.value === undefined) world.env.delete(e.name)
     else world.env.set(e.name, e.value)
     return { value: {} }
@@ -299,6 +302,31 @@ describe('/gateway', () => {
     expect([...world.sets].sort()).toEqual(Object.keys(WIRED).sort())
     expect(world.sets.indexOf('ANTHROPIC_BASE_URL')).toBe(world.sets.length - 1)
   })
+
+  const holds = {
+    'the base URL, after every pin was written': 'ANTHROPIC_BASE_URL',
+    'a switch, before the base URL': 'ENABLE_TOOL_SEARCH',
+  }
+  for (const [name, variable] of Object.entries(holds)) {
+    test(`on restores the session and turns off when Claude Code holds ${name}`, async ($, on) => {
+      const clock = mock.clock(on)
+      const world = worldOf(on, { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000', ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5' })
+      world.held.add(variable)
+      await startSession($)
+      const before = wiredEnvOf(world)
+
+      expect(await gateway($, 'on')).toBe(
+        `Claude Code held a gateway variable (${variable} is managed by your organization); requests stay on api.anthropic.com`,
+      )
+      expect(wiredEnvOf(world), 'every write made before the hold is undone').toEqual(before)
+      expect(await gateway($, 'status')).toMatch(/^off/)
+
+      const toasts = world.toasts.length
+      await clock.advance(10_000)
+      expect(world.toasts.length, 'the watchdog does not retry a held write').toBe(toasts)
+      expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
+    })
+  }
 
   const unreadable = {
     'exits non-zero': { exitCode: 1, stdout: ENV_STDOUT },

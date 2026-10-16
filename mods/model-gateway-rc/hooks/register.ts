@@ -167,23 +167,34 @@ async function snapshotOf($: EngineInterface): Promise<Snapshot> {
 }
 
 /**
- * Sets every variable of `env`. The base URL goes last so that no request
- * reaches the gateway before its pins and switches are in place.
+ * Sets the variables of `env` in order and stops at the first write Claude
+ * Code holds, returning why; a session whose organization manages its
+ * settings holds a variable the person could not set there. The base URL
+ * goes last so that no request reaches the gateway before its pins and
+ * switches are in place, nor at all when one of them is held.
  */
-async function applyEnv($: EngineInterface, env: GatewayEnv | Snapshot): Promise<void> {
-  await $.env.set('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY)
-  await $.env.set('CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK', env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK)
-  await $.env.set('ENABLE_TOOL_SEARCH', env.ENABLE_TOOL_SEARCH)
-  await $.env.set('CLAUDE_CODE_MAX_OUTPUT_TOKENS', env.CLAUDE_CODE_MAX_OUTPUT_TOKENS)
-  if ('ANTHROPIC_DEFAULT_OPUS_MODEL' in env) await $.env.set('ANTHROPIC_DEFAULT_OPUS_MODEL', env.ANTHROPIC_DEFAULT_OPUS_MODEL)
-  if ('ANTHROPIC_DEFAULT_SONNET_MODEL' in env) await $.env.set('ANTHROPIC_DEFAULT_SONNET_MODEL', env.ANTHROPIC_DEFAULT_SONNET_MODEL)
-  if ('ANTHROPIC_DEFAULT_FABLE_MODEL' in env) await $.env.set('ANTHROPIC_DEFAULT_FABLE_MODEL', env.ANTHROPIC_DEFAULT_FABLE_MODEL)
-  await $.env.set('ANTHROPIC_BASE_URL', env.ANTHROPIC_BASE_URL)
+async function applyEnv($: EngineInterface, env: GatewayEnv | Snapshot): Promise<string | undefined> {
+  const writes = [
+    () => $.env.set('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY),
+    () => $.env.set('CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK', env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK),
+    () => $.env.set('ENABLE_TOOL_SEARCH', env.ENABLE_TOOL_SEARCH),
+    () => $.env.set('CLAUDE_CODE_MAX_OUTPUT_TOKENS', env.CLAUDE_CODE_MAX_OUTPUT_TOKENS),
+  ]
+  if ('ANTHROPIC_DEFAULT_OPUS_MODEL' in env) writes.push(() => $.env.set('ANTHROPIC_DEFAULT_OPUS_MODEL', env.ANTHROPIC_DEFAULT_OPUS_MODEL))
+  if ('ANTHROPIC_DEFAULT_SONNET_MODEL' in env) writes.push(() => $.env.set('ANTHROPIC_DEFAULT_SONNET_MODEL', env.ANTHROPIC_DEFAULT_SONNET_MODEL))
+  if ('ANTHROPIC_DEFAULT_FABLE_MODEL' in env) writes.push(() => $.env.set('ANTHROPIC_DEFAULT_FABLE_MODEL', env.ANTHROPIC_DEFAULT_FABLE_MODEL))
+  writes.push(() => $.env.set('ANTHROPIC_BASE_URL', env.ANTHROPIC_BASE_URL))
+  for (const write of writes) {
+    const { deny } = await write()
+    if (deny !== undefined) return deny
+  }
+  return undefined
 }
 
 /**
  * Points the session at the gateway once its shim answers; leaves the
- * session as it was and says why when it does not.
+ * session as it was and says why when it does not. A held write turns the
+ * gateway off, since checking again would only meet the same hold.
  */
 async function wire($: EngineInterface): Promise<string> {
   if (state.wired) return `requests already go through ${state.gateway}`
@@ -192,7 +203,13 @@ async function wire($: EngineInterface): Promise<string> {
   const health = await probe($, env.ANTHROPIC_BASE_URL)
   if (!health.reachable) return `the gateway at ${env.ANTHROPIC_BASE_URL} is not answering; requests stay on api.anthropic.com`
   state.saved ??= await snapshotOf($)
-  await applyEnv($, env)
+  const held = await applyEnv($, env)
+  if (held !== undefined) {
+    await applyEnv($, state.saved)
+    state.saved = undefined
+    state.mode = 'off'
+    return `Claude Code held a gateway variable (${held}); requests stay on api.anthropic.com`
+  }
   state.gateway = env.ANTHROPIC_BASE_URL
   state.wired = true
   state.failures = 0

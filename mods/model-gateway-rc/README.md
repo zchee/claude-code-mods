@@ -93,6 +93,13 @@ says so.
   `api.anthropic.com`.
 - `claude -p` and the Agent SDK never register Remote Control, so they are
   wired only by `/gateway on`.
+- Where an organization manages Claude Code's settings, Claude Code can hold
+  a write to a variable the person could not set there (the plugin API
+  gained this between 2.1.296 and 2.1.301). The mod then undoes the writes
+  it made, says which hold stopped it, and turns itself off; `/gateway on`
+  tries again. A session that started already pointed at the gateway
+  clears only the base URL on `/gateway off`, and does not notice when
+  that one write is held.
 - The `/model` picker shows gateway rows from Model Gateway's discovery
   cache (`~/.claude/cache/gateway-models.json`), which Claude Code reads
   only while the base URL matches it; models the gateway added since the

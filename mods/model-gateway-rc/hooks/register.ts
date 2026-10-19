@@ -73,12 +73,151 @@ const state = {
   isBusy: false,
   projectDir: undefined as string | undefined,
   rcHold: false,
+  /** Every session id this lead has had, `/clear` adding one each time. */
+  leadIds: [] as string[],
+  /** Whether leadIds was read back from the files an earlier load of this module wrote. */
+  hasLeadIds: false,
+  /**
+   * The lead's session id while this session is a teammate that follows it;
+   * undefined for a lead, and for a teammate told `/gateway on` or `off`.
+   */
+  leader: undefined as string | undefined,
+  /** The env block the lead last wrote, which a teammate wires with again on recovery. */
+  leadEnv: undefined as GatewayEnv | undefined,
+  /** The env block the last wiring set, for the lead file. */
+  env: undefined as GatewayEnv | undefined,
+  /** The lead file text last written, so that an unchanged mode is not rewritten. */
+  published: undefined as string | undefined,
+  /**
+   * The session start's setup, a teammate's wiring included. A teammate's
+   * first turn can begin before session.start settles, and turn.start does
+   * not hold a turn back, so each model request waits on this at turn.step.
+   */
+  starting: undefined as Promise<void> | undefined,
 }
 
 let ticker: { cancel: () => void } | undefined
 
+let transitions: Promise<unknown> = Promise.resolve()
+
+/**
+ * Runs `change` after every change queued before it. A check, a `/gateway`
+ * command and a teammate's following each read the state across awaits and
+ * then write it, so two at once would leave a `/gateway off` wired.
+ */
+function serially<T>(change: () => Promise<T>): Promise<T> {
+  const run = transitions.then(change, change)
+  transitions = run.catch(() => {})
+  return run
+}
+
+
 async function cliOf($: EngineInterface): Promise<string> {
   return `${await $.env.get('HOME')}/.claude/model-gateway/model-gateway.js`
+}
+
+async function configDirOf($: EngineInterface): Promise<string> {
+  return (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+}
+
+/** This process's pid, the file name of the session's messaging socket. */
+async function pidOf($: EngineInterface): Promise<string | undefined> {
+  return (await $.env.get('CLAUDE_CODE_MESSAGING_SOCKET'))?.match(/\/(\d+)\.sock$/)?.[1]
+}
+
+/**
+ * Where a lead session says whether it routes through the gateway, for the
+ * teammates it spawns to follow.
+ */
+async function leadFileOf($: EngineInterface, sessionId: string): Promise<string> {
+  return `${await configDirOf($)}/model-gateway-rc/leads/${sessionId}.json`
+}
+
+/**
+ * The session id of the lead that spawned this process as a tmux teammate,
+ * read from its command line: Claude Code starts a teammate as `claude
+ * --agent-id <name@team> ... --parent-session-id <lead's session id>`.
+ *
+ * A teammate has to wire itself, because Claude Code builds a teammate's
+ * `env` prefix with every variable a person's plugin wrote set back to the
+ * value it had before the write, so the lead's gateway never reaches it.
+ */
+async function leaderOf($: EngineInterface): Promise<string | undefined> {
+  const pid = await pidOf($)
+  if (pid === undefined) return undefined
+  const run = await $.process.run(['ps', '-o', 'command=', '-p', pid], { timeoutMs: 5000 }).catch(() => undefined)
+  if (run === undefined || run.exitCode !== 0 || !/(?:^|\s)--agent-id[=\s]/.test(run.stdout)) return undefined
+  return /(?:^|\s)--parent-session-id[=\s]+([\w-]+)/.exec(run.stdout)?.[1]
+}
+
+/**
+ * What the lead last wrote: its mode, and the env block it wired, which
+ * lets a teammate wire without starting the gateway CLI twice. Undefined
+ * when it wrote none.
+ */
+async function leadOf($: EngineInterface, leader: string): Promise<{ mode: Mode; env?: GatewayEnv } | undefined> {
+  const text = await $.fs.read(await leadFileOf($, leader)).catch(() => undefined)
+  if (text === undefined) return undefined
+  try {
+    const parsed = JSON.parse(text) as { mode?: unknown; env?: unknown }
+    const mode = parsed.mode
+    if (mode !== 'waiting' && mode !== 'on' && mode !== 'off') return undefined
+    const block = stringsOf(parsed.env)
+    if (block.ANTHROPIC_BASE_URL === undefined) return { mode }
+    return { mode, env: { ...STATIC_ENV, ...block, ANTHROPIC_BASE_URL: block.ANTHROPIC_BASE_URL } }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Writes this lead's mode for its teammates. `on` covers a suspended gateway
+ * and an open `/gateway rc`, which each teammate's own watchdog handles.
+ *
+ * The session id is read each time: `/clear` gives the process a new one
+ * without a session.start, and teammates spawned after it name the new id.
+ * Every id the process has had keeps its file, for the teammates spawned
+ * under it; the file names the pid, so that a hot reload, which starts this
+ * module with fresh state, reads the ids back.
+ */
+async function publish($: EngineInterface): Promise<void> {
+  if (state.leader !== undefined) return
+  if (!state.hasLeadIds) {
+    state.leadIds = await ownLeadIdsOf($)
+    state.hasLeadIds = true
+  }
+  const id = await $.session.id()
+  if (!state.leadIds.includes(id)) {
+    state.leadIds.push(id)
+    state.published = undefined
+  }
+  const pid = await pidOf($)
+  const text = JSON.stringify({ mode: state.mode, gateway: state.gateway, env: state.env, pid: pid === undefined ? undefined : Number(pid) })
+  if (text === state.published) return
+  for (const leadId of state.leadIds) await $.fs.write(await leadFileOf($, leadId), text)
+  state.published = text
+}
+
+/** The session ids whose lead files this process wrote, read from the files. */
+async function ownLeadIdsOf($: EngineInterface): Promise<string[]> {
+  const pid = await pidOf($)
+  if (pid === undefined) return []
+  const dir = `${await configDirOf($)}/model-gateway-rc/leads`
+  const ids: string[] = []
+  for (const entry of await $.fs.list(dir).catch(() => [])) {
+    if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
+    const text = await $.fs.read(`${dir}/${entry.name}`).catch(() => undefined)
+    try {
+      if (text !== undefined && (JSON.parse(text) as { pid?: unknown }).pid === Number(pid)) ids.push(entry.name.slice(0, -'.json'.length))
+    } catch {
+      continue
+    }
+  }
+  return ids
+}
+
+async function publishOrLog($: EngineInterface): Promise<void> {
+  await publish($).catch((error: unknown) => $.ui.log(`gateway: could not write the lead file: ${String(error)}`, { to: 'debug' }))
 }
 
 /**
@@ -89,16 +228,20 @@ function envBlockOf(stdout: string): Partial<GatewayEnv> | undefined {
   const match = /^\{\n[\s\S]*?\n\}$/m.exec(stdout)
   if (match === null) return undefined
   try {
-    const parsed = JSON.parse(match[0]) as { env?: Record<string, unknown> }
-    const env = parsed.env ?? {}
-    const block: Record<string, string> = {}
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value === 'string') block[key] = value
-    }
-    return block as Partial<GatewayEnv>
+    return stringsOf((JSON.parse(match[0]) as { env?: unknown }).env ?? {})
   } catch {
     return undefined
   }
+}
+
+/** The string-valued entries of a parsed env object, the rest dropped. */
+function stringsOf(env: unknown): Partial<GatewayEnv> {
+  const block: Record<string, string> = {}
+  if (typeof env !== 'object' || env === null) return block
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') block[key] = value
+  }
+  return block as Partial<GatewayEnv>
 }
 
 async function gatewayEnvOf($: EngineInterface): Promise<GatewayEnv> {
@@ -112,13 +255,6 @@ async function gatewayEnvOf($: EngineInterface): Promise<GatewayEnv> {
   }
 }
 
-/**
- * The gateway URL model-gateway would wire, read without starting anything,
- * so that a session already wired through settings is recognized as such.
- */
-async function gatewayUrlOf($: EngineInterface): Promise<string> {
-  return gatewayEnvOf($).then((env) => env.ANTHROPIC_BASE_URL, () => DEFAULT_GATEWAY)
-}
 
 /**
  * Asks the shim's health endpoint. `reachable` is whether anything answered
@@ -195,12 +331,16 @@ async function applyEnv($: EngineInterface, env: GatewayEnv | Snapshot): Promise
  * Points the session at the gateway once its shim answers; leaves the
  * session as it was and says why when it does not. A held write turns the
  * gateway off, since checking again would only meet the same hold.
+ *
+ * `given` is the env block a lead wired, which a teammate takes in place of
+ * asking the gateway CLI: the lead already started the gateway.
  */
-async function wire($: EngineInterface): Promise<string> {
+async function wire($: EngineInterface, given?: GatewayEnv): Promise<string> {
   if (state.wired) return `requests already go through ${state.gateway}`
-  await ensureGateway($)
-  const env = await gatewayEnvOf($)
+  if (given === undefined) await ensureGateway($)
+  const env = given ?? (await gatewayEnvOf($))
   const health = await probe($, env.ANTHROPIC_BASE_URL)
+  state.gateway = env.ANTHROPIC_BASE_URL
   if (!health.reachable) return `the gateway at ${env.ANTHROPIC_BASE_URL} is not answering; requests stay on api.anthropic.com`
   state.saved ??= await snapshotOf($)
   const held = await applyEnv($, env)
@@ -208,9 +348,11 @@ async function wire($: EngineInterface): Promise<string> {
     await applyEnv($, state.saved)
     state.saved = undefined
     state.mode = 'off'
+    state.leader = undefined
     return `Claude Code held a gateway variable (${held}); requests stay on api.anthropic.com`
   }
   state.gateway = env.ANTHROPIC_BASE_URL
+  state.env = env
   state.wired = true
   state.failures = 0
   state.successes = 0
@@ -240,8 +382,7 @@ async function unwire($: EngineInterface): Promise<string> {
  * also where Remote Control keeps its bridge-pointer.json.
  */
 async function projectDirOf($: EngineInterface): Promise<string | undefined> {
-  const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
-  const projects = `${configDir}/projects`
+  const projects = `${await configDirOf($)}/projects`
   const id = await $.session.id()
   for (const entry of await $.fs.list(projects)) {
     if (entry.kind === 'dir' && (await $.fs.exists(`${projects}/${entry.name}/${id}.jsonl`))) {
@@ -257,8 +398,7 @@ async function projectDirOf($: EngineInterface): Promise<string | undefined> {
  * and the pid is the file name of this session's messaging socket.
  */
 async function isBridgeRegistered($: EngineInterface, projectDir: string): Promise<boolean> {
-  const socket = await $.env.get('CLAUDE_CODE_MESSAGING_SOCKET')
-  const pid = socket?.match(/\/(\d+)\.sock$/)?.[1]
+  const pid = await pidOf($)
   if (pid === undefined) return false
   const text = await $.fs.read(`${projectDir}/bridge-pointer.json`).catch(() => undefined)
   if (text === undefined) return false
@@ -270,12 +410,44 @@ async function isBridgeRegistered($: EngineInterface, projectDir: string): Promi
 }
 
 /**
- * One check: start the gateway once Remote Control registers, leave it after
- * FAILURES_TO_UNWIRE unreachable probes, return after SUCCESSES_TO_REWIRE
- * reachable ones. Nothing moves while `/gateway rc` holds the gateway back.
+ * Moves a teammate with its lead: on when the lead is on, back to
+ * api.anthropic.com when the lead was turned off. A lead still waiting for
+ * Remote Control has turned nothing on or off, so a teammate wired some
+ * other way (the tmux environment) is left as it is; so is every teammate
+ * of a lead that wrote no file (an older version of this mod). Returns
+ * whether it moved.
+ */
+async function follow($: EngineInterface, leader: string): Promise<boolean> {
+  const lead = await leadOf($, leader)
+  // A `/gateway on` or `off` while the file was read ended the following.
+  if (lead === undefined || state.leader !== leader) return false
+  state.leadEnv = lead.env
+  if (lead.mode === 'on' && state.mode !== 'on') {
+    state.mode = 'on'
+    $.ui.toast(`gateway: the lead routes through the gateway; ${await wire($, lead.env)}`)
+    return true
+  }
+  if (lead.mode === 'off' && state.mode === 'on') {
+    state.mode = 'waiting'
+    $.ui.toast(`gateway: the lead turned the gateway off; ${await unwire($)}`)
+    return true
+  }
+  return false
+}
+
+/**
+ * One check: a teammate follows its lead, and a lead starts the gateway once
+ * Remote Control registers; either leaves it after FAILURES_TO_UNWIRE
+ * unreachable probes and returns after SUCCESSES_TO_REWIRE reachable ones.
+ * Nothing moves while `/gateway rc` holds the gateway back.
  */
 async function tick($: EngineInterface): Promise<void> {
-  if (state.mode === 'off' || state.rcHold) return
+  if (state.rcHold) return
+  if (state.leader !== undefined) {
+    if (await follow($, state.leader)) return
+    if (state.mode !== 'on') return
+  }
+  if (state.mode === 'off') return
   if (state.mode === 'waiting') {
     if (state.projectDir === undefined || !(await isBridgeRegistered($, state.projectDir))) return
     state.mode = 'on'
@@ -302,7 +474,7 @@ async function tick($: EngineInterface): Promise<void> {
   }
   state.successes += 1
   if (state.successes < SUCCESSES_TO_REWIRE) return
-  $.ui.toast(`gateway: the gateway answers again; ${await wire($)}`)
+  $.ui.toast(`gateway: the gateway answers again; ${await wire($, state.leader === undefined ? undefined : state.leadEnv)}`)
 }
 
 /**
@@ -319,7 +491,7 @@ async function remoteControlThroughFirstParty($: EngineInterface): Promise<void>
   const wasWired = state.wired
   state.rcHold = true
   try {
-    if (wasWired) await unwire($)
+    if (wasWired) await serially(() => unwire($))
     await $.command.run({ command: 'reload-plugins' })
     const listed = (await $.command.list()).some((command) => command.name === 'remote-control')
     if (!listed) {
@@ -330,59 +502,102 @@ async function remoteControlThroughFirstParty($: EngineInterface): Promise<void>
   } catch (error) {
     $.ui.toast(`gateway: /remote-control failed: ${String(error)}`)
   } finally {
-    state.rcHold = false
-    if (wasWired && state.mode === 'on') $.ui.toast(`gateway: ${await wire($)}`)
+    await serially(async () => {
+      state.rcHold = false
+      if (wasWired && state.mode === 'on') $.ui.toast(`gateway: ${await wire($, state.leader === undefined ? undefined : state.leadEnv)}`)
+    })
   }
 }
 
 function statusOf(): string {
   if (state.mode === 'off') return 'off: requests go to api.anthropic.com until `/gateway on`'
+  if (state.mode === 'waiting' && state.leader !== undefined) return `following the lead session ${state.leader}, which has not turned the gateway on; \`/gateway on\` switches this teammate alone`
   if (state.mode === 'waiting') return 'waiting for Remote Control to register; `/gateway on` switches now'
   if (state.rcHold) return 'paused for /remote-control; the gateway returns when the dialog closes'
   if (state.wired) return `on: requests go through ${state.gateway}${state.isDegraded ? ' (degraded)' : ''}`
   return `suspended: ${state.gateway} is not answering; requests go to api.anthropic.com until it does`
 }
 
+/**
+ * Registers `/gateway`, finds out whether this session is a lead or a
+ * teammate, wires a teammate whose lead is on, and starts the check.
+ */
+async function setUp($: EngineInterface): Promise<void> {
+  await $.command.register({
+    name: 'gateway',
+    description: 'Routes requests through the local model gateway; `rc` opens Remote Control from a wired session.',
+    argumentHint: 'on|off|rc|status',
+    immediate: true,
+  })
+  state.leader = await leaderOf($)
+  const current = await $.env.get('ANTHROPIC_BASE_URL')
+  // What model-gateway would wire, read without starting anything, so that
+  // a session already wired through settings is recognized as such.
+  const env = current === undefined ? undefined : await gatewayEnvOf($).catch(() => undefined)
+  if (current !== undefined && current === (env?.ANTHROPIC_BASE_URL ?? DEFAULT_GATEWAY)) {
+    state.mode = 'on'
+    state.wired = true
+    state.gateway = current
+    state.env = env
+  } else if (current !== undefined) {
+    state.mode = 'off'
+    state.leader = undefined
+    $.ui.log(`gateway: ANTHROPIC_BASE_URL is already ${current}; this session is left alone`, { to: 'debug' })
+  }
+  const leader = state.leader
+  if (leader !== undefined) {
+    await serially(() => follow($, leader))
+  } else {
+    state.projectDir = await projectDirOf($)
+    await publishOrLog($)
+  }
+  ticker?.cancel()
+  ticker = $.clock.every(TICK_MS, () => {
+    if (state.isBusy) return
+    state.isBusy = true
+    serially(async () => {
+      await tick($)
+      await publishOrLog($)
+    })
+      .catch((error: unknown) => $.ui.log(`gateway: check failed: ${String(error)}`, { to: 'debug' }))
+      .finally(() => {
+        state.isBusy = false
+      })
+  })
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'gateway',
-      description: 'Routes requests through the local model gateway; `rc` opens Remote Control from a wired session.',
-      argumentHint: 'on|off|rc|status',
-      immediate: true,
-    })
-    const current = await $.env.get('ANTHROPIC_BASE_URL')
-    if (current !== undefined && current === (await gatewayUrlOf($))) {
-      state.mode = 'on'
-      state.wired = true
-      state.gateway = current
-    } else if (current !== undefined) {
-      state.mode = 'off'
-      $.ui.log(`gateway: ANTHROPIC_BASE_URL is already ${current}; this session is left alone`, { to: 'debug' })
-    }
-    state.projectDir = await projectDirOf($)
-    ticker?.cancel()
-    ticker = $.clock.every(TICK_MS, () => {
-      if (state.isBusy) return
-      state.isBusy = true
-      tick($)
-        .catch((error: unknown) => $.ui.log(`gateway: check failed: ${String(error)}`, { to: 'debug' }))
-        .finally(() => {
-          state.isBusy = false
-        })
-    })
+    state.starting = setUp($)
+    await state.starting
     return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    // A teammate reads the lead file as it starts, so it must name this
+    // session's current id and mode before the teammate's process exists.
+    if (e.isTeammate === true) await serially(() => publishOrLog($))
+    return next(e)
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    await state.starting?.catch(() => {})
+    return yield* next(e)
   })
 
   on('command.run', { command: 'gateway' }, async ($, e) => {
     const arg = e.args.trim()
-    if (arg === 'off') {
-      state.mode = 'off'
-      return { text: await unwire($) }
-    }
-    if (arg === 'on') {
-      state.mode = 'on'
-      return { text: await wire($) }
+    if (arg === 'off' || arg === 'on') {
+      // The intent is recorded at once, so that a change already queued
+      // (a teammate's following, a check) sees it and stands down.
+      state.leader = undefined
+      const text = await serially(async () => {
+        state.mode = arg
+        const text = arg === 'off' ? await unwire($) : await wire($)
+        await publishOrLog($)
+        return text
+      })
+      return { text }
     }
     if (arg === 'rc') {
       if (state.rcHold) return { text: '/remote-control is already open' }

@@ -48,6 +48,27 @@ left alone; one already pointed at the gateway counts as wired.
   had, and sets the block on the process with `ANTHROPIC_BASE_URL` last.
   Claude Code builds its API client for every request and reads the
   variable each time, so the next request goes to the gateway.
+- **Teammates.** Since 2.1.301 Claude Code starts a tmux teammate with every
+  variable a person's plugin wrote set back to the value it had before the
+  write, so `/gateway on` in a lead never reaches the teammates it spawns:
+  they start on `api.anthropic.com`, and one whose agent pins a gateway
+  model falls back to the lead's. The mod therefore has each lead write its
+  mode and the env block it wired to
+  `~/.claude/model-gateway-rc/leads/<session id>.json` on every change and
+  again just before it spawns a teammate (under each id it has had, since
+  `/clear` gives the process a new one), and a session whose
+  command line carries `--agent-id` and `--parent-session-id` (how Claude
+  Code starts a tmux teammate) reads its lead's file. It wires at session
+  start from that block, without starting the gateway CLI (a few hundred
+  milliseconds), and holds each model request at `turn.step` until that is
+  done, so its first request already goes through the gateway. A hook may
+  hold a request for at most 10 seconds of its own time; a lead file
+  without an env block makes the teammate run the gateway CLI instead,
+  which can take longer, and its first request then goes out unwired. Every check after that wires it when
+  the lead is on and unwires it when the lead was turned off. While the
+  lead still waits for Remote Control, a teammate wired some other way (a
+  gateway URL in the tmux environment) is left as it is, and so is every
+  teammate of a lead that wrote no file (an older version of this mod).
 - **Health watchdog.** Two checks in a row that get no answer within three
   seconds restore the remembered values, which sends requests back to
   `api.anthropic.com`. Two answering checks wire the gateway again. While
@@ -62,7 +83,9 @@ left alone; one already pointed at the gateway counts as wired.
 | `on` | Wires the gateway now, without waiting for Remote Control |
 | `off` | Restores the remembered values and stays off, through Remote Control and gateway recovery alike |
 | `rc` | Opens Claude Code's own `/remote-control` dialog from a wired session (connect, or disconnect before switching accounts), then wires the gateway again |
-| none, or `status` | Says whether the session is waiting, on, suspended or off |
+| none, or `status` | Says whether the session is waiting, following its lead, on, suspended or off |
+
+In a teammate, `on` and `off` also stop it from following its lead.
 
 ## `/remote-control` in a wired session
 
@@ -93,6 +116,14 @@ says so.
   `api.anthropic.com`.
 - `claude -p` and the Agent SDK never register Remote Control, so they are
   wired only by `/gateway on`.
+- Only tmux teammates follow their lead. An in-process teammate or a
+  subagent runs in the lead's own process and is wired with it.
+- The plugin API has no way to delete a file, so each lead's file stays in
+  `~/.claude/model-gateway-rc/leads/` after the session ends; each is a few
+  hundred bytes.
+- The `turn.step` hook passes every session's model responses through the
+  mod's hooks worker, whether or not the session is a teammate, because a
+  hook cannot be registered for teammates alone.
 - Where an organization manages Claude Code's settings, Claude Code can hold
   a write to a variable the person could not set there (the plugin API
   gained this between 2.1.296 and 2.1.301). The mod then undoes the writes

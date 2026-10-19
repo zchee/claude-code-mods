@@ -6,6 +6,11 @@ const GATEWAY = 'http://127.0.0.1:18764'
 const SESSION = 'session-1'
 const PID = 4242
 const PROJECT = '/home/me/.claude/projects/-work-repo'
+const LEAD = 'lead-session-7'
+const LEADS = '/home/me/.claude/model-gateway-rc/leads'
+
+/** `ps -o command=` of a tmux teammate as Claude Code 2.1.303 starts it. */
+const TEAMMATE_COMMAND = `/Users/me/.local/bin/claude --agent-id envprobe@session-lead --agent-name envprobe --team-name session-lead --agent-color blue --parent-session-id ${LEAD} --dangerously-skip-permissions --model claude-gpt-6.1-sol-fast[1m]\n`
 
 /**
  * What `model-gateway.js env` printed on 2026-10-07: advice around one JSON
@@ -47,6 +52,14 @@ type World = {
   isHanging: boolean
   envExitCode: number
   envStdout: string
+  psStdout: string
+  files: Map<string, string>
+  ensureGate: Promise<void> | undefined
+  leadReadGate: Promise<void> | undefined
+  leadReads: number
+  probeGate: Promise<void> | undefined
+  sessionId: string
+  filesAtSpawn: string[] | undefined
 }
 
 function worldOf(on: On, env: Record<string, string> = {}): World {
@@ -69,6 +82,14 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     isHanging: false,
     envExitCode: 0,
     envStdout: ENV_STDOUT,
+    psStdout: '/Users/me/.local/bin/claude --model claude-opus-5-5\n',
+    files: new Map(),
+    ensureGate: undefined,
+    leadReadGate: undefined,
+    leadReads: 0,
+    probeGate: undefined,
+    sessionId: SESSION,
+    filesAtSpawn: undefined,
   }
   on('env.get', async ($, e) => ({ value: world.env.get(e.name) }))
   on('env.set', async ($, e) => {
@@ -80,18 +101,42 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
   })
   on('process.run', async ($, e) => {
     world.runs.push([...e.argv])
+    if (e.argv[0] === 'ps') {
+      const isOwn = e.argv.at(-1) === String(PID)
+      return { value: { exitCode: isOwn ? 0 : 1, stdout: isOwn ? world.psStdout : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (e.argv.includes('ensure')) await world.ensureGate
     const isEnv = e.argv.includes('env')
     return { value: { exitCode: isEnv ? world.envExitCode : 0, stdout: isEnv ? world.envStdout : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  on('fs.write', async ($, e) => {
+    world.files.set(e.path, e.text)
+    return { value: undefined }
+  })
   on('http.fetch', async () => {
     if (world.isHanging) await new Promise(() => {})
+    await world.probeGate
     if (!world.isReachable) return { deny: 'connect ECONNREFUSED 127.0.0.1:18764' }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: world.isOk }) } }
   })
-  on('session.id', async () => ({ value: SESSION }))
-  on('fs.list', async () => ({ value: [{ name: '-work-repo', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
+  on('session.id', async () => ({ value: world.sessionId }))
+  on('agent.spawn', async ($, e) => {
+    world.filesAtSpawn = e.isTeammate === true ? [...world.files.keys()] : []
+    return { model: 'claude-gpt-6.1-sol-fast[1m]', teammateId: `${e.name}@team` }
+  })
+  on('fs.list', async ($, e) => {
+    if (e.path !== LEADS) return { value: [{ name: '-work-repo', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }] }
+    const names = [...world.files.keys()].filter((path) => path.startsWith(`${LEADS}/`)).map((path) => path.slice(LEADS.length + 1))
+    return { value: names.map((name) => ({ name, kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })) }
+  })
   on('fs.exists', async ($, e) => ({ value: e.path === `${PROJECT}/${SESSION}.jsonl` }))
   on('fs.read', async ($, e) => {
+    if (e.path.startsWith(`${LEADS}/`)) {
+      world.leadReads += 1
+      await world.leadReadGate
+    }
+    const file = world.files.get(e.path)
+    if (file !== undefined) return { value: file }
     if (e.path !== `${PROJECT}/bridge-pointer.json` || world.pointerPid === undefined) return { deny: 'ENOENT' }
     return { value: JSON.stringify({ sessionId: 'cse_1', environmentId: 'env_1', source: 'repl', pid: world.pointerPid }) }
   })
@@ -456,5 +501,292 @@ describe('/gateway rc', () => {
     expect(world.commands.map((c) => c.command)).toEqual(['reload-plugins', 'remote-control'])
     expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
     expect(world.runs.filter((argv) => argv.includes('ensure')).length).toBe(0)
+  })
+})
+
+function leadFileOf(mode: string): string {
+  return JSON.stringify({ mode, gateway: GATEWAY })
+}
+
+describe('teammate following its lead', () => {
+  test('wires at session start, before any check, when its lead routes through the gateway', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    await startSession($)
+
+    expect(wiredEnvOf(world), 'wired before the first request, without waiting for a check').toEqual(WIRED)
+    expect(await gateway($, 'status')).toMatch(/^on:/)
+    expect([...world.files.keys()], 'a teammate writes no lead file of its own').toEqual([`${LEADS}/${LEAD}.json`])
+  })
+
+  test('follows its lead onto the gateway and back, and never waits on the bridge pointer', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on, { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000' })
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('waiting'))
+    world.pointerPid = PID
+    await startSession($)
+
+    await clock.advance(4000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the lead is not on the gateway').toBeUndefined()
+    expect(await gateway($, 'status')).toMatch(new RegExp(`^following the lead session ${LEAD}`))
+
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    await clock.advance(2000)
+    expect(wiredEnvOf(world)).toEqual(WIRED)
+    expect(world.toasts.at(-1)).toMatch(/the lead routes through the gateway; requests now go through/)
+
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('off'))
+    await clock.advance(2000)
+    expect(world.env.get('ANTHROPIC_BASE_URL')).toBeUndefined()
+    expect(world.env.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS'), 'the teammate gets back what it had').toBe('32000')
+    expect(world.toasts.at(-1)).toMatch(/the lead turned the gateway off; requests now go to api\.anthropic\.com/)
+    expect(await gateway($, 'status')).toMatch(/^following the lead session/)
+  })
+
+  test('leaves a teammate alone when its lead wrote no file', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on, { ANTHROPIC_BASE_URL: GATEWAY })
+    world.psStdout = TEAMMATE_COMMAND
+    await startSession($)
+
+    await clock.advance(6000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'wired through the tmux environment, as before').toBe(GATEWAY)
+    expect(await gateway($, 'status')).toMatch(/^on:/)
+  })
+
+  test('stays off when /gateway off arrives while the lead file is being read', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('waiting'))
+    await startSession($)
+
+    let release: () => void = () => {}
+    world.leadReadGate = new Promise((resolve) => {
+      release = resolve
+    })
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    const readsAtStart = world.leadReads
+    await clock.advance(2000)
+    for (let i = 0; i < 1000 && world.leadReads === readsAtStart; i++) await Promise.resolve()
+    expect(world.leadReads, 'the check is inside its read of the lead file').toBe(readsAtStart + 1)
+    const off = gateway($, 'off')
+    release()
+    world.leadReadGate = undefined
+    expect(await off).toBe('requests already go to api.anthropic.com')
+    await clock.advance(4000)
+
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the read began before off, but off was the last word').toBeUndefined()
+    expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('stays off when /gateway off arrives while following is checking the gateway', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, JSON.stringify({ mode: 'waiting', gateway: GATEWAY, env: WIRED }))
+    await startSession($)
+
+    let release: () => void = () => {}
+    world.probeGate = new Promise((resolve) => {
+      release = resolve
+    })
+    world.files.set(`${LEADS}/${LEAD}.json`, JSON.stringify({ mode: 'on', gateway: GATEWAY, env: WIRED }))
+    await clock.advance(2000)
+    for (let i = 0; i < 1000; i++) await Promise.resolve()
+    const off = gateway($, 'off')
+    release()
+    world.probeGate = undefined
+    await off
+    await clock.advance(4000)
+
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'off came after the wiring began, so off stands').toBeUndefined()
+    expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('does not follow its lead while /gateway rc is open', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('waiting'))
+    await startSession($)
+    let close = () => {}
+    world.duringRc = () =>
+      new Promise<void>((resolve) => {
+        close = resolve
+      })
+
+    await gateway($, 'rc')
+    await clock.settle()
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    await clock.advance(6000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the lead switched on while the dialog was open').toBeUndefined()
+
+    close()
+    await clock.settle()
+    await clock.advance(2000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'followed once the dialog closed').toBe(GATEWAY)
+  })
+
+  test('keeps a teammate wired through the tmux environment while its lead still waits', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on, { ANTHROPIC_BASE_URL: GATEWAY })
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('waiting'))
+    await startSession($)
+
+    await clock.advance(6000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the lead turned nothing off').toBe(GATEWAY)
+    expect(await gateway($, 'status')).toMatch(/^on:/)
+  })
+
+  test('stops following once the teammate is told /gateway off', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    await startSession($)
+    expect(world.env.get('ANTHROPIC_BASE_URL')).toBe(GATEWAY)
+
+    expect(await gateway($, 'off')).toBe('requests now go to api.anthropic.com')
+    await clock.advance(6000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the lead is still on, but the person said off here').toBeUndefined()
+    expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('a lead writes its mode for its teammates on start, on and off', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = `/Users/me/.local/bin/claude --parent-session-id ${LEAD}\n`
+    const own = `${LEADS}/${SESSION}.json`
+    await startSession($)
+    expect(JSON.parse(world.files.get(own) ?? '{}'), 'no --agent-id: a lead, whatever else its command line says').toEqual({ mode: 'waiting', gateway: GATEWAY, pid: PID })
+
+    await gateway($, 'on')
+    expect(JSON.parse(world.files.get(own) ?? '{}').mode).toBe('on')
+
+    await gateway($, 'off')
+    expect(JSON.parse(world.files.get(own) ?? '{}').mode).toBe('off')
+  })
+})
+
+describe('teammate first request', () => {
+  test('holds each model request until the wiring that session start began is done', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    let release: () => void = () => {}
+    world.ensureGate = new Promise((resolve) => {
+      release = resolve
+    })
+    const baseUrlAtRequest: (string | undefined)[] = []
+    on('turn.step', async function* ($, e) {
+      baseUrlAtRequest.push(world.env.get('ANTHROPIC_BASE_URL'))
+      return { turnId: e.turnId, index: e.index, answer: 'pong', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    })
+
+    const started = startSession($)
+    const step = (async () => {
+      const stream = $.turn.step({ turnId: 'turn-1', index: 0, model: 'claude-gpt-6.1-sol-fast[1m]', messageCount: 1 })
+      let read = await stream.next()
+      while (read.done !== true) read = await stream.next()
+      return read.value
+    })()
+    for (let i = 0; i < 1000; i++) await Promise.resolve()
+    expect(baseUrlAtRequest, 'the request is held while `ensure` runs').toEqual([])
+
+    release()
+    await started
+    expect((await step).answer).toBe('pong')
+    expect(baseUrlAtRequest).toEqual([GATEWAY])
+  })
+
+  test('wires from the env block the lead wrote, without starting the gateway CLI', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, JSON.stringify({ mode: 'on', gateway: GATEWAY, env: WIRED }))
+    await startSession($)
+
+    expect(wiredEnvOf(world)).toEqual(WIRED)
+    expect(world.runs.filter((argv) => argv[0] === 'node'), 'the lead already ran ensure and env').toEqual([])
+  })
+
+  test('a lead writes the env block it wired into its file', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+    await gateway($, 'on')
+
+    expect(JSON.parse(world.files.get(`${LEADS}/${SESSION}.json`) ?? '{}')).toEqual({ mode: 'on', gateway: GATEWAY, env: WIRED, pid: PID })
+  })
+})
+
+describe('lead identity', () => {
+  test('after /clear a lead also writes under its new session id, and keeps the old one current', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+    await gateway($, 'on')
+
+    world.sessionId = 'session-2'
+    await clock.advance(2000)
+    expect(JSON.parse(world.files.get(`${LEADS}/session-2.json`) ?? '{}').mode, 'teammates spawned after /clear name the new id').toBe('on')
+
+    await gateway($, 'off')
+    expect(JSON.parse(world.files.get(`${LEADS}/${SESSION}.json`) ?? '{}').mode, 'teammates spawned before /clear still follow').toBe('off')
+    expect(JSON.parse(world.files.get(`${LEADS}/session-2.json`) ?? '{}').mode).toBe('off')
+  })
+
+  test('writes the lead file under the current id before a teammate is spawned', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+    await gateway($, 'on')
+    world.sessionId = 'session-3'
+
+    await $.agent.spawn({
+      tool_use_id: 'toolu_1',
+      prompt: 'Reply with your model id.',
+      description: 'model probe',
+      subagentType: 'gpt-sol-ultrafast-executor',
+      provider: { plugin: 'engine', tier: 'core' },
+      parentModel: 'claude-opus-5-5',
+      background: true,
+      fork: false,
+      isTeammate: true,
+      name: 'scout',
+    })
+    expect(world.filesAtSpawn, 'no check ran since /clear; the spawn itself wrote it').toContain(`${LEADS}/session-3.json`)
+  })
+
+  test('after a hot reload a lead keeps the files it wrote under earlier session ids current', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.files.set(`${LEADS}/before-clear.json`, JSON.stringify({ mode: 'on', gateway: GATEWAY, env: WIRED, pid: PID }))
+    world.files.set(`${LEADS}/someone-else.json`, JSON.stringify({ mode: 'on', gateway: GATEWAY, env: WIRED, pid: 9999 }))
+    await startSession($)
+
+    await gateway($, 'off')
+    expect(JSON.parse(world.files.get(`${LEADS}/before-clear.json`) ?? '{}').mode, 'this process wrote it before the reload').toBe('off')
+    expect(JSON.parse(world.files.get(`${LEADS}/someone-else.json`) ?? '{}').mode, 'another process wrote it').toBe('on')
+  })
+
+  test('a teammate back from /gateway rc wires with its lead\'s env block, not the local CLI\'s', async ($, on) => {
+    const clock = mock.clock(on)
+    const lead = { ...WIRED, ANTHROPIC_BASE_URL: 'http://127.0.0.1:19999' }
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, JSON.stringify({ mode: 'on', gateway: lead.ANTHROPIC_BASE_URL, env: lead }))
+    await startSession($)
+    expect(world.env.get('ANTHROPIC_BASE_URL')).toBe(lead.ANTHROPIC_BASE_URL)
+
+    await gateway($, 'rc')
+    await clock.settle()
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'the local CLI prints the default gateway').toBe(lead.ANTHROPIC_BASE_URL)
   })
 })

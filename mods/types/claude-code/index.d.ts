@@ -1,4 +1,4 @@
-// Written by Claude Code 2.1.301.
+// Written by Claude Code 2.1.303.
 // Claude Code function hooks: the plugin API's TypeScript declarations.
 //
 // EARLY ACCESS: this surface may change between releases without notice.

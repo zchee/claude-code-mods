@@ -7,7 +7,7 @@ const SESSION = 'session-1'
 const PID = 4242
 const PROJECT = '/home/me/.claude/projects/-work-repo'
 const LEAD = 'lead-session-7'
-const LEADS = '/home/me/.claude/model-gateway-rc/leads'
+const LEADS = '/home/me/.claude/gateway-switch/leads'
 
 /** `ps -o command=` of a tmux teammate as Claude Code 2.1.303 starts it. */
 const TEAMMATE_COMMAND = `/Users/me/.local/bin/claude --agent-id envprobe@session-lead --agent-name envprobe --team-name session-lead --agent-color blue --parent-session-id ${LEAD} --dangerously-skip-permissions --model claude-gpt-6.1-sol-fast[1m]\n`

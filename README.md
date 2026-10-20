@@ -20,7 +20,7 @@ extend, with every event, API namespace and render site, is written up in
 | Mod | What it does |
 | --- | --- |
 | [decision-compaction](mods/decision-compaction/README.md) | Answers `session.compact` with the conversation itself, less the tool calls and results a System One decision model (TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, or Jev through OpenRouter, decisions-api.dev or decisionapi.net) judges no longer needed. Falls back to the built-in summary on any failure. |
-| [model-gateway-rc](mods/model-gateway-rc/README.md) | Keeps a session on `api.anthropic.com` until Remote Control has registered, then routes it through a local Model Gateway, and back whenever the gateway stops answering. |
+| [gateway-switch](mods/gateway-switch/README.md) | Switches a running session between `api.anthropic.com` and a local Model Gateway: onto the gateway once Remote Control has registered, on `/gateway on`, or as each session starts after `/gateway setup`, and back whenever the gateway stops answering. |
 
 Each mod has its own README with its options, limits and the data it sends
 off the machine. Read that section before enabling a mod on a session
@@ -32,15 +32,9 @@ This repository is a Claude Code plugin marketplace. On Claude Code 2.1.275
 or later one command adds the marketplace and installs a mod:
 
 ```sh
-claude plugin install decision-compaction --marketplace zchee/claude-code-mods
-claude plugin install model-gateway-rc --marketplace zchee/claude-code-mods
-```
-
-Or in two steps, which also works from inside a session as `/plugin`:
-
-```sh
 claude plugin marketplace add zchee/claude-code-mods
 claude plugin install decision-compaction@claude-code-mods
+claude plugin install gateway-switch@claude-code-mods
 ```
 
 To try a mod from a checkout without installing it:

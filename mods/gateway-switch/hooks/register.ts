@@ -156,7 +156,7 @@ async function pidOf($: EngineInterface): Promise<string | undefined> {
  * teammates it spawns to follow.
  */
 async function leadFileOf($: EngineInterface, sessionId: string): Promise<string> {
-  return `${await configDirOf($)}/model-gateway-rc/leads/${sessionId}.json`
+  return `${await configDirOf($)}/gateway-switch/leads/${sessionId}.json`
 }
 
 /**
@@ -228,7 +228,7 @@ async function publish($: EngineInterface): Promise<void> {
 async function ownLeadIdsOf($: EngineInterface): Promise<string[]> {
   const pid = await pidOf($)
   if (pid === undefined) return []
-  const dir = `${await configDirOf($)}/model-gateway-rc/leads`
+  const dir = `${await configDirOf($)}/gateway-switch/leads`
   const ids: string[] = []
   for (const entry of await $.fs.list(dir).catch(() => [])) {
     if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue

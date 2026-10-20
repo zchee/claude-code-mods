@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "gateway-switch",
+  "version": "0.1.0",
+  "description": "Switches a running session between api.anthropic.com and the local Model Gateway: onto the gateway once Remote Control has registered, on /gateway on, or as each session starts after /gateway setup, and back to api.anthropic.com whenever the gateway stops answering.",
+  "author": {
+    "name": "Koichi Shiraishi"
+  },
+  "license": "Apache-2.0"
+}

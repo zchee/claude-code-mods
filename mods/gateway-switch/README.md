@@ -1,10 +1,11 @@
-# model-gateway-rc
+# gateway-switch
 
-A Claude Code mod that keeps a session on `api.anthropic.com` until Remote
-Control has registered, then routes it through a local
-[Model Gateway](https://github.com/Eigenwise/eigenwise-toolshed/tree/main/plugins/model-gateway),
-and routes it back to `api.anthropic.com` while the gateway does not
-answer.
+A Claude Code mod that switches a running session between
+`api.anthropic.com` and a local
+[Model Gateway](https://github.com/Eigenwise/eigenwise-toolshed/tree/main/plugins/model-gateway):
+onto the gateway once Remote Control has registered, on `/gateway on`, or
+as the session starts after `/gateway setup`, and back to
+`api.anthropic.com` while the gateway does not answer.
 
 Remote Control refuses to start in a session whose `ANTHROPIC_BASE_URL`
 points anywhere but `api.anthropic.com`, and Model Gateway works by setting
@@ -27,7 +28,7 @@ which must be installed. This mod only decides when the session uses it.
    wrote by mistake is undone by removing `ANTHROPIC_BASE_URL` from the
    file. model-gateway's SessionStart line saying the project is not wired
    is expected.
-3. Load this mod, for example `claude --plugin-dir mods/model-gateway-rc`.
+3. Load this mod, for example `claude --plugin-dir mods/gateway-switch`.
 4. Optionally, run `/gateway setup` once in the project so that every
    session started there turns the gateway on at once (see
    [On at every start](#on-at-every-start)).
@@ -57,7 +58,7 @@ left alone; one already pointed at the gateway counts as wired.
   they start on `api.anthropic.com`, and one whose agent pins a gateway
   model falls back to the lead's. The mod therefore has each lead write its
   mode and the env block it wired to
-  `~/.claude/model-gateway-rc/leads/<session id>.json` on every change and
+  `~/.claude/gateway-switch/leads/<session id>.json` on every change and
   again just before it spawns a teammate (under each id it has had, since
   `/clear` gives the process a new one), and a session whose
   command line carries `--agent-id` and `--parent-session-id` (how Claude
@@ -172,7 +173,7 @@ says so.
 - Only tmux teammates follow their lead. An in-process teammate or a
   subagent runs in the lead's own process and is wired with it.
 - The plugin API has no way to delete a file, so each lead's file stays in
-  `~/.claude/model-gateway-rc/leads/` after the session ends; each is a few
+  `~/.claude/gateway-switch/leads/` after the session ends; each is a few
   hundred bytes.
 - The `turn.step` hook passes every session's model responses through the
   mod's hooks worker, whether or not the session is a teammate, because a
@@ -191,6 +192,6 @@ says so.
 
 ## Tests
 
-`claude plugin test mods/model-gateway-rc` runs the tests in `tests/`
+`claude plugin test mods/gateway-switch` runs the tests in `tests/`
 without a session or network access: the environment, the gateway CLI, the
 health endpoint, the file system and the clock are answered from memory.

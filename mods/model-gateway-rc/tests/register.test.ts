@@ -50,6 +50,7 @@ type World = {
   sets: string[]
   held: Set<string>
   isHanging: boolean
+  deniedWrites: Set<string>
   envExitCode: number
   envStdout: string
   psStdout: string
@@ -80,6 +81,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     sets: [],
     held: new Set(),
     isHanging: false,
+    deniedWrites: new Set(),
     envExitCode: 0,
     envStdout: ENV_STDOUT,
     psStdout: '/Users/me/.local/bin/claude --model claude-opus-5-5\n',
@@ -110,6 +112,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     return { value: { exitCode: isEnv ? world.envExitCode : 0, stdout: isEnv ? world.envStdout : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.write', async ($, e) => {
+    if (world.deniedWrites.has(e.path)) return { deny: `EACCES: permission denied, open '${e.path}'` }
     world.files.set(e.path, e.text)
     return { value: undefined }
   })
@@ -120,6 +123,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: world.isOk }) } }
   })
   on('session.id', async () => ({ value: world.sessionId }))
+  on('session.root', async () => ({ value: '/work/repo' }))
   on('agent.spawn', async ($, e) => {
     world.filesAtSpawn = e.isTeammate === true ? [...world.files.keys()] : []
     return { model: 'claude-gpt-6.1-sol-fast[1m]', teammateId: `${e.name}@team` }
@@ -129,7 +133,7 @@ function worldOf(on: On, env: Record<string, string> = {}): World {
     const names = [...world.files.keys()].filter((path) => path.startsWith(`${LEADS}/`)).map((path) => path.slice(LEADS.length + 1))
     return { value: names.map((name) => ({ name, kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })) }
   })
-  on('fs.exists', async ($, e) => ({ value: e.path === `${PROJECT}/${SESSION}.jsonl` }))
+  on('fs.exists', async ($, e) => ({ value: e.path === `${PROJECT}/${SESSION}.jsonl` || world.files.has(e.path) }))
   on('fs.read', async ($, e) => {
     if (e.path.startsWith(`${LEADS}/`)) {
       world.leadReads += 1
@@ -788,5 +792,253 @@ describe('lead identity', () => {
     await gateway($, 'rc')
     await clock.settle()
     expect(world.env.get('ANTHROPIC_BASE_URL'), 'the local CLI prints the default gateway').toBe(lead.ANTHROPIC_BASE_URL)
+  })
+})
+
+const LOCAL_SETTINGS = '/work/repo/.claude/settings.local.json'
+
+/** The SessionStart group `/gateway setup` writes, spelled out. */
+const AUTO_ON_GROUP = {
+  matcher: 'startup|resume|fork',
+  hooks: [
+    {
+      type: 'command',
+      command: `printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","initialUserMessage":"/gateway on"}}'`,
+    },
+  ],
+}
+
+describe('/gateway setup', () => {
+  test('adds the SessionStart hook to the project\'s settings.local.json, keeps what the file held, and runs once', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    const held = {
+      permissions: { allow: ['Bash(ls:*)'] },
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'echo bye' }] }],
+      },
+    }
+    world.files.set(LOCAL_SETTINGS, JSON.stringify(held, null, 2))
+    await startSession($)
+
+    expect(await gateway($, 'setup')).toMatch(/^added a SessionStart hook to \/work\/repo\/\.claude\/settings\.local\.json/)
+    const written = world.files.get(LOCAL_SETTINGS) ?? ''
+    expect(JSON.parse(written)).toEqual({
+      permissions: held.permissions,
+      hooks: { SessionStart: [...held.hooks.SessionStart, AUTO_ON_GROUP], Stop: held.hooks.Stop },
+    })
+    expect(written.endsWith('}\n'), 'two-space JSON with a final newline').toBe(true)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'setup leaves this session as it was').toBeUndefined()
+
+    expect(await gateway($, 'setup')).toMatch(/already turns the gateway on as a session starts$/)
+    expect(world.files.get(LOCAL_SETTINGS), 'a second setup changes nothing').toBe(written)
+  })
+
+  test('creates the file when the project has none', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+
+    await gateway($, 'setup')
+    expect(JSON.parse(world.files.get(LOCAL_SETTINGS) ?? '{}')).toEqual({ hooks: { SessionStart: [AUTO_ON_GROUP] } })
+  })
+
+  test('leaves a file it cannot merge into alone', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    await startSession($)
+
+    world.files.set(LOCAL_SETTINGS, '{ "permissions": ')
+    expect(await gateway($, 'setup')).toMatch(/ is not JSON .*; it is unchanged$/)
+    expect(world.files.get(LOCAL_SETTINGS)).toBe('{ "permissions": ')
+
+    for (const shape of [{ hooks: { SessionStart: { hooks: [] } } }, { hooks: [] }, [], 'hooks']) {
+      const text = JSON.stringify(shape)
+      world.files.set(LOCAL_SETTINGS, text)
+      expect(await gateway($, 'setup'), text).toMatch(/does not hold a settings object with a hooks\.SessionStart list; it is unchanged$/)
+      expect(world.files.get(LOCAL_SETTINGS)).toBe(text)
+    }
+  })
+
+  test('says so when the file cannot be written', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.deniedWrites.add(LOCAL_SETTINGS)
+    await startSession($)
+
+    expect(await gateway($, 'setup')).toMatch(/^could not write \/work\/repo\/\.claude\/settings\.local\.json \(.*EACCES/)
+    expect(world.files.has(LOCAL_SETTINGS)).toBe(false)
+  })
+})
+
+describe('on at session start', () => {
+  /** Answers SessionStart as the settings hook beneath the mod would. */
+  function settingsHookSays(on: On, initialUserMessage: string): void {
+    on('classic.SessionStart', async () => ({ initialUserMessage }))
+  }
+
+  /**
+   * Answers the model request `firstRequest` sends, keeping the base URL
+   * the session had as it went out.
+   */
+  function requestsOf(on: On, world: World): (string | undefined)[] {
+    const baseUrls: (string | undefined)[] = []
+    on('turn.step', async function* ($, e) {
+      baseUrls.push(world.env.get('ANTHROPIC_BASE_URL'))
+      return { turnId: e.turnId, index: e.index, answer: 'pong', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    })
+    return baseUrls
+  }
+
+  async function firstRequest($: Engine): Promise<void> {
+    const stream = $.turn.step({ turnId: 'turn-1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+    let read = await stream.next()
+    while (read.done !== true) read = await stream.next()
+  }
+
+  test('a lead whose SessionStart hook answers /gateway on wires before its first model request, and the prompt is not sent', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+    let release: () => void = () => {}
+    world.ensureGate = new Promise((resolve) => {
+      release = resolve
+    })
+    await startSession($)
+
+    const result = await $.classic.SessionStart({ source: 'startup' })
+    expect(result.initialUserMessage, 'the mod answers it; Claude Code would send it only in -p').toBeUndefined()
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'SessionStart is not held while ensure runs').toBeUndefined()
+
+    const request = firstRequest($)
+    release()
+    await request
+    expect(requests).toEqual([GATEWAY])
+    expect(wiredEnvOf(world)).toEqual(WIRED)
+    expect(world.toasts.at(-1)).toMatch(/^gateway: on from session start; requests now go through/)
+    expect(JSON.parse(world.files.get(`${LEADS}/${SESSION}.json`) ?? '{}').mode, 'its teammates follow it on').toBe('on')
+  })
+
+  test('wires as the session starts when the hook answered before session.start', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+
+    await $.classic.SessionStart({ source: 'resume' })
+    await startSession($)
+    await firstRequest($)
+    expect(requests).toEqual([GATEWAY])
+    expect(wiredEnvOf(world)).toEqual(WIRED)
+    expect(await gateway($, 'status')).toMatch(/^on:/)
+  })
+
+  test('says so when the gateway CLI fails at start, and the checks still wire it later', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+    const failing = Promise.reject(new Error('ensure timed out'))
+    failing.catch(() => {})
+    world.ensureGate = failing
+
+    await $.classic.SessionStart({ source: 'startup' })
+    await startSession($)
+    await firstRequest($)
+    expect(world.toasts.at(-1)).toMatch(/^gateway: could not turn on at session start: /)
+    expect(requests).toEqual([undefined])
+
+    world.ensureGate = undefined
+    await clock.advance(4000)
+    expect(wiredEnvOf(world), 'the mode stayed on, so the watchdog wires once the gateway answers').toEqual(WIRED)
+  })
+
+  test('turns on once when the hook answers while session.start is still setting up', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+
+    const started = startSession($)
+    await $.classic.SessionStart({ source: 'startup' })
+    await started
+    await firstRequest($)
+    expect(requests).toEqual([GATEWAY])
+    expect(world.runs.filter((argv) => argv.includes('ensure')).length, 'wired once, not once per path').toBe(1)
+  })
+
+  test('a /gateway off given before the switch at start runs stands', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    world.files.set(`${LEADS}/someone-else.json`, JSON.stringify({ mode: 'waiting', gateway: GATEWAY, pid: 9999 }))
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+    let release: () => void = () => {}
+    world.leadReadGate = new Promise((resolve) => {
+      release = resolve
+    })
+
+    await $.classic.SessionStart({ source: 'startup' })
+    const started = startSession($)
+    for (let i = 0; i < 1000 && world.leadReads === 0; i++) await Promise.resolve()
+    expect(world.leadReads, 'session.start is inside its read of the lead files').toBe(1)
+    const off = gateway($, 'off')
+    for (let i = 0; i < 1000; i++) await Promise.resolve()
+    release()
+    world.leadReadGate = undefined
+    expect(await off).toBe('requests already go to api.anthropic.com')
+    await started
+    await firstRequest($)
+
+    expect(requests, 'off came first, so the switch at start stood down').toEqual([undefined])
+    expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('a teammate keeps following its lead', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = worldOf(on)
+    world.psStdout = TEAMMATE_COMMAND
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('waiting'))
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+    await startSession($)
+
+    await $.classic.SessionStart({ source: 'startup' })
+    await firstRequest($)
+    expect(requests, 'the lead has not turned the gateway on').toEqual([undefined])
+    expect(await gateway($, 'status')).toMatch(new RegExp(`^following the lead session ${LEAD}`))
+
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('off'))
+    await clock.advance(2000)
+    world.files.set(`${LEADS}/${LEAD}.json`, leadFileOf('on'))
+    await clock.advance(2000)
+    expect(world.env.get('ANTHROPIC_BASE_URL'), 'still following').toBe(GATEWAY)
+  })
+
+  test('leaves a session already pointed at another endpoint alone', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on, { ANTHROPIC_BASE_URL: 'https://llm.example.com' })
+    settingsHookSays(on, '/gateway on')
+    const requests = requestsOf(on, world)
+    await startSession($)
+
+    await $.classic.SessionStart({ source: 'startup' })
+    await firstRequest($)
+    expect(requests).toEqual(['https://llm.example.com'])
+    expect(await gateway($, 'status')).toMatch(/^off/)
+  })
+
+  test('passes any other initial message on untouched', async ($, on) => {
+    mock.clock(on)
+    const world = worldOf(on)
+    settingsHookSays(on, 'summarize the README')
+    const requests = requestsOf(on, world)
+    await startSession($)
+
+    expect((await $.classic.SessionStart({ source: 'startup' })).initialUserMessage).toBe('summarize the README')
+    await firstRequest($)
+    expect(requests).toEqual([undefined])
   })
 })

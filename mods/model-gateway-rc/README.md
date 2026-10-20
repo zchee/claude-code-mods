@@ -28,6 +28,9 @@ which must be installed. This mod only decides when the session uses it.
    file. model-gateway's SessionStart line saying the project is not wired
    is expected.
 3. Load this mod, for example `claude --plugin-dir mods/model-gateway-rc`.
+4. Optionally, run `/gateway setup` once in the project so that every
+   session started there turns the gateway on at once (see
+   [On at every start](#on-at-every-start)).
 
 ## What it does
 
@@ -83,9 +86,59 @@ left alone; one already pointed at the gateway counts as wired.
 | `on` | Wires the gateway now, without waiting for Remote Control |
 | `off` | Restores the remembered values and stays off, through Remote Control and gateway recovery alike |
 | `rc` | Opens Claude Code's own `/remote-control` dialog from a wired session (connect, or disconnect before switching accounts), then wires the gateway again |
+| `setup` | Adds a SessionStart hook to the project's `.claude/settings.local.json` that turns the gateway on as each session starts there; the current session is left as it is |
 | none, or `status` | Says whether the session is waiting, following its lead, on, suspended or off |
 
 In a teammate, `on` and `off` also stop it from following its lead.
+
+## On at every start
+
+`/gateway setup` adds this group to `hooks.SessionStart` in the project's
+`.claude/settings.local.json`, keeping everything else the file holds, and
+does nothing when the group is already there:
+
+```json
+{
+  "matcher": "startup|resume|fork",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"initialUserMessage\":\"/gateway on\"}}'"
+    }
+  ]
+}
+```
+
+The hook asks Claude Code to send `/gateway on` as the session's first
+prompt. Claude Code sends a SessionStart hook's initial message only in
+`claude -p` and the Agent SDK; an interactive session accepts it and drops
+it (checked on 2.1.305). The mod therefore reads the hook's answer in its
+`classic.SessionStart` hook, removes the message, and turns the gateway on
+itself, the same way in every kind of session. It wires without holding
+SessionStart, and each model request waits for the wiring as a teammate's
+does.
+
+- The hook runs for a new session (`startup`), a resumed one (`resume`)
+  and a forked one (`fork`), each a new process. `/clear` and compaction
+  keep the process, and with it the mode the session already had.
+- With the hook in place but this mod not loaded, `claude -p` and the
+  Agent SDK send `/gateway on` as the first prompt and answer `Unknown
+  command`; an interactive session drops the message.
+- Claude Code keeps one initial message from all SessionStart hooks, the
+  last written. Another hook in the project that also sets one either
+  replaces `/gateway on`, and the session is not switched, or is replaced
+  by it.
+- `setup` rewrites the file as two-space JSON. A change Claude Code writes
+  to the same file between its read and its write (an "always allow" from
+  another session in the project) is lost.
+- The session does not wait for Remote Control: it starts wired, and
+  `/remote-control` does not work in a wired session (see
+  [below](#remote-control-in-a-wired-session)). `/gateway rc` opens it.
+- A tmux teammate reads the same file, and keeps following its lead instead
+  of turning on by itself. A session whose `ANTHROPIC_BASE_URL` already
+  points at another endpoint is left alone, as it is without the hook.
+- The hook takes effect from the next session; `/gateway on` switches the
+  current one. To stop it, delete the group from the file.
 
 ## `/remote-control` in a wired session
 

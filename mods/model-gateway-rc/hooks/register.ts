@@ -26,6 +26,30 @@ const SUCCESSES_TO_REWIRE = 2
 const ENSURE_INTERVAL_MS = 30_000
 
 /**
+ * The prompt the SessionStart hook `/gateway setup` writes asks Claude Code
+ * to send. Claude Code sends a hook's initial message only in `-p` and the
+ * Agent SDK, so the mod takes it off the hook's answer and turns the gateway
+ * on itself, the same way in every kind of session.
+ */
+const AUTO_ON_MESSAGE = '/gateway on'
+
+/**
+ * The settings hook `/gateway setup` adds: the SessionStart of a new,
+ * resumed or forked session, each a new process, answers with
+ * AUTO_ON_MESSAGE. `/clear` and compaction keep the process, and with it
+ * the mode the session already has.
+ */
+const AUTO_ON_HOOK = {
+  matcher: 'startup|resume|fork',
+  hooks: [
+    {
+      type: 'command',
+      command: `printf '%s\\n' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', initialUserMessage: AUTO_ON_MESSAGE } })}'`,
+    },
+  ],
+}
+
+/**
  * The fixed part of model-gateway's env block: always the base layer, which
  * the block `env` prints overrides key by key.
  */
@@ -94,6 +118,8 @@ const state = {
    * not hold a turn back, so each model request waits on this at turn.step.
    */
   starting: undefined as Promise<void> | undefined,
+  /** Whether a SessionStart hook answered with AUTO_ON_MESSAGE. */
+  isAutoOn: false,
 }
 
 let ticker: { cancel: () => void } | undefined
@@ -519,14 +545,70 @@ function statusOf(): string {
 }
 
 /**
+ * Turns the gateway on as the session starts, for the hook `/gateway setup`
+ * wrote. A teammate keeps following its lead; a session already on, or
+ * already pointed at another endpoint, is left as it is.
+ */
+async function switchOnAtStart($: EngineInterface): Promise<void> {
+  await serially(async () => {
+    if (state.leader !== undefined || state.mode !== 'waiting') return
+    state.mode = 'on'
+    $.ui.toast(`gateway: on from session start; ${await wire($)}`)
+    await publishOrLog($)
+  }).catch((error: unknown) => $.ui.toast(`gateway: could not turn on at session start: ${String(error)}`))
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Adds AUTO_ON_HOOK to the project's `.claude/settings.local.json`, keeping
+ * everything the file already holds. A file that is not a JSON object, or
+ * whose `hooks.SessionStart` is not a list, is left alone.
+ */
+async function writeAutoOnHook($: EngineInterface): Promise<string> {
+  const path = `${await $.session.root()}/.claude/settings.local.json`
+  let settings: unknown = {}
+  if (await $.fs.exists(path)) {
+    let text: string
+    try {
+      text = await $.fs.read(path)
+    } catch (error) {
+      return `could not read ${path} (${String(error)}); it is unchanged`
+    }
+    try {
+      settings = JSON.parse(text)
+    } catch (error) {
+      return `${path} is not JSON (${String(error)}); it is unchanged`
+    }
+  }
+  const hooks = isObject(settings) ? (settings.hooks ?? {}) : undefined
+  const starts = isObject(hooks) ? (hooks.SessionStart ?? []) : undefined
+  if (!isObject(settings) || !isObject(hooks) || !Array.isArray(starts)) return `${path} does not hold a settings object with a hooks.SessionStart list; it is unchanged`
+  const command = AUTO_ON_HOOK.hooks[0]?.command
+  const isPresent = starts.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((hook) => isObject(hook) && hook.command === command))
+  if (isPresent) return `${path} already turns the gateway on as a session starts`
+  starts.push(AUTO_ON_HOOK)
+  hooks.SessionStart = starts
+  settings.hooks = hooks
+  try {
+    await $.fs.write(path, `${JSON.stringify(settings, null, 2)}\n`)
+  } catch (error) {
+    return `could not write ${path} (${String(error)})`
+  }
+  return `added a SessionStart hook to ${path}: sessions started, resumed or forked here from now on turn the gateway on at once, without waiting for Remote Control, which \`/gateway rc\` then opens. \`/gateway on\` switches this session.`
+}
+
+/**
  * Registers `/gateway`, finds out whether this session is a lead or a
  * teammate, wires a teammate whose lead is on, and starts the check.
  */
 async function setUp($: EngineInterface): Promise<void> {
   await $.command.register({
     name: 'gateway',
-    description: 'Routes requests through the local model gateway; `rc` opens Remote Control from a wired session.',
-    argumentHint: 'on|off|rc|status',
+    description: 'Routes requests through the local model gateway; `rc` opens Remote Control from a wired session; `setup` turns it on as every session here starts.',
+    argumentHint: 'on|off|rc|setup|status',
     immediate: true,
   })
   state.leader = await leaderOf($)
@@ -568,9 +650,29 @@ async function setUp($: EngineInterface): Promise<void> {
 
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
-    state.starting = setUp($)
-    await state.starting
+    // A switch asked for by a SessionStart hook that answered before this
+    // runs after setUp, so that session.start is not held while the gateway
+    // CLI runs; each model request waits for it at turn.step.
+    const setUpRun = setUp($)
+    state.starting = setUpRun.then(async () => {
+      if (state.isAutoOn) await switchOnAtStart($)
+    })
+    state.starting.catch(() => {})
+    await setUpRun
     return next(e)
+  })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    if (result.initialUserMessage?.trim() !== AUTO_ON_MESSAGE) return result
+    state.isAutoOn = true
+    // Before session.start, session.start switches on after setUp. After it
+    // began, the switch joins the start that each model request waits on,
+    // and SessionStart is not held while the gateway CLI runs.
+    const setUpRun = state.starting
+    if (setUpRun !== undefined) state.starting = setUpRun.catch(() => {}).then(() => switchOnAtStart($))
+    const { initialUserMessage: _, ...rest } = result
+    return rest
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -599,6 +701,7 @@ export const register: Register = (on) => {
       })
       return { text }
     }
+    if (arg === 'setup') return { text: await writeAutoOnHook($) }
     if (arg === 'rc') {
       if (state.rcHold) return { text: '/remote-control is already open' }
       $.clock.after(0, () => {

@@ -133,7 +133,17 @@ export const register: Register = (on, options) => {
   const config = configOf(options)
   const providers: readonly ProviderName[] = eligibleOf(config)
 
+  // Whether the hook below ran while `turn.complete` waited on the
+  // compaction it requested; undefined while it waits on none. Any
+  // compaction that reaches the hook will do: a plugin that sends
+  // `session.compact` past this one sends every trigger past it.
+  let isReached: boolean | undefined
+
   on('session.compact', async ($, e, next) => {
+    if (isReached === false) {
+      isReached = true
+    }
+
     // A precompute installs nothing and its result is used only if the
     // conversation is still the same when a real compaction comes. Deciding
     // then would send the conversation to a third party, and pay for it,
@@ -249,6 +259,13 @@ export const register: Register = (on, options) => {
 
   const arm = armOf()
   let isCompacting = false
+  // A plugin seated before this one (Claude Code's cc-plugin-sec-default,
+  // outermost for Team and Enterprise plans, on a machine with managed
+  // settings, and by default while Claude Code cannot tell that neither
+  // applies) can send `session.compact` past this module. A requested
+  // compaction is then only the built-in summary, earlier than Claude Code's
+  // own threshold, and a seat holds until the process ends.
+  let isPassedOver = false
 
   on('turn.complete', async ($, e, next) => {
     // A turn the person interrupted is not a moment to compact: they stopped
@@ -257,7 +274,8 @@ export const register: Register = (on, options) => {
       config.compactAtPercent > 0 &&
       e.agentId === undefined &&
       !e.isAborted &&
-      !isCompacting
+      !isCompacting &&
+      !isPassedOver
 
     if (isDue) {
       isCompacting = true
@@ -266,7 +284,29 @@ export const register: Register = (on, options) => {
         const { context } = await $.session.usage()
 
         if (isCompactionDue(arm, context.percent, config.compactAtPercent)) {
-          await $.session.compact()
+          let wasReached = false
+
+          isReached = false
+
+          const out = await $.session.compact().finally(() => {
+            wasReached = isReached === true
+            isReached = undefined
+          })
+
+          // A skip is a veto from above: nothing compacted, and nothing says
+          // the hook below would not have run.
+          if (out.skip === undefined && !wasReached) {
+            isPassedOver = true
+            tell(
+              $,
+              'Claude Code compacted with its built-in summary without asking ' +
+                'this mod: a plugin that runs first (such as ' +
+                'cc-plugin-sec-default) sends session.compact past it. No ' +
+                `compaction is requested at ${config.compactAtPercent}% until this ` +
+                "process ends; Claude Code's own threshold applies",
+              {},
+            )
+          }
 
           settle(
             arm,

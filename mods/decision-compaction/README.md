@@ -155,6 +155,38 @@ depends on the usage that compaction leaves:
 
 A turn you interrupted, and a subagent's turn, request nothing.
 
+### When Claude Code passes the mod over
+
+Claude Code can seat its built-in `cc-plugin-sec-default` plugin before the
+plugins you install, and that plugin sends every `session.compact` past
+them. The transcript then says `decision-compaction: its session.compact
+hook was skipped. "cc-plugin-sec-default" runs first and sent the event on
+past it.`, and every compaction of the session is the built-in summary. No
+setting of yours changes that: the mod has no other way to compact, and
+Claude Code ignores `appendPlugins` in your user settings in such a session.
+Only your organization can place the mod beneath that plugin, by listing it
+in `appendPlugins` in its managed settings.
+
+Claude Code seats the plugin, in Claude Code 2.1.306:
+
+- on a Team or Enterprise plan,
+- on a machine with managed settings, or a managed MCP server file,
+- by default, on any plan, while Claude Code cannot yet tell that neither
+  of those applies (its server-managed settings request has not answered
+  that there are none). A managed `prependPlugins` that leaves the
+  plugin out does not stop this default seat.
+
+Once seated, the plugin stays seated until the Claude Code process ends;
+`/clear` and compaction keep it.
+
+In such a session the `turn.complete` trigger would only run the built-in
+summary at `compactAtPercent`, earlier than Claude Code's own threshold and
+again at every later crossing. So the first compaction it requests that
+does not reach the mod's own hook stops it until the process ends, with
+a line and a toast saying why; Claude Code's own auto-compaction then
+decides when to compact. A compaction a hook above the mod vetoes, and one
+that fails, stop nothing.
+
 ## Providers
 
 | `provider` | Endpoint | Model by default | Credentials | Documented limits |

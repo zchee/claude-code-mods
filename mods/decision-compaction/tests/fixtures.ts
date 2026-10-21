@@ -737,6 +737,34 @@ export const ENGINE_MESSAGES: Plugin = {
 }
 
 /**
+ * ENGINE_MESSAGES, and then what Claude Code's cc-plugin-sec-default does
+ * with every compaction while it is seated: it sends the event past the
+ * person's plugins, straight to the tier beneath them.
+ *
+ * Self-contained, as an inline plugin has to be: it closes over nothing.
+ */
+export const PASSING_OVER: Plugin = {
+  name: 'passing-over',
+  tier: 'prepend',
+  register(on) {
+    on('session.compact', ($, e, next) =>
+      next.to(
+        Array.isArray(e.messages)
+          ? e
+          : {
+              ...e,
+              messages: [
+                { role: 'user', text: 'hello', toolUses: [], handle: 'h0' },
+                { role: 'assistant', text: 'hi', toolUses: [], handle: 'h1' },
+              ],
+            },
+        'append',
+      ),
+    )
+  },
+}
+
+/**
  * A message the person typed.
  */
 export function said(text: string, handle?: string): SessionMessage {

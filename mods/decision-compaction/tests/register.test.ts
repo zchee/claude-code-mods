@@ -16,6 +16,7 @@ import {
   ENV,
   OPENAI_URL,
   OPENROUTER_URL,
+  PASSING_OVER,
   PERPLEXITY_URL,
   readsOf,
   responseOf,
@@ -2640,6 +2641,75 @@ describe('turn.complete', () => {
           line.startsWith('compaction at 60% of the context was not run: '),
         ),
       ).toHaveLength(2)
+    },
+  )
+
+  test(
+    'success: a compaction a plugin seated first sends past this one stops the requests for the session',
+    { plugins: [PASSING_OVER] },
+    async ($, on) => {
+      // In order: the reading at each turn's end and, after the one
+      // compaction, the reading that follows it.
+      const world = worldOf(on, { env: ENV, percents: [75, 55, 61, 99] })
+
+      await $.turn.complete(TURN)
+
+      expect(world.builtIn, 'the built-in summary ran beneath').toHaveLength(1)
+      expect(world.toasts).toEqual([
+        'Claude Code compacted with its built-in summary without asking ' +
+          'this mod: a plugin that runs first (such as cc-plugin-sec-default) ' +
+          'sends session.compact past it. No compaction is requested at 60% ' +
+          "until this process ends; Claude Code's own threshold applies",
+      ])
+
+      for (let turn = 0; turn < 2; turn++) {
+        expect(await $.turn.complete(TURN), 'the turn still completes').toEqual(
+          { text: '' },
+        )
+      }
+
+      expect(
+        world.builtIn,
+        '61 and 99 would each have asked; neither does',
+      ).toHaveLength(1)
+      expect(world.toasts, 'said once').toHaveLength(1)
+    },
+  )
+
+  test(
+    'success: a compaction that reaches this plugin keeps the requests going',
+    WITH_ENGINE,
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, percents: [75, 55, 61, 20] })
+
+      await $.turn.complete(TURN)
+      await $.turn.complete(TURN)
+
+      expect(world.builtIn, '75 asks, 61 is a new crossing and asks').toHaveLength(2)
+      expect(
+        world.toasts.filter(toast => toast.includes('without asking this mod')),
+      ).toEqual([])
+    },
+  )
+
+  test(
+    'error: a compaction the engine refuses is not taken for one sent past this plugin',
+    WITH_ENGINE,
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ENV,
+        percents: [75, 76, 85],
+        builtInFails: true,
+      })
+
+      for (let turn = 0; turn < 3; turn++) {
+        await $.turn.complete(TURN)
+      }
+
+      expect(world.builtIn, '75 and 85 ask; the failures stop nothing').toHaveLength(2)
+      expect(
+        world.toasts.filter(toast => toast.includes('without asking this mod')),
+      ).toEqual([])
     },
   )
 

@@ -226,6 +226,8 @@ Each settings-file hook event is also an event named `classic.<EventName>`, and 
 
 According to the type declarations (d.ts:1224), they fire even when no settings hook is configured. Only `classic.PreToolUse` has a different shape: its `e` is the tool call envelope (d.ts:1236).
 
+Claude Code can seat its built-in `cc-plugin-sec-default` plugin before every other plugin: on a Team or Enterprise plan, on a machine with managed settings or a managed MCP server file, and by default on any plan while it cannot yet tell that neither applies. A managed `prependPlugins` that leaves `cc-plugin-sec-default@builtin` out does not stop that default seat, and a seat holds until the process ends. Seated, it sends each `classic.*` event, and `session.compact`, `settings.read`, `prompt.section`, `prompt.context`, `prompt.attachment`, `prompt.compose`, `skill.prompt`, `attribution.text` and some `session.append` doors, past the plugins a person installs: their hooks for those do not run, and since 2.1.304 the transcript says so (`its classic.SessionStart hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.`). A mod that must work there reads what it needs itself, for example the settings file at `session.start`; a hook with no such substitute, such as a `session.compact` answer, only works in such a session when the organization lists the mod in managed `appendPlugins` (cli.unpack.js 2.1.306, the plugin's hooks and the seating in `b9`).
+
 To load a value again after `/clear`, `/resume` or `/branch`, hook `classic.SessionStart` with `{ source: ['clear', 'resume', 'fork'] }` (interface).
 
 ### Mods API calls as events

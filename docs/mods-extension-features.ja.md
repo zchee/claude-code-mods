@@ -226,6 +226,8 @@ on('tool.call', { tool: /^mcp__github__/ }, hook)
 
 型定義（d.ts:1224）によれば、これらは設定フックが 1 つも設定されていなくても発火します。`classic.PreToolUse` だけは `e` の形が異なり、ツール呼び出しの envelope になります（d.ts:1236）。
 
+Claude Code は組み込みの `cc-plugin-sec-default` プラグインを、ほかのどのプラグインよりも先に置くことがあります。Team・Enterprise プラン、管理設定か管理 MCP サーバーファイルのあるマシン、そしてそのどちらでもないとまだ判断できないあいだはどのプランでも既定で置きます。管理設定の `prependPlugins` に `cc-plugin-sec-default@builtin` が挙がっていなくても、この既定の配置は止まりません。一度置かれると、プロセスが終わるまで置かれたままです。置かれると、`classic.*` の各イベントと、`session.compact`、`settings.read`、`prompt.section`、`prompt.context`、`prompt.attachment`、`prompt.compose`、`skill.prompt`、`attribution.text`、`session.append` の一部の door を、利用者が入れたプラグインの前を素通りさせます。それらの hook は実行されず、2.1.304 以降はトランスクリプトにそう表示されます（`its classic.SessionStart hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.`）。そこでも動く必要がある mod は、`session.start` で設定ファイルを読むなど、必要な情報を自分で読みます。`session.compact` への回答のように代わりのない hook は、組織が管理設定の `appendPlugins` にその mod を挙げたときだけ、そうしたセッションでも動きます（cli.unpack.js 2.1.306、このプラグインの hook と `b9` の配置判定）。
+
 `/clear` `/resume` `/branch` の後に値を読み直すには `classic.SessionStart` を使い、`{ source: ['clear', 'resume', 'fork'] }` で絞ります（interface）。
 
 ### mods API 呼び出しイベント

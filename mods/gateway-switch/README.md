@@ -104,31 +104,47 @@ does nothing when the group is already there:
   "hooks": [
     {
       "type": "command",
-      "command": "printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"initialUserMessage\":\"/gateway on\"}}'"
+      "command": ": gateway-switch turns the gateway on as each session here starts"
     }
   ]
 }
 ```
 
-The hook asks Claude Code to send `/gateway on` as the session's first
-prompt. Claude Code sends a SessionStart hook's initial message only in
-`claude -p` and the Agent SDK; an interactive session accepts it and drops
-it (checked on 2.1.305). The mod therefore reads the hook's answer in its
-`classic.SessionStart` hook, removes the message, and turns the gateway on
-itself, the same way in every kind of session. It wires without holding
-SessionStart, and each model request waits for the wiring as a teammate's
-does.
+The group marks the project; the hook itself does nothing (`:` is the
+shell's no-op) and sends Claude Code nothing. As each session starts, the
+mod reads the project's `.claude/settings.local.json`, and when the group
+is there it turns the gateway on itself, the same way in every kind of
+session, `claude -p` and the Agent SDK included. It wires without holding
+`session.start`, and each model request waits for the wiring as a
+teammate's does.
 
-- The hook runs for a new session (`startup`), a resumed one (`resume`)
-  and a forked one (`fork`), each a new process. `/clear` and compaction
-  keep the process, and with it the mode the session already had.
-- With the hook in place but this mod not loaded, `claude -p` and the
-  Agent SDK send `/gateway on` as the first prompt and answer `Unknown
-  command`; an interactive session drops the message.
-- Claude Code keeps one initial message from all SessionStart hooks, the
-  last written. Another hook in the project that also sets one either
-  replaces `/gateway on`, and the session is not switched, or is replaced
-  by it.
+The mod reads the file instead of watching the hook run. Claude Code can
+seat its security default plugin (`cc-plugin-sec-default`) before the
+plugins a person installs: on a Team or Enterprise plan, on a machine with
+managed settings or a managed MCP server file, and by default on any plan
+while it cannot yet tell that neither applies, until the process ends. That plugin passes every
+`classic.*` hook of theirs over, `classic.SessionStart` included. Since 2.1.304 Claude Code says so in
+the transcript (`its classic.SessionStart hook was skipped.
+"cc-plugin-sec-default" runs first and sent the event on past it.`), the
+line earlier versions of this mod, which watched the hook, caused.
+
+- The mod reads the file once per process: a new session (`startup`), a
+  resumed one (`claude --resume`) and a forked one. `/clear`, compaction
+  and `/resume` inside a running session keep the process, and with it the
+  mode the session already had; a session still waiting for Remote Control
+  stays waiting through them.
+- Earlier versions of `/gateway setup` wrote a hook that answered
+  `{"hookSpecificOutput":{"hookEventName":"SessionStart","initialUserMessage":"/gateway on"}}`.
+  The mod still reads that group as the same mark, and a lead whose
+  project holds it says so in a toast at start. Run `/gateway setup` again
+  to replace it: Claude Code puts that message before the prompt of a
+  `claude -p` run, where `/gateway on` also wires a session whose
+  `ANTHROPIC_BASE_URL` points at another endpoint, and without this mod it
+  answers `Unknown command`. `setup` removes the old hook, and its group
+  when nothing else is left in it.
+- The mod reads the file even where Claude Code does not run the hook (all
+  hooks disabled, or managed settings allowing only managed hooks): the
+  group is a mark the mod reads, not a hook it waits for.
 - `setup` rewrites the file as two-space JSON. A change Claude Code writes
   to the same file between its read and its write (an "always allow" from
   another session in the project) is lost.
@@ -137,8 +153,8 @@ does.
   [below](#remote-control-in-a-wired-session)). `/gateway rc` opens it.
 - A tmux teammate reads the same file, and keeps following its lead instead
   of turning on by itself. A session whose `ANTHROPIC_BASE_URL` already
-  points at another endpoint is left alone, as it is without the hook.
-- The hook takes effect from the next session; `/gateway on` switches the
+  points at another endpoint is left alone, as it is without the group.
+- The group takes effect from the next session; `/gateway on` switches the
   current one. To stop it, delete the group from the file.
 
 ## `/remote-control` in a wired session

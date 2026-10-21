@@ -26,28 +26,30 @@ const SUCCESSES_TO_REWIRE = 2
 const ENSURE_INTERVAL_MS = 30_000
 
 /**
- * The prompt the SessionStart hook `/gateway setup` writes asks Claude Code
- * to send. Claude Code sends a hook's initial message only in `-p` and the
- * Agent SDK, so the mod takes it off the hook's answer and turns the gateway
- * on itself, the same way in every kind of session.
+ * The settings hook `/gateway setup` adds to a project, which marks it as one
+ * whose sessions turn the gateway on as they start. The mod reads the
+ * project's settings.local.json for it at session.start instead of watching
+ * the hook run: Claude Code's security default plugin, seated before the
+ * person's plugins on Team and Enterprise plans and on machines with managed
+ * settings, passes every `classic.*` hook of theirs over. The command is the
+ * shell's no-op, so the hook sends Claude Code nothing, and does nothing
+ * without this mod.
  */
-const AUTO_ON_MESSAGE = '/gateway on'
+const AUTO_ON_COMMAND = ': gateway-switch turns the gateway on as each session here starts'
 
-/**
- * The settings hook `/gateway setup` adds: the SessionStart of a new,
- * resumed or forked session, each a new process, answers with
- * AUTO_ON_MESSAGE. `/clear` and compaction keep the process, and with it
- * the mode the session already has.
- */
 const AUTO_ON_HOOK = {
   matcher: 'startup|resume|fork',
-  hooks: [
-    {
-      type: 'command',
-      command: `printf '%s\\n' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', initialUserMessage: AUTO_ON_MESSAGE } })}'`,
-    },
-  ],
+  hooks: [{ type: 'command', command: AUTO_ON_COMMAND }],
 }
+
+/**
+ * The command earlier versions of `/gateway setup` wrote, which answered
+ * `/gateway on` as the session's initial message. Still read as the same
+ * mark; `/gateway setup` replaces it, because Claude Code puts that message
+ * before a `-p` run's prompt, where it would wire even a session pointed at
+ * another endpoint.
+ */
+const LEGACY_AUTO_ON_COMMAND = `printf '%s\\n' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', initialUserMessage: '/gateway on' } })}'`
 
 /**
  * The fixed part of model-gateway's env block: always the base layer, which
@@ -118,8 +120,6 @@ const state = {
    * not hold a turn back, so each model request waits on this at turn.step.
    */
   starting: undefined as Promise<void> | undefined,
-  /** Whether a SessionStart hook answered with AUTO_ON_MESSAGE. */
-  isAutoOn: false,
 }
 
 let ticker: { cancel: () => void } | undefined
@@ -562,13 +562,60 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+async function localSettingsPathOf($: EngineInterface): Promise<string> {
+  return `${await $.session.root()}/.claude/settings.local.json`
+}
+
+/** The hooks of a settings file's `hooks.SessionStart` groups, those not objects left out. */
+function startHooksOf(starts: unknown[]): Record<string, unknown>[] {
+  return starts.flatMap((group) => (isObject(group) && Array.isArray(group.hooks) ? group.hooks.filter(isObject) : []))
+}
+
+/**
+ * Which marks of `/gateway setup` the project's settings.local.json holds:
+ * AUTO_ON_HOOK's command, and the one earlier versions wrote. Neither when
+ * the file is missing, is not JSON, or has no `hooks.SessionStart` list.
+ */
+async function autoOnMarksOf($: EngineInterface): Promise<{ isCurrent: boolean; isLegacy: boolean }> {
+  const none = { isCurrent: false, isLegacy: false }
+  const text = await $.fs.read(await localSettingsPathOf($)).catch(() => undefined)
+  if (text === undefined) return none
+  let settings: unknown
+  try {
+    settings = JSON.parse(text)
+  } catch {
+    return none
+  }
+  const starts = isObject(settings) && isObject(settings.hooks) ? settings.hooks.SessionStart : undefined
+  if (!Array.isArray(starts)) return none
+  const commands = startHooksOf(starts).map((hook) => hook.command)
+  return { isCurrent: commands.includes(AUTO_ON_COMMAND), isLegacy: commands.includes(LEGACY_AUTO_ON_COMMAND) }
+}
+
+/**
+ * Turns a lead on as it starts when its project holds the mark `/gateway
+ * setup` writes, and asks for the earlier mark to be replaced.
+ */
+async function switchOnIfMarked($: EngineInterface): Promise<void> {
+  const marks = await autoOnMarksOf($).catch((error: unknown) => {
+    $.ui.toast(`gateway: could not read whether this project turns the gateway on at start: ${String(error)}`)
+    return { isCurrent: false, isLegacy: false }
+  })
+  if (!marks.isCurrent && !marks.isLegacy) return
+  if (marks.isLegacy && state.leader === undefined) {
+    $.ui.toast('gateway: this project\'s settings.local.json holds the SessionStart hook an earlier `/gateway setup` wrote, which puts `/gateway on` before a `-p` prompt; `/gateway setup` replaces it')
+  }
+  await switchOnAtStart($)
+}
+
 /**
  * Adds AUTO_ON_HOOK to the project's `.claude/settings.local.json`, keeping
- * everything the file already holds. A file that is not a JSON object, or
+ * everything the file already holds, and removes the hook earlier versions
+ * wrote, and any group that removal leaves empty. A file that is not a JSON object, or
  * whose `hooks.SessionStart` is not a list, is left alone.
  */
 async function writeAutoOnHook($: EngineInterface): Promise<string> {
-  const path = `${await $.session.root()}/.claude/settings.local.json`
+  const path = await localSettingsPathOf($)
   let settings: unknown = {}
   if (await $.fs.exists(path)) {
     let text: string
@@ -586,17 +633,25 @@ async function writeAutoOnHook($: EngineInterface): Promise<string> {
   const hooks = isObject(settings) ? (settings.hooks ?? {}) : undefined
   const starts = isObject(hooks) ? (hooks.SessionStart ?? []) : undefined
   if (!isObject(settings) || !isObject(hooks) || !Array.isArray(starts)) return `${path} does not hold a settings object with a hooks.SessionStart list; it is unchanged`
-  const command = AUTO_ON_HOOK.hooks[0]?.command
-  const isPresent = starts.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((hook) => isObject(hook) && hook.command === command))
-  if (isPresent) return `${path} already turns the gateway on as a session starts`
-  starts.push(AUTO_ON_HOOK)
-  hooks.SessionStart = starts
+  const commands = startHooksOf(starts).map((hook) => hook.command)
+  const isCurrent = commands.includes(AUTO_ON_COMMAND)
+  const isLegacy = commands.includes(LEGACY_AUTO_ON_COMMAND)
+  if (isCurrent && !isLegacy) return `${path} already turns the gateway on as a session starts`
+  const kept = starts.flatMap((group) => {
+    if (!isObject(group) || !Array.isArray(group.hooks)) return [group]
+    const groupHooks = group.hooks.filter((hook) => !isObject(hook) || hook.command !== LEGACY_AUTO_ON_COMMAND)
+    if (groupHooks.length === group.hooks.length) return [group]
+    return groupHooks.length === 0 ? [] : [{ ...group, hooks: groupHooks }]
+  })
+  if (!isCurrent) kept.push(AUTO_ON_HOOK)
+  hooks.SessionStart = kept
   settings.hooks = hooks
   try {
     await $.fs.write(path, `${JSON.stringify(settings, null, 2)}\n`)
   } catch (error) {
     return `could not write ${path} (${String(error)})`
   }
+  if (isLegacy) return `replaced the SessionStart hook an earlier \`/gateway setup\` wrote in ${path} with one that sends no prompt; sessions started, resumed or forked here still turn the gateway on at once`
   return `added a SessionStart hook to ${path}: sessions started, resumed or forked here from now on turn the gateway on at once, without waiting for Remote Control, which \`/gateway rc\` then opens. \`/gateway on\` switches this session.`
 }
 
@@ -650,29 +705,14 @@ async function setUp($: EngineInterface): Promise<void> {
 
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
-    // A switch asked for by a SessionStart hook that answered before this
-    // runs after setUp, so that session.start is not held while the gateway
-    // CLI runs; each model request waits for it at turn.step.
+    // The switch at start runs after setUp and is not awaited here, so that
+    // session.start is not held while the gateway CLI runs; each model
+    // request waits for it at turn.step.
     const setUpRun = setUp($)
-    state.starting = setUpRun.then(async () => {
-      if (state.isAutoOn) await switchOnAtStart($)
-    })
+    state.starting = setUpRun.then(() => switchOnIfMarked($))
     state.starting.catch(() => {})
     await setUpRun
     return next(e)
-  })
-
-  on('classic.SessionStart', async ($, e, next) => {
-    const result = await next(e)
-    if (result.initialUserMessage?.trim() !== AUTO_ON_MESSAGE) return result
-    state.isAutoOn = true
-    // Before session.start, session.start switches on after setUp. After it
-    // began, the switch joins the start that each model request waits on,
-    // and SessionStart is not held while the gateway CLI runs.
-    const setUpRun = state.starting
-    if (setUpRun !== undefined) state.starting = setUpRun.catch(() => {}).then(() => switchOnAtStart($))
-    const { initialUserMessage: _, ...rest } = result
-    return rest
   })
 
   on('agent.spawn', async ($, e, next) => {

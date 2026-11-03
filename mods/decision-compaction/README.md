@@ -100,8 +100,13 @@ mod's trigger) the hook:
    also fits that cap with room left for one request's questions. Sizes
    are estimates; no tokenizer is used.
 3. Puts two yes/no questions to the provider for every call left to judge:
-   is the call itself still needed, and is its complete output still
-   needed word for word. A request holds as many of these questions as the
+   "Will the assistant need the fact that it ran <the call>, and with which
+   input, to carry on with the goal?" and "Will the assistant need the
+   exact output of <the call>, <its length> characters long, for the next
+   step of the goal, rather than a summary or a fresh run?" The state's
+   context tells the model that what the assistant does next depends on
+   the newest prompt in the goal (see [Wordings](#wordings) for how this
+   wording was chosen). A request holds as many of these questions as the
    token budget, the provider's own limit on questions and, for a provider
    that caps the body in bytes, that cap allow, and each request carries
    the full state. See [Limits](#limits) for the bounds.
@@ -194,7 +199,7 @@ that fails, stop nothing.
 | --- | --- | --- | --- | --- |
 | `typesafe` (default) | `https://api.typesafe.ai/v1/systemone` | `jev-latest` (Jev 1.13; `jev-1.14.0` is Jev 1.14) | `TYPESAFE_API_KEY` | 64,000 tokens a request; 32,000 for the state plus the longest question; the same for Jev 1.13 and 1.14 |
 | `cloudflare` | `https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` | `clef` (`clef-flash` and `clef-omni` are the others) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | 64,000 tokens on `clef` and `clef-omni`, 24,000 on `clef-flash` (see below); 64 questions a request |
-| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` (Jev 1.14) | `OPENROUTER_API_KEY` | 262,144 tokens for the state plus the questions, with a request of more than about 32,000 bytes of text run in TypeSafe's slower, less accurate long-context mode; 64 questions a request for any model other than Jev |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `~typesafe/jev-latest` (Jev 1.14) | `OPENROUTER_API_KEY` | 262,144 tokens for the state plus the questions, with a request of more than about 32,000 bytes of text run in TypeSafe's slower, less accurate long-context mode; 64 questions a request for any model other than Jev, fewer for the models measured to refuse more (see below) |
 | `codiv` | `https://api.codiv.ai/v1/systemone` | `openjev-latest` (OpenJev) | `CODIV_API_KEY` | 65,536 tokens for the state and the questions together (the vendor advises a state of about 60,000); no question limit documented, 256 a request measured |
 | `perplexity` | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` | `PERPLEXITY_API_KEY` | under 262,144 tokens a request; 128 questions a request |
 | `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev 1.13, through this gateway; `typesafe/jev-1.14` is Jev 1.14) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
@@ -278,7 +283,13 @@ its state: `cloudflare/clef` and `cloudflare/clef-flash` were cut at 16,384
 tokens on 2026-10-11, the window of the cheapest host OpenRouter sends them
 to, and `cloudflare/clef-omni`, which only Cloudflare hosts, at 64,000. Any
 other model it forwards is held to 32,000 tokens, since no limit of its is
-documented here.
+documented here. Measured on 2026-11-03, `nace-ai/drex-max` and
+`nace-ai/drex-v2.0` are asked at most 16 questions a request,
+`togethercomputer/tev1-4b-experimental` and both Upstage models at most 32,
+and the input tokens `upstage/solar-decide-flash` and `respan/span-02`
+count are divided by the questions asked before they are compared with the
+window, since those two count the state once a question, as `perplexity`
+does.
 
 ### Credentials
 
@@ -637,8 +648,10 @@ pnpm run bench:decision-compaction --provider cloudflare --model clef-flash --sc
 pnpm run bench:decision-compaction --out /tmp/bench.json
 ```
 
-The conversations are invented by hand; nothing from a real conversation is
-sent. Each compaction goes through the mod's own `run()`, with
+Six of the conversations are written by hand; the three `session-*` ones are
+generated in the shape measured from real sessions (`bench/generate.ts`,
+from the statistics in `bench/shape.ts`). Nothing from a real conversation
+is sent. Each compaction goes through the mod's own `run()`, with
 `providerDecision` off so that it stays on one route and
 `preserveRecentMessages` at 6. Compactions run one at a time, so the time
 measured is that compaction's alone. A route whose key is unset prints one
@@ -657,11 +670,15 @@ without one), the reduction, the calls kept, cut and dropped, the share of
 calls whose action the labels accept, the harmful drops (a call the labels
 say to keep that was cut or dropped), the tokens and cost the provider
 reported, and the release a model answered as. The summary gives the same
-per route across its runs, with the distinct `stages` joined by `/`. After
-the summary come the calls on which every route that ran them disagreed
-with the label, one line each with every route's action (or `no call
-disputed by every route`): a label every model contradicts is more likely
-wrong than the models, and is to be checked by hand. Every line, and every
+per route across its runs, with the distinct `stages` joined by `/`, and a
+`degenerate` column that reads `keeps nothing` or `keeps everything` when a
+route kept none or all of the calls it judged (a cut call is not kept). After
+the summary come the calls on which more than half of the routes that ran
+them disagreed with the label, one line each with every route's action and
+the routes that agreed (`agreed by: ...`, or `none`), or `no call disputed
+by most routes`: a label most models contradict is more likely wrong than
+the models, and is to be checked by hand. A rule of every route would let
+one route that keeps everything hide every `keep` label. Every line, and every
 file written with `--out`, passes through the mod's redaction with every
 resolved credential, an error's included. The JSON holds ids, actions,
 probabilities and figures, never a conversation's text or a request.
@@ -678,6 +695,7 @@ for that reason alone. The `stage` column tells the two apart.
 | `--scenario <id>` | Only this scenario; repeatable. |
 | `--repeat <n>` | Compactions per route and scenario (1 by default); the summary then gives medians and how often the actions agreed across repeats. |
 | `--dry-run` | Builds each route's first request through the mod and sends nothing. |
+| `--questions <name>` | The wording asked in: `current` (the default, the mod's own), `legacy`, `call-need` or `result-exact`; see [Wordings](#wordings). |
 | `--openrouter-catalog static\|live\|off` | The OpenRouter-only models below: the table in `bench/openrouter-catalog.ts` (`static`, the default), OpenRouter's listing fetched now (`live`, which prints the ids the table lacks and the ones the listing dropped), or none (`off`). |
 | `--out <path>` | Also writes a JSON record of every run. Nothing is written without it. |
 
@@ -705,7 +723,11 @@ OpenRouter lists 33 models whose output is a decision
 (`GET https://openrouter.ai/api/v1/models?output_modalities=decisions`,
 fetched on 2026-11-03 at 08:27 JST). The TypeSafe, Cloudflare, Perplexity
 and OpenAI ones the mod reaches directly; the rest run as models of the
-`openrouter` route, whose request builder takes any id as written:
+`openrouter` route, whose request builder takes any id as written, less
+four that do not take System One's request (`NOT_SYSTEM_ONE`): Respan's
+`respan/span-01`, `span-01-lite` and `span-01-lite:free` and ScaleDown's
+`scaledown/classify-1` answered HTTP 400 to every request on 2026-11-03,
+since they take a state of another shape. The sixteen left are:
 
 | Vendor | Model ids | Context (tokens) | Price (per million input) |
 | --- | --- | --- | --- |
@@ -715,8 +737,7 @@ and OpenAI ones the mod reaches directly; the rest run as models of the
 | Liquid AI | `liquid/d1`, `liquid/d1.1`, `liquid/d1-ultra` | 65,536; 32,768 (ultra) | $0.02; $0.042 (ultra) |
 | Microsoft | `microsoft/microsoft-decision-1` | 32,768 | $0.042 |
 | Nace AI | `nace-ai/drex-v1.5`, `nace-ai/drex-v2.0`, `nace-ai/drex-max` | 131,072; 262,144 (max) | $0.04, $0.06, $0.06 |
-| Respan | `respan/span-01`, `respan/span-01-lite`, `respan/span-01-lite:free`, `respan/span-02` | not stated for span-01 and lite; 131,072 for span-02 | $0.02, $0, $0, $0.01 |
-| ScaleDown | `scaledown/classify-1` | 1,000,000 | $0.04 |
+| Respan | `respan/span-02` | 131,072 | $0.01 |
 | Together | `togethercomputer/tev1-4b-experimental` | 32,768 | $0.042 |
 | Upstage | `upstage/solar-decide`, `upstage/solar-decide-flash` | 524,288 | $0.05, $0.05 |
 
@@ -725,8 +746,13 @@ twice; the release a model answered as is in the report. The mod holds a
 model it does not know to a 32,000-token window, so a model whose window is
 smaller (Baseten's, `kev-4b`) runs with `maxStateTokens` and
 `maxRequestTokens` set to its window, and every other one runs at the same
-27,200-token state cap as Jev through OpenRouter. Jev through OpenRouter is
-also held to the byte cap it asks for, so on the `large` scenario it sees a
+27,200-token state cap as Jev through OpenRouter. The Nace, Together and
+Upstage models run with the question caps given under
+[Providers](#providers) (16 for `drex-max` and `drex-v2.0`, 32 for `tev1`
+and both Upstage models), so a scenario with more calls is split over more
+requests instead of being refused for its question count. Jev through
+OpenRouter is
+also held to the byte cap it asks for, so on the `prose-60` scenario it sees a
 smaller state than those models at the same token cap (8,340 estimated
 tokens against 23,387 in the table below); the report's caveat says so. A
 model that answers in another shape than System One's fails as a row, not
@@ -734,63 +760,144 @@ as a crash.
 
 #### Spend
 
-Measured on the first full run, 2026-11-03 09:43 to 09:48 JST (times from
-`date`): 32 routes, 6 scenarios, one repeat, 192 compactions in under five
-minutes. The providers that report a count counted 902,043 input tokens
-together; the OpenRouter routes, the only ones that report a price, cost
-$0.0301 together. The estimate the plan started from (under 8 million
-billed tokens, under $1.50) was an upper bound by a wide margin: a
-compaction sends far fewer requests than the 16 it may, and most routes
-take the whole state in one. `perplexity` counted 21,886 tokens over its
-six compactions, not the 1.2 million the state-times-questions rule gives
-for a 200,000-token state, because the largest scenario's state is 9,884
-tokens there.
+Two full runs on 2026-11-03 (times from `date`). The first, 09:43 to
+09:48 JST, in the wording the mod sent until that day (`legacy`): 32
+routes, 6 scenarios, 192 compactions; 902,043 input tokens counted by the
+providers that report one, $0.0301 reported by the OpenRouter routes, the
+only ones that report a price. The second, 10:58 to 11:09 JST, in the
+mod's wording now (`current`), after the per-model OpenRouter caps and the
+three generated scenarios: 28 routes, 9 scenarios, 252 compactions;
+7,060,468 tokens counted and $0.862 reported, of which `solar-decide-flash`
+($0.595, 1.9 million tokens) and `span-02` ($0.132, 3.1 million) are the
+two models that count the state once per question; every other route
+cost under $0.02. The estimate the plan started from (under 8 million
+tokens, under $1.50) holds for a run of this size, and the second run is
+what a full run costs now: about ten minutes and under $1, of which most
+goes to those two models.
 
-#### What the first run found
+#### What the runs found
 
-The run is only as good as its labels and its corpus, and the first run
-says more about those than about the models. Every mature route (TypeSafe
-Jev 1.13 and 1.14, Clef, Clef-flash, Clef-omni, Jev through OpenRouter,
-GPT-6 Luna, pplx-decider) answered a probability near zero for both
-questions on nearly every call (median 0.01 to 0.16 for the call, 0.00 to
-0.10 for the result) and so dropped everything: 0 kept, 1 to 8 cut, 85 to
-93 dropped of 93 judged calls, agreement 61% at every threshold from 0.3 to
-0.7, 13 harmful drops. 61% is the share of labels that allow `drop`; the
-13 harmful drops are the calls labelled `keep` alone, among them every
-call of `all-needed`, whose newest prompt depends on all of them. The
-routes that differ (Baseten joey-1 keeps 85 of 93; Liquid d1 and d1.1 keep
-14 to 22; Codiv OpenJev cuts 25) are the ones whose answers vary with the
-call. Before the agreement figures are read as model quality, the mod's two
-questions and the state it sends (a call's result is a status and a length,
-never its text) need to be checked against a conversation where the right
-answer is known to be `keep`, and the labels revised where the mod's
-notion of "needed to carry on with the goal" differs from the labeller's.
-The `disputed` diagnostic listed nothing, because one route that keeps
-everything agrees with every `keep` label.
+**The first run measured the mod's wording, not the models.** In the
+`legacy` wording every mature route (TypeSafe Jev 1.13 and 1.14, Clef,
+Clef-flash, Clef-omni, Jev through OpenRouter, GPT-6 Luna, pplx-decider)
+answered a probability near zero for both questions on nearly every call
+(median 0.01 to 0.16 for the call, 0.00 to 0.10 for the result) and so
+dropped everything: 0 kept, 85 to 93 dropped of 93 judged, agreement 61%
+at every threshold, 13 harmful drops, every call of `all-needed` among
+them. A probe on an invented five-message conversation whose newest
+prompt depends on one read gave 0.35 / 0.07 (TypeSafe) and 0.14 / 0.05
+(Clef) in that wording and 0.90 / 0.90 and 0.79 / 0.56 in a plain one on
+the same state; putting the result's text into the state changed little.
+The wording was the cause, and the Wordings section below records the
+comparison that chose the one the mod sends now. The same probe repeated
+in that wording on 2026-11-03 at 11:14 JST, with a second conversation
+whose newest prompt moves to an unrelated task: TypeSafe answers 0.82 /
+0.69 where the read is needed and 0.33 / 0.15 where it is not; Clef
+answers 0.29 / 0.32 and 0.18 / 0.06, the right way round but both under
+the 0.5 threshold, so Clef still drops the read it should keep.
 
-Of the twenty OpenRouter-only models, eleven answered the mod's requests
-and nine did not, on 2026-11-03:
+**The second run, in the mod's wording now.** Nine scenarios: the six
+hand-written ones and three generated from the shape of this machine's
+sessions before `/compact` (see below). Agreement is against labels that
+allow `drop` or `truncate` on most calls and `keep` alone on the few the
+newest prompt depends on; `harmful` counts a `keep` call cut or dropped,
+`missed` a droppable call kept.
 
-| Model | Result |
-| --- | --- |
-| `respan/span-01`, `span-01-lite`, `span-01-lite:free` | HTTP 400 on every scenario: Respan takes a state that is a string or `{input, output}` messages, not System One's object |
-| `scaledown/classify-1` | HTTP 400 on every scenario: ScaleDown takes `{text, document, document_mime_type}` |
-| `nace-ai/drex-max`, `drex-v2.0` | HTTP 422 on `exploration` and `large`: at most 16 questions a request |
-| `togethercomputer/tev1-4b-experimental` | HTTP 400 on the same two: at most 32 questions a request |
-| `upstage/solar-decide` | the same two not answered within the 30-second deadline (median 16 seconds on the others) |
-| `upstage/solar-decide-flash`, `respan/span-02` | the same two refused by the mod: the reply counted 87,000 to 1,173,565 input tokens, so the state was cut at the 32,000-token window the mod holds an unknown model to |
+| Route | ok / 9 | Agreement | Harmful | Missed | Kept / cut / dropped | Reduction | Median ms | Tokens counted | Cost | `all-needed` | `session-55` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `typesafe/jev-latest` (Jev 1.14) | 9 | 78% | 17 | 0 | 5 / 10 / 379 | 79% | 225 | 121,063 | - | 50% | 96% |
+| `typesafe/jev-1.14.0` | 9 | 75% | 18 | 0 | 4 / 9 / 381 | 81% | 198 | 121,063 | - | 25% | 96% |
+| `cloudflare/clef` | 9 | 79% | 14 | 0 | 8 / 3 / 383 | 80% | 1,113 | 109,331 | - | 50% | 98% |
+| `cloudflare/clef-flash` | 8 | 68% | 19 | 0 | 0 / 8 / 158 | 86% | 1,072 | 60,848 | - | 0% | 94% |
+| `cloudflare/clef-omni` | 9 | 74% | 21 | 0 | 1 / 4 / 389 | 83% | 500 | 110,026 | - | 25% | 94% |
+| `openrouter` Jev | 9 | 78% | 18 | 0 | 4 / 6 / 384 | 81% | 436 | 82,282 | $0.0065 | 50% | 96% |
+| `baseten/elephant-1` | 8 | 75% | 12 | 1 | 8 / 9 / 149 | 77% | 564 | 54,471 | $0.0038 | 50% | 98% |
+| `baseten/joey-1` | 8 | 54% | 4 | 86 | 101 / 17 / 48 | 41% | 448 | 54,471 | $0.0011 | 50% | 23% |
+| `baseten/mammoth-1` | 8 | 75% | 13 | 0 | 6 / 1 / 159 | 80% | 657 | 54,471 | $0.0110 | 50% | 98% |
+| `inception/mercury-decide` | 9 | 75% | 16 | 3 | 9 / 0 / 385 | 81% | 808 | 86,157 | $0.0082 | 25% | 98% |
+| `jaredpalmer/kev-4b` | 8 | 72% | 15 | 0 | 4 / 2 / 160 | 81% | 1,082 | 26,318 | $0.0026 | 25% | 94% |
+| `liquid/d1` | 9 | 74% | 19 | 1 | 4 / 11 / 379 | 79% | 737 | 84,640 | $0.0090 | 25% | 96% |
+| `liquid/d1-ultra` | 9 | 81% | 14 | 0 | 8 / 3 / 383 | 77% | 749 | 84,640 | $0.0189 | 75% | 96% |
+| `liquid/d1.1` | 9 | 74% | 15 | 4 | 11 / 7 / 376 | 78% | 711 | 84,640 | $0.0090 | 25% | 94% |
+| `microsoft/microsoft-decision-1` | 9 | 73% | 17 | 1 | 6 / 15 / 373 | 84% | 700 | 71,651 | $0.0147 | 0% | 98% |
+| `nace-ai/drex-max` | 8 | 80% | 8 | 0 | 11 / 0 / 155 | 75% | 1,325 | 53,545 | $0.0158 | 75% | 100% |
+| `nace-ai/drex-v1.5` | 9 | 71% | 21 | 0 | 1 / 12 / 381 | 86% | 915 | 73,543 | $0.0151 | 0% | 96% |
+| `nace-ai/drex-v2.0` | 8 | 72% | 16 | 1 | 4 / 2 / 160 | 81% | 946 | 50,260 | $0.0164 | 25% | 94% |
+| `respan/span-02` | 9 | 71% | 21 | 0 | 1 / 3 / 390 | 87% | 1,659 | 3,138,529 | $0.1320 | 0% | 96% |
+| `togethercomputer/tev1-4b-experimental` | 4 | 44% | 9 | 0 | 0 / 6 / 11 | 86% | 796 | 30,920 | $0.0013 | 0% | - |
+| `upstage/solar-decide` | 3 | 59% | 6 | 0 | 2 / 5 / 8 | 56% | 12,904 | 36,916 | $0.0018 | 50% | - |
+| `upstage/solar-decide-flash` | 9 | 77% | 14 | 10 | 18 / 215 / 161 | 48% | 2,602 | 1,901,038 | $0.5947 | 100% | 92% |
+| `codiv/openjev-latest` | 8 | 74% | 12 | 13 | 20 / 50 / 96 | 66% | 1,246 | 294,995 | - | 75% | 79% |
+| `perplexity/pplx-decider-v1.1-27b` | 8 | 76% | 14 | 0 | 5 / 0 / 161 | 80% | 446 | 40,365 | - | 50% | 94% |
+| `decisions-api-dev/jev-latest` | 3 | 56% | 5 | 0 | 2 / 3 / 7 | 70% | 1,833 | 4,545 | - | 50% | - |
+| `decisions-api-dev/typesafe/jev-1.14` | 2 | 55% | 3 | 0 | 0 / 1 / 6 | 88% | 1,900 | 2,938 | - | - | - |
+| `decisionapi-net/jev-latest` | 0 | - | - | - | - | - | - | - | - | - | - |
+| `openai/gpt-6-luna` | 9 | 71% | 22 | 0 | 0 / 63 / 331 | 80% | 540 | 226,802 | - | 0% | 94% |
 
-So the four Respan and ScaleDown ids are not System One endpoints for this
-mod's purpose, and the Nace, Together and Upstage models need a question
-cap of their own (16, 32, and fewer than 40) that `limitsOf` does not know;
-until the mod carries per-model limits for OpenRouter, those routes answer
-the four small scenarios only. `decisions-api-dev` and `decisionapi-net`
-answered HTTP 402 (no credits on the account used) and measured nothing.
+What the table says, read with the caveat the report prints:
+
+- The wording change moved the mature routes from 61% to 71-79% agreement
+  and from "keeps nothing" to a few keeps and more cuts, but a call the
+  reference keeps still mostly lands on `truncate` (the call stays, the
+  result is cut to its head): the result question scores a median of 0.20
+  on those calls. `clef-flash` and GPT-6 Luna still keep nothing. Whether a
+  truncated read of a file still on disk is harmful is the next label
+  question; the metric counts it so today.
+- The generated sessions, whose labels keep three calls of 20 to 53 and
+  allow dropping the rest, score 92-100% on nearly every route: they
+  measure that a model drops what it may, not that it keeps what it must.
+  `joey-1`, which keeps 101 of its 166 judged calls, scores 23% there;
+  the `degenerate` mark is for a route that keeps all or none, and the
+  routes it marks in this run are `clef-flash`, GPT-6 Luna, `tev1` and
+  one `decisions-api-dev` row, which kept nothing.
+- `session-230` (230 calls, 104,000 state tokens) does not fit the state
+  budget of `clef-flash`, Baseten, `kev-4b` and `perplexity` (about 17,250
+  tokens are left after every reduction) and would take 29 requests on
+  the two Nace models with their 16-question cap, so those routes refuse
+  it before sending; Codiv did not answer it within 30 seconds; TypeSafe
+  and Clef judged it with the state cut, and OpenAI, whose budget is
+  200,000 tokens, took it whole.
+- `tev1-4b-experimental` counts the state once per question and refuses
+  32 questions ("Tev1 sends state once per question"); `solar-decide`
+  still misses the 30-second deadline on six scenarios at 32 questions
+  (median 12.9 s where it answers). Both need a smaller cap, and `tev1`
+  the state-per-question flag, in `OPENROUTER_MODEL_LIMITS`.
+- `decisions-api-dev` answered five compactions before its credits ran
+  out; `decisionapi-net` has none (HTTP 402 on every request). Neither row
+  measures the model.
+
+**What a session looks like before `/compact`.** The generated scenarios
+take their shape from 268 compactions in this machine's Claude Code
+transcripts (main chain between compaction boundaries; two projects;
+measured 2026-11-03; statistics only, no text), in `bench/shape.ts`:
+
+| Measure (median; p10-p90) | ai-gateway (167) | ganja-code (101) |
+| --- | --- | --- |
+| tool calls before a compaction | 55 (2-228) | 22 (4-348) |
+| assistant text per call, chars | 116 | 56 |
+| tool input JSON per segment, chars | 80,087 | 33,566 |
+| tool result, chars | 1,074 (p90 6,232) | 629 (p90 6,382) |
+| tools, most used | Bash, SendMessage, Agent, Read, Write, Edit | Bash, Edit, SendMessage, Read, Agent, Write, Grep |
+| context at compaction, tokens | 744k (345k-868k) | 191k (166k-878k) |
+
+A real pre-compact state is dominated by tool inputs (long Bash commands,
+heredocs, message bodies), with a short assistant note per call and short
+results; the six hand-written scenarios have the opposite shape (long
+prose, tiny inputs, three tools), which is why the generated ones exist.
+
+Of the twenty OpenRouter-only models the first run tried, four are not
+System One endpoints for this mod (Respan `span-01`, `span-01-lite`,
+`span-01-lite:free` take a string or `{input, output}` messages; ScaleDown
+`classify-1` takes `{text, document, document_mime_type}`; HTTP 400 on
+every request) and left the catalogue; the question caps and the
+state-per-question flags of the others came from that run and are in
+`OPENROUTER_MODEL_LIMITS`.
 
 The whole-state dry run of 08:56 JST the same day, which sent nothing,
-measured the state in the first request of the `large` scenario on each
-route. Whole, that state is 80,888 bytes, about 23,400 estimated tokens. A
-route's state is cut when it is smaller than that:
+measured the state in the first request of the `prose-60` scenario (then
+named `large`) on each route. Whole, that state is 80,888 bytes, about
+23,400 estimated tokens. A route's state is cut when it is smaller than
+that:
 
 | Route | State bytes | Estimated tokens | Questions | Cut |
 | --- | --- | --- | --- | --- |
@@ -806,8 +913,56 @@ route's state is cut when it is smaller than that:
 | OpenRouter-only, `kev-4b` | 13,526 | 6,010 | 32 | yes |
 | OpenRouter-only, every other model | 80,888 | 23,387 | 58 | no |
 
-A dry run sees only the first request of a compaction; the request count
-and the totals above come from the real run.
+A dry run sees only the first request of a compaction; the request counts
+and the totals above come from the real runs.
+
+#### Wordings
+
+`--questions <name>` asks in a wording from `bench/wordings.ts`, the two
+questions and the state's context together, in place of the mod's.
+`current`, the default, is what the mod sends; a test holds it equal to
+the mod's strings byte for byte. `legacy` is the mod's wording until
+2026-11-03, which dropped nearly every call. `call-need` and
+`result-exact` are the steps between the two: `call-need` rewrites the
+call question ("Will the assistant need the fact that it ran ..." in place
+of "Does the assistant still need to know that it made ..."),
+`result-exact` also the result question ("the exact output ... for the
+next step of the goal, rather than a summary or a fresh run" in place of
+"word for word ... running the tool again would not bring it back"), and
+`current` also the context (the sentence that the assistant can run any
+tool again removed, and the goal tied to the newest prompt). A real run in
+a wording other than `current` names it in the planned line and in the
+report's caveat; a dry run prints neither.
+
+Measured on 2026-11-03, 10:40 to 10:49 JST (lead, keys in a subshell, 88
+compactions per wording): eight scenarios (the six hand-written ones,
+`session-22` and `session-55`) on TypeSafe's two models, Cloudflare's
+three, OpenAI, Perplexity, Codiv, and OpenRouter's `liquid/d1.1`,
+`baseten/mammoth-1` and `kev-4b`, one repeat. The rows carry the names
+`--questions` takes now; at the time of the run, `legacy` was still named
+`current` and `current` was named `no-rerun`.
+
+| Wording | Mean agreement | Harmful drops | Missed reductions | Kept / judged | keep-labelled calls, median P(call) / P(result) | drop-labelled, median P(call) / P(result) | `all-needed` on mature routes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `legacy` | 67% | 192 | 34 | 47 / 1,750 | 0.26 / 0.10 | 0.12 / 0.08 | 0% on all seven |
+| `call-need` | 68% | 195 | 27 | 41 / 1,826 | 0.39 / 0.11 | 0.13 / 0.08 | 0% on all seven |
+| `result-exact` | 71% | 176 | 18 | 51 / 1,826 | 0.41 / 0.20 | 0.14 / 0.06 | 0-75% (perplexity 75, clef 25, typesafe 25) |
+| `current` | **73%** | **162** | **18** | **65 / 1,826** | 0.45 / 0.20 | 0.14 / 0.06 | 0-50% (typesafe 50, clef 50, perplexity 50, clef-flash 0, openai 0) |
+
+`current` became the mod's wording on these figures: the highest
+agreement, the fewest harmful drops and missed reductions, and never worse
+than `legacy` on any route. It keeps the labelled classes apart: calls
+labelled `keep` move from 0.26 to 0.45 on the call question while calls
+labelled `drop` stay at 0.14. The target set before the run, `all-needed`
+at 80% agreement or more on TypeSafe, every Cloudflare model, OpenAI and
+Perplexity, was not met: it reaches 50% on TypeSafe and Clef and 0% on
+Clef-flash and OpenAI, because the result question still scores a median
+of 0.20 on calls the labels keep, so those calls land on `truncate` (the
+call kept, the head of its result) rather than `keep`. That is better than
+`legacy`'s `drop`, and the metric counts it as a harmful drop all the
+same; whether a cut Read is harmful when the file can be read again is a
+question for the labels, and putting the head of each result into the
+state is the next change to the wording to measure.
 
 The runner's own tests use stubs for every `fetch` and never reach a
 network:

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { bytesBesideOf, routeOf } from '../hooks/providers'
 import {
+  contextOf,
   estimatedTokensOf,
   stateWithin,
   goalOf,
@@ -266,6 +267,7 @@ function longSession(): SessionMessage[] {
 const RECENT = 3
 const ORDER: Stage[] = [
   'whole',
+  'result heads dropped',
   'inputs shortened',
   'long texts cut in the middle',
   'old texts replaced by their length',
@@ -355,7 +357,10 @@ describe('stateWithin', () => {
     () => {
       const { stages, smallest, isEveryFitWithinBudget } = walk()
 
-      expect(stages).toEqual(ORDER)
+      expect(
+        stages,
+        'a state that shows no output has no heads to drop',
+      ).toEqual(ORDER.filter(stage => stage !== 'result heads dropped'))
       expect(isEveryFitWithinBudget).toBe(true)
       expect(() => fit(smallest - 7)).toThrow(
         'the conversation does not fit the state budget',
@@ -653,5 +658,199 @@ describe('stateWithin under a cap in bytes', () => {
     expect(() => fitBytes(50)).toThrow(
       /^the conversation does not fit the request body: about \d+ bytes are left after every reduction and 50 are allowed$/,
     )
+  })
+})
+
+describe('stateWithin with result heads', () => {
+  const LONG_OUTPUT = Array.from(
+    { length: 100 },
+    (_, n) => `line ${String(n).padStart(4, '0')}\n`,
+  ).join('')
+  const SHORT_OUTPUT = 'PASS '.repeat(24)
+  const FAILED_OUTPUT = `${'e'.repeat(299)}😀${'f'.repeat(199)}`
+
+  /**
+   * Three calls: a read whose output is 1,000 characters, a test run whose
+   * output is 120, and a failed command of 500 whose 300th and 301st
+   * characters are the two halves of one emoji.
+   */
+  function headedSession(): SessionMessage[] {
+    return [
+      said('Fix the parser test.'),
+      calling('Reading the parser.', [
+        ['r1', 'Read', { file_path: 'src/parse.ts' }],
+      ]),
+      answering([['r1', LONG_OUTPUT]]),
+      calling('Running the test.', [['b1', 'Bash', { command: 'pnpm test' }]]),
+      answering([['b1', SHORT_OUTPUT]]),
+      calling('Trying the build.', [['b2', 'Bash', { command: 'make' }]]),
+      answering([['b2', FAILED_OUTPUT, true]]),
+      said('Carry on.'),
+    ]
+  }
+
+  function fitHeaded(budget: number, resultHead?: number): Fitted {
+    const messages = headedSession()
+
+    return stateWithin(messages, pairCalls(messages, 0), {
+      maxStateTokens: budget,
+      preserveRecentMessages: 0,
+      goal: 'fix the parser test',
+      wire: BARE,
+      ...(resultHead === undefined ? {} : { resultHead }),
+    })
+  }
+
+  function notesOf(fitted: Fitted): Record<string, string> {
+    return Object.fromEntries(
+      fitted.state.conversation
+        .flatMap(entry => (entry.calls ?? []) as CallNote[])
+        .map(note => [note.id, note.result]),
+    )
+  }
+
+  test('success: the outputs are as long as the session says', () => {
+    expect(LONG_OUTPUT).toHaveLength(1000)
+    expect(SHORT_OUTPUT).toHaveLength(120)
+    expect(FAILED_OUTPUT).toHaveLength(500)
+    expect(FAILED_OUTPUT.charCodeAt(299).toString(16)).toBe('d83d')
+  })
+
+  test('success: no resultHead and a resultHead of 0 give the same state, byte for byte, at every budget', () => {
+    const ample = fit(Infinity).tokens + 400
+    let compared = 0
+
+    for (let budget = ample; budget > 0; budget -= 97) {
+      let without: Fitted
+
+      try {
+        without = fit(budget)
+      } catch {
+        break
+      }
+
+      const messages = longSession()
+      const zero = stateWithin(messages, pairCalls(messages, RECENT), {
+        maxStateTokens: budget,
+        preserveRecentMessages: RECENT,
+        goal: 'refactor the parser',
+        wire: BARE,
+        resultHead: 0,
+      })
+
+      expect(JSON.stringify(zero), `at ${budget} tokens`).toBe(
+        JSON.stringify(without),
+      )
+      compared++
+    }
+
+    expect(compared, 'budgets compared').toBeGreaterThan(10)
+    expect(fit(Infinity).state.context).toBe(contextOf(0))
+  })
+
+  test('success: head 300 shows the first 300 characters of a long output and the whole of a short one', () => {
+    const fitted = fitHeaded(Infinity, 300)
+
+    expect(fitted.stage).toBe('whole')
+    expect(notesOf(fitted)).toEqual({
+      t1: `ok, 1000 characters; first 300: ${LONG_OUTPUT.slice(0, 300)}`,
+      t2: `ok, 120 characters, shown whole: ${SHORT_OUTPUT}`,
+      t3: `error, 500 characters; first 299: ${'e'.repeat(299)}`,
+    })
+    expect(fitted.state.context).toBe(contextOf(300))
+    expect(fitted.state.context).toContain(
+      'Its output is shown in part: `result` says whether it succeeded, ' +
+        'how long it was, and how it starts.',
+    )
+    expect(fitted.state.context).not.toContain('not shown')
+  })
+
+  test('success: a head never ends on half a surrogate pair', () => {
+    const note = notesOf(fitHeaded(Infinity, 300)).t3 ?? ''
+
+    expect(note).toBe(`error, 500 characters; first 299: ${'e'.repeat(299)}`)
+    expect(JSON.parse(JSON.stringify(note))).toBe(note)
+    expect(notesOf(fitHeaded(Infinity, 301)).t3).toBe(
+      `error, 500 characters; first 301: ${'e'.repeat(299)}😀`,
+    )
+  })
+
+  test('success: a head past the most a state shows is held to it', () => {
+    const output = `${'a'.repeat(1000)}${'b'.repeat(500)}`
+    const messages = [
+      said('Read the log.'),
+      calling('Reading the log.', [['l1', 'Read', { file_path: 'build.log' }]]),
+      answering([['l1', output]]),
+      said('Carry on.'),
+    ]
+    const fitted = stateWithin(messages, pairCalls(messages, 0), {
+      maxStateTokens: Infinity,
+      preserveRecentMessages: 0,
+      goal: 'read the log',
+      wire: BARE,
+      resultHead: 5000,
+    })
+
+    expect(output).toHaveLength(1500)
+    expect(notesOf(fitted).t1).toBe(
+      `ok, 1500 characters; first 1000: ${'a'.repeat(1000)}`,
+    )
+  })
+
+  test('success: a budget that fits only without the heads gives the state built without them, context included', () => {
+    const headless = fitHeaded(Infinity)
+    const headed = fitHeaded(Infinity, 300)
+    const between = Math.floor((headless.tokens + headed.tokens) / 2)
+    const fitted = fitHeaded(between, 300)
+
+    expect(headed.tokens - headless.tokens).toBeGreaterThan(100)
+    expect(fitted.stage).toBe('result heads dropped')
+    expect(fitted.tokens <= between).toBe(true)
+    expect(fitted.tokens).toBe(headless.tokens)
+    expect(JSON.stringify(fitted.state)).toBe(JSON.stringify(headless.state))
+    expect(fitted.state.context).toBe(contextOf(0))
+    expect(notesOf(fitted)).toEqual({
+      t1: 'ok, 1000 characters, not shown',
+      t2: 'ok, 120 characters, not shown',
+      t3: 'error, 500 characters, not shown',
+    })
+  })
+
+  test('success: a shrinking budget drops the heads before it shortens an input', () => {
+    const seen: Stage[] = []
+    const messages = longSession()
+    const calls = pairCalls(messages, RECENT)
+    const fitAt = (budget: number) =>
+      stateWithin(messages, calls, {
+        maxStateTokens: budget,
+        preserveRecentMessages: RECENT,
+        goal: 'refactor the parser',
+        wire: BARE,
+        resultHead: 300,
+      })
+
+    for (let budget = fitAt(Infinity).tokens + 100; ; budget -= 31) {
+      let stage: Stage
+
+      try {
+        stage = fitAt(budget).stage
+      } catch {
+        break
+      }
+
+      if (seen.at(-1) !== stage) {
+        seen.push(stage)
+      }
+    }
+
+    expect(seen.slice(0, 3)).toEqual([
+      'whole',
+      'result heads dropped',
+      'inputs shortened',
+    ])
+    expect(
+      seen.map(stage => ORDER.indexOf(stage)),
+      seen.join(', '),
+    ).toEqual(seen.map(stage => ORDER.indexOf(stage)).sort((a, b) => a - b))
   })
 })

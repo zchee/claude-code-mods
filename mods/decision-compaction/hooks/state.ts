@@ -71,6 +71,7 @@ export type State = {
  */
 export type Stage =
   | 'whole'
+  | 'result heads dropped'
   | 'inputs shortened'
   | 'long texts cut in the middle'
   | 'old texts replaced by their length'
@@ -117,7 +118,25 @@ type FitNeed = {
    * part of the state, so the state is fitted with it.
    */
   context?: string
+  /**
+   * How many characters of each call's output the state shows, at most
+   * `RESULT_HEAD_MAX`; absent or 0, it shows none. The heads are the first
+   * detail given up when the state is over its budget.
+   */
+  resultHead?: number
 }
+
+/**
+ * The most characters of a call's output the state shows.
+ */
+export const RESULT_HEAD_MAX = 1000
+
+/**
+ * The characters of each call's output a compaction shows: none, until a
+ * measurement shows that showing the start of each output improves the
+ * decisions enough to pay for the larger state.
+ */
+export const DEFAULT_RESULT_HEAD = 0
 
 /**
  * The frame every question is read in. It carries the rubric once, so the
@@ -130,18 +149,40 @@ type FitNeed = {
  * time, scored a median of 0.26 for the call and 0.10 for the result on
  * calls a reference keeps and dropped nearly every call on every provider;
  * this one, with the questions now asked, scores 0.45 and 0.20.
+ *
+ * It is held in two parts, around the sentence that says how much of each
+ * output the state shows; `contextOf` puts them together.
  */
-const CONTEXT =
+const CONTEXT_START =
   'This is the transcript of a coding assistant session whose context ' +
   'window is nearly full. To free space, old tool calls and their outputs ' +
   'are being removed; nothing is summarised or reworded. `conversation` ' +
   'lists the messages in order, oldest first. A tool call appears under ' +
-  '`calls` with its `id` and its input. Its output is not shown: `result` ' +
-  'only says whether it succeeded and how long it was. Long texts may be ' +
-  'shortened and old messages may be missing. `goal` says what the ' +
-  'assistant is working on, and what the assistant will do next depends on ' +
-  'the newest prompt in it. Each question is about one tool call, named by ' +
-  'its `id`.'
+  '`calls` with its `id` and its input. '
+const CONTEXT_END =
+  ' Long texts may be shortened and old messages may be missing. `goal` ' +
+  'says what the assistant is working on, and what the assistant will do ' +
+  'next depends on the newest prompt in it. Each question is about one ' +
+  'tool call, named by its `id`.'
+
+/**
+ * The context for a state that shows `resultHead` characters of each
+ * output: with none, it says the output is not shown; with some, that the
+ * note says how the output starts.
+ *
+ * @param resultHead the characters of each output the state shows
+ * @returns the context
+ */
+export function contextOf(resultHead: number): string {
+  const said =
+    resultHead > 0
+      ? 'Its output is shown in part: `result` says whether it succeeded, ' +
+        'how long it was, and how it starts.'
+      : 'Its output is not shown: `result` only says whether it succeeded ' +
+        'and how long it was.'
+
+  return `${CONTEXT_START}${said}${CONTEXT_END}`
+}
 
 /**
  * The successive caps on a call's serialised input, in characters.
@@ -582,12 +623,13 @@ function folded(
  * the budget, cheapest loss first, and stops the moment it is under. Each
  * rung below is tried only when the one above was not enough:
  *
- * 1. a cap on the JSON of each call's input, tightened twice;
- * 2. the middle of every long text, in old messages before pinned ones;
- * 3. the text of an old message, of which only its length is then stated;
- * 4. the structure of an old call, written as a single line instead;
- * 5. old messages in which no call was made;
- * 6. the separate entries of neighbouring old messages that hold only calls.
+ * 1. the start of each call's output, when `resultHead` shows one;
+ * 2. a cap on the JSON of each call's input, tightened twice;
+ * 3. the middle of every long text, in old messages before pinned ones;
+ * 4. the text of an old message, of which only its length is then stated;
+ * 5. the structure of an old call, written as a single line instead;
+ * 6. old messages in which no call was made;
+ * 7. the separate entries of neighbouring old messages that hold only calls.
  *
  * The estimate is checked here, whichever provider is asked, because a
  * provider may cut a state that is too long without saying so. Where the
@@ -599,7 +641,8 @@ function folded(
  * @param messages the conversation
  * @param calls its paired calls, as `pairCalls` answered them
  * @param need the budget, the pinning, the goal, the wire format and, when
- * given, the context in place of the usual one
+ * given, the context in place of the usual one and how much of each output
+ * to show
  * @returns the fitted state, its estimated size and the stage reached
  */
 export function stateWithin(
@@ -607,7 +650,15 @@ export function stateWithin(
   calls: readonly Call[],
   need: FitNeed,
 ): Fitted {
-  const context = need.context ?? CONTEXT
+  const resultHead = Math.min(
+    Math.max(0, Math.floor(need.resultHead ?? 0)),
+    RESULT_HEAD_MAX,
+  )
+  // The context follows the notes: once the heads are dropped it says the
+  // output is not shown, so such a state is the one built without heads.
+  // It is set with every layout, and so is what the frame around the
+  // entries costs.
+  let context = ''
   const frame = (conversation: Entry[]): State => ({
     context,
     goal: need.goal,
@@ -615,9 +666,14 @@ export function stateWithin(
   })
   const tokensOf = (state: State) =>
     estimatedTokensOf(need.wire.stateJsonOf(JSON.stringify(state)))
-  const frameTokens = tokensOf(frame([]))
   const { bytes } = need
-  const frameBytes = bytes === undefined ? 0 : bytes.besideOf(frame([]))
+  let frameTokens = 0
+  let frameBytes = 0
+  const frameFor = (withHeads: boolean) => {
+    context = need.context ?? contextOf(withHeads ? resultHead : 0)
+    frameTokens = tokensOf(frame([]))
+    frameBytes = bytes === undefined ? 0 : bytes.besideOf(frame([]))
+  }
   // What an entry costs inside the list: its own JSON as the wire format
   // carries it and the comma after it, in tokens and in UTF-8 bytes. The
   // last entry has no comma, so a sum of these is over by one byte at most.
@@ -630,6 +686,39 @@ export function stateWithin(
     }
   }
   const inputs = new Map(calls.map(call => [call, inputJsonOf(call)]))
+  // The output a call's note shows the start of: the first result with its
+  // id, which is the one `pairCalls` joined it to. Read only when heads are
+  // shown, so a state without them costs nothing more than before.
+  const outputs = new Map<string, string>()
+
+  if (resultHead > 0) {
+    for (const call of calls) {
+      const result = messages[call.resultIndex]?.toolResults?.find(
+        candidate => candidate.tool_use_id === call.toolUseId,
+      )
+
+      if (result !== undefined && !outputs.has(call.toolUseId)) {
+        outputs.set(call.toolUseId, result.text)
+      }
+    }
+  }
+
+  const noteOf = (call: Call, withHeads: boolean): string => {
+    const said = `${statusOf(call)}, ${call.resultChars} characters`
+    const text = withHeads ? outputs.get(call.toolUseId) : undefined
+
+    if (text === undefined) {
+      return `${said}, not shown`
+    }
+
+    if (text.length <= resultHead) {
+      return `${said}, shown whole: ${text}`
+    }
+
+    const head = headOf(text, resultHead)
+
+    return `${said}; first ${head.length}: ${head}`
+  }
   const made = new Map<number, Call[]>()
 
   for (const call of calls) {
@@ -650,7 +739,8 @@ export function stateWithin(
     }
   }
 
-  const lay = (inputCap: number) => {
+  const lay = (inputCap: number, withHeads: boolean) => {
+    frameFor(withHeads)
     slots = []
 
     messages.forEach((message, at) => {
@@ -671,7 +761,7 @@ export function stateWithin(
           id: call.id,
           tool: call.tool,
           input: clipped(inputs.get(call) ?? '', inputCap),
-          result: `${statusOf(call)}, ${call.resultChars} characters, not shown`,
+          result: noteOf(call, withHeads),
         }))
       }
 
@@ -698,11 +788,28 @@ export function stateWithin(
     return { state, tokens: tokensOf(state), stage }
   }
 
-  for (const cap of INPUT_CAPS) {
-    lay(cap)
+  // The heads of the outputs go first, before any input is shortened: a
+  // state without them is the one every compaction sent before they could
+  // be shown.
+  type Opening = [inputCap: number, withHeads: boolean, stage: Stage]
+  const atWholeInputs: Opening[] =
+    resultHead > 0
+      ? [
+          [INPUT_CAPS[0], true, 'whole'],
+          [INPUT_CAPS[0], false, 'result heads dropped'],
+        ]
+      : [[INPUT_CAPS[0], false, 'whole']]
+  const openings: Opening[] = [
+    ...atWholeInputs,
+    [INPUT_CAPS[1], false, 'inputs shortened'],
+    [INPUT_CAPS[2], false, 'inputs shortened'],
+  ]
+
+  for (const [cap, withHeads, stage] of openings) {
+    lay(cap, withHeads)
 
     if (fits()) {
-      return fitted(cap === INPUT_CAPS[0] ? 'whole' : 'inputs shortened')
+      return fitted(stage)
     }
   }
 

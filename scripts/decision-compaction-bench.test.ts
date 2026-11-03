@@ -33,9 +33,18 @@ import { WORDINGS, wordingOf } from '../mods/decision-compaction/bench/wordings'
 import type { Wording } from '../mods/decision-compaction/bench/wordings'
 import { questionsWith } from '../mods/decision-compaction/hooks/compact'
 import { run } from '../mods/decision-compaction/hooks/run'
-import { pairCalls } from '../mods/decision-compaction/hooks/state'
+import {
+  contextOf,
+  goalOf,
+  pairCalls,
+  stateWithin,
+} from '../mods/decision-compaction/hooks/state'
 import type { Job, Result } from '../mods/decision-compaction/hooks/run'
-import { modelsOf, PROVIDERS } from '../mods/decision-compaction/hooks/providers'
+import {
+  modelsOf,
+  PROVIDERS,
+  wireOf,
+} from '../mods/decision-compaction/hooks/providers'
 import type {
   Credentials,
   Route,
@@ -56,6 +65,7 @@ import {
   outDocumentOf,
   parseArgs,
   portsOf,
+  resultHeadOf,
   routesOf,
   USAGE,
   UsageError,
@@ -178,6 +188,7 @@ const DEFAULT_FLAGS: Flags = {
   scenarios: [],
   repeat: 1,
   questions: 'current',
+  state: 'none',
   dryRun: false,
   catalog: 'static',
   help: false,
@@ -262,6 +273,42 @@ describe('parseArgs', () => {
     expect(USAGE).toContain(WORDING_NAMES)
   })
 
+  test('success: --state takes none and head:<n> from 1 to 1000', () => {
+    expect(parseArgs(['--state', 'none'])).toEqual(DEFAULT_FLAGS)
+    expect(parseArgs(['--state', 'head:300'])).toEqual({
+      ...DEFAULT_FLAGS,
+      state: 'head:300',
+    })
+    expect(parseArgs(['--state', 'head:1']).state).toBe('head:1')
+    expect(parseArgs(['--state', 'head:1000']).state).toBe('head:1000')
+    expect(
+      parseArgs(['--questions', 'current', '--state', 'head:300']).state,
+    ).toBe('head:300')
+    expect(USAGE).toContain('--state none|head:<n>')
+  })
+
+  test('success: resultHeadOf reads the characters a --state value shows', () => {
+    const cases: Record<string, number | undefined> = {
+      none: 0,
+      'head:1': 1,
+      'head:300': 300,
+      'head:1000': 1000,
+      'head:0': undefined,
+      'head:1001': undefined,
+      'head:x': undefined,
+      'head:3.5': undefined,
+      'head:-1': undefined,
+      'head:': undefined,
+      head: undefined,
+      '': undefined,
+      'head:300 ': undefined,
+    }
+
+    for (const [state, head] of Object.entries(cases)) {
+      expect(resultHeadOf(state), JSON.stringify(state)).toBe(head)
+    }
+  })
+
   const mistakes: Record<string, { argv: string[]; says: RegExp }> = {
     'error: --repeat 0': { argv: ['--repeat', '0'], says: /--repeat 0/ },
     'error: --repeat negative': {
@@ -316,6 +363,30 @@ describe('parseArgs', () => {
     'error: --out with --dry-run': {
       argv: ['--dry-run', '--out', '/tmp/x.json'],
       says: /a dry run has none/,
+    },
+    'error: --state head:0': {
+      argv: ['--state', 'head:0'],
+      says: /^--state head:0 is neither none nor head:<n> with n a whole number from 1 to 1000$/,
+    },
+    'error: --state head:x': {
+      argv: ['--state', 'head:x'],
+      says: /^--state head:x is neither none nor head:<n>/,
+    },
+    'error: --state head:1001': {
+      argv: ['--state', 'head:1001'],
+      says: /^--state head:1001 is neither none nor head:<n>/,
+    },
+    'error: --state without a value': {
+      argv: ['--state', '--dry-run'],
+      says: /--state needs a value/,
+    },
+    'error: --state head:300 with another wording': {
+      argv: ['--questions', 'call-need', '--state', 'head:300'],
+      says: /^--state head:300 needs --questions current: the other wordings describe a state without result heads$/,
+    },
+    'error: another wording after --state head:300': {
+      argv: ['--state', 'head:300', '--questions', 'legacy'],
+      says: /the other wordings describe a state without result heads/,
     },
   }
 
@@ -555,6 +626,26 @@ describe('jobOf', () => {
     for (const wording of WORDINGS.slice(1)) {
       expect(jobIn(wording.name).wording).toBe(wording)
     }
+  })
+
+  test('success: a result head goes on the job, none does not', () => {
+    const jobWith = (resultHead?: number) =>
+      jobOf(
+        smallScenario(),
+        { provider: 'typesafe', model: 'jev-latest' },
+        undefined,
+        { typesafeApiKey: 'test-typesafe-key' },
+        portsOf(new AbortController()),
+        'current',
+        resultHead,
+      )
+
+    expect('state' in jobWith(), 'no head: the job a compaction gets').toBe(
+      false,
+    )
+    expect('state' in jobWith(0)).toBe(false)
+    expect(jobWith(300).state).toEqual({ resultHead: 300 })
+    expect('wording' in jobWith(300)).toBe(false)
   })
 
   test('error: a name that is no wording is refused', () => {
@@ -979,6 +1070,166 @@ describe('the wording a bench asks in', () => {
   })
 })
 
+describe('result heads in a bench', () => {
+  const ROUTE: Route = { provider: 'openrouter', model: '~typesafe/jev-latest' }
+
+  /**
+   * Every call note of every request the real `run()` sends over an
+   * answering stub, and the stage the compaction reached.
+   */
+  async function sentWith(
+    scenario: Scenario,
+    resultHead?: number,
+    override?: Planned['override'],
+  ) {
+    const notes: string[][] = []
+    const contexts: string[] = []
+    const fetchImpl: FetchImpl = async (url, init) => {
+      const body = JSON.parse(String(init.body)) as {
+        state: {
+          context: string
+          conversation: { calls?: { result: string }[] }[]
+        }
+      }
+
+      contexts.push(body.state.context)
+      notes.push(
+        body.state.conversation.flatMap(entry =>
+          (entry.calls ?? []).map(call => call.result),
+        ),
+      )
+
+      return answeringFetch(0.9, 'typesafe/jev-1.14')(url, init)
+    }
+    const runs = await benchOf(
+      [{ route: ROUTE, ...(override === undefined ? {} : { override }) }],
+      [scenario],
+      1,
+      {
+        run,
+        now: () => 0,
+        log: () => {},
+        credentials: OPENROUTER_ONLY,
+        fetchFor: () => fetchImpl,
+        ...(resultHead === undefined ? {} : { resultHead }),
+      },
+    )
+
+    expect(runs.map(ran => ran.failure)).toEqual([undefined])
+
+    return { notes, contexts, stage: runs[0]?.result?.outcome.stage }
+  }
+
+  /**
+   * The estimated tokens of a scenario's whole state on the route, with and
+   * without the heads, as `run()` fits it.
+   */
+  function wholeTokensOf(scenario: Scenario, resultHead: number): number {
+    const preserve = configFor(ROUTE, undefined).preserveRecentMessages
+
+    return stateWithin(
+      scenario.messages,
+      pairCalls(scenario.messages, preserve),
+      {
+        maxStateTokens: Number.MAX_SAFE_INTEGER,
+        preserveRecentMessages: preserve,
+        goal: goalOf(scenario.messages),
+        wire: wireOf(ROUTE),
+        resultHead,
+      },
+    ).tokens
+  }
+
+  test('success: the real run() sends the head of each result with a result head, and none without', async () => {
+    const scenario = scenarioOf('all-needed') as Scenario
+    const longest = scenario.messages
+      .flatMap(message => message.toolResults ?? [])
+      .reduce((a, b) => (b.text.length > a.text.length ? b : a))
+    const headed = await sentWith(scenario, 300)
+    const headless = await sentWith(scenario)
+
+    expect(longest.text.length, 'a result longer than its head').toBeGreaterThan(
+      300,
+    )
+    expect(headed.stage).toBe('whole')
+    expect(headed.contexts.every(context => context === contextOf(300))).toBe(
+      true,
+    )
+    expect(
+      headed.notes.flat(),
+      'the longest result appears by its first 300 characters',
+    ).toContain(
+      `${longest.isError ? 'error' : 'ok'}, ${longest.text.length} ` +
+        `characters; first 300: ${longest.text.slice(0, 300)}`,
+    )
+    expect(headed.notes.flat().some(note => note.endsWith(', not shown'))).toBe(
+      false,
+    )
+    expect(headless.stage).toBe('whole')
+    expect(headless.contexts.every(context => context === contextOf(0))).toBe(
+      true,
+    )
+    expect(
+      headless.notes.flat().every(note => note.endsWith(' characters, not shown')),
+      headless.notes.flat().join('\n'),
+    ).toBe(true)
+    expect(headless.notes.flat().length).toBe(headed.notes.flat().length)
+  })
+
+  test('success: a budget the heads do not fit drops them, and the compaction says so', async () => {
+    const scenario = scenarioOf('all-needed') as Scenario
+    const without = wholeTokensOf(scenario, 0)
+    const withHeads = wholeTokensOf(scenario, 300)
+    const between = Math.floor((without + withHeads) / 2)
+    const sent = await sentWith(scenario, 300, {
+      maxStateTokens: between,
+      maxRequestTokens: 20_000,
+    })
+
+    expect(withHeads - without, 'what the heads cost').toBeGreaterThan(100)
+    expect(sent.stage).toBe('result heads dropped')
+    expect(
+      sent.notes.flat().every(note => note.endsWith(' characters, not shown')),
+    ).toBe(true)
+    expect(sent.contexts.every(context => context === contextOf(0))).toBe(true)
+  })
+
+  test('success: a dry-run row whose budget drops the heads sends the headless state, byte for byte, and counts it as cut', async () => {
+    const counter = countGlobalFetch()
+    const scenario = scenarioOf('all-needed') as Scenario
+    const between = Math.floor(
+      (wholeTokensOf(scenario, 0) + wholeTokensOf(scenario, 300)) / 2,
+    )
+    const routes: Planned[] = [
+      { route: ROUTE },
+      {
+        route: { provider: 'openrouter', model: 'liquid/d1-ultra' },
+        override: { maxStateTokens: between, maxRequestTokens: 20_000 },
+      },
+    ]
+    const deps = {
+      run,
+      now: () => 0,
+      log: () => {},
+      credentials: OPENROUTER_ONLY,
+    }
+    const headless = await dryRunOf(routes, [scenario], deps)
+    const headed = await dryRunOf(routes, [scenario], {
+      ...deps,
+      resultHead: 300,
+    })
+    expect(counter.entries).toBe(0)
+    expect(headless.map(row => row.cut)).toEqual([false, false])
+    expect(headed.map(row => row.failure)).toEqual([undefined, undefined])
+    expect(headed[0]?.cut, 'the heads fit').toBe(false)
+    expect(headed[0]?.first?.stateBytes).toBeGreaterThan(
+      (headless[0]?.first?.stateBytes ?? Infinity) + 1000,
+    )
+    expect(headed[1]?.cut, 'the heads were dropped').toBe(true)
+    expect(headed[1]?.first).toEqual(headless[1]?.first)
+  })
+})
+
 describe('outDocumentOf', () => {
   test('success: ids and figures only, no text, no request, no key', async () => {
     const scenario = smallScenario()
@@ -1020,9 +1271,23 @@ describe('outDocumentOf', () => {
     const document = JSON.parse(written) as Record<string, unknown>
     const forbidden = new Set(['state', 'text', 'input', 'authorization'])
 
+    // `flags.state` is the --state value, a word such as `none`, not a
+    // conversation; every other key, of `flags` too, is held to the list.
     expect(
-      keysOf(document).filter(key => forbidden.has(key.toLowerCase())),
+      keysOf({
+        ...document,
+        flags: Object.fromEntries(
+          Object.entries(document.flags as Flags).filter(
+            ([key]) => key !== 'state',
+          ),
+        ),
+      }).filter(key => forbidden.has(key.toLowerCase())),
     ).toEqual([])
+    expect(document.flags).toEqual({
+      ...DEFAULT_FLAGS,
+      out: '/tmp/bench.json',
+    })
+    expect((document.flags as Flags).state).toBe('none')
     expect(Object.keys(document)).toEqual([
       'writtenAt',
       'catalogFetchedAt',
@@ -1454,21 +1719,32 @@ describe('main', () => {
         }),
       )
       const written = readFileSync(out, 'utf8')
-      const document: unknown = JSON.parse(written)
+      const document = JSON.parse(written) as {
+        flags: Flags
+        records: unknown[]
+      }
       const forbidden = new Set(['state', 'text', 'input', 'authorization'])
 
       expect(status).toBe(0)
       expect(lines.at(-1)).toBe(`wrote ${out}`)
+      // `flags.state` is the --state value, not a conversation; every other
+      // key, of `flags` too, is held to the list.
       expect(
-        keysOf(document).filter(key => forbidden.has(key.toLowerCase())),
+        keysOf({
+          ...document,
+          flags: Object.fromEntries(
+            Object.entries(document.flags).filter(([key]) => key !== 'state'),
+          ),
+        }).filter(key => forbidden.has(key.toLowerCase())),
       ).toEqual([])
+      expect(document.flags.state).toBe('none')
       expect(written).not.toContain(PLANTED)
       expect(
         stringsOf(document).some(value => value.includes('[redacted]')),
       ).toBe(true)
       expect(lines.join('\n')).not.toContain(PLANTED)
       expect(
-        (document as { records: unknown[] }).records,
+        document.records,
         'two repeats of one route and one scenario',
       ).toHaveLength(2)
     } finally {
@@ -1584,6 +1860,88 @@ describe('main', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('success: --state head:300 reaches every job and the caveat, and --out records it', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'decision-compaction-bench-'))
+    const out = join(directory, 'bench.json')
+    const lines: string[] = []
+    const jobs: Job[] = []
+
+    try {
+      const status = await main(
+        [...ONE_ROUTE, '--state', 'head:300', '--out', out],
+        ioWith(lines, {
+          run: job => {
+            jobs.push(job)
+
+            return run(job)
+          },
+          fetch: answeringFetch(0.9, 'typesafe/jev-1.14'),
+        }),
+      )
+      const document = JSON.parse(readFileSync(out, 'utf8')) as {
+        flags: Flags
+      }
+
+      expect(status).toBe(0)
+      expect(jobs, 'the dry run of the plan, then the real run').toHaveLength(2)
+      expect(jobs.map(job => job.state)).toEqual([
+        { resultHead: 300 },
+        { resultHead: 300 },
+      ])
+      expect(lines).toContain(
+        "The state showed up to the first 300 characters of each call's " +
+          "output (--state head:300) unless its budget dropped them (stage " +
+          "'result heads dropped'); a compaction shows none.",
+      )
+      expect(document.flags.state).toBe('head:300')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('success: without --state the jobs carry no state and nothing says one', async () => {
+    const lines: string[] = []
+    const jobs: Job[] = []
+    const status = await main(
+      ONE_ROUTE,
+      ioWith(lines, {
+        run: job => {
+          jobs.push(job)
+
+          return run(job)
+        },
+        fetch: answeringFetch(0.9, 'typesafe/jev-1.14'),
+      }),
+    )
+
+    expect(status).toBe(0)
+    expect(jobs.every(job => !('state' in job))).toBe(true)
+    expect(lines.join('\n')).not.toContain('--state')
+  })
+
+  test('error: --state head:300 with --questions call-need exits 2 and runs nothing', async () => {
+    const lines: string[] = []
+    let ran = 0
+    const status = await main(
+      [...ONE_ROUTE, '--state', 'head:300', '--questions', 'call-need'],
+      ioWith(lines, {
+        run: async job => {
+          ran++
+
+          return run(job)
+        },
+      }),
+    )
+
+    expect(status).toBe(2)
+    expect(ran).toBe(0)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toStartWith(
+      'error: --state head:300 needs --questions current: the other ' +
+        'wordings describe a state without result heads\n\nusage: ',
+    )
   })
 
   test('error: an interrupt during a dry run stops it and exits 130', async () => {

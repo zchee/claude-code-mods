@@ -95,7 +95,10 @@ mod's trigger) the hook:
    middle cut out of long texts (old messages before the protected ones),
    old texts replaced by their length, old calls written on one line, old
    messages without a call omitted, and neighbouring old messages that
-   hold nothing but calls merged into one entry. For a provider that caps
+   hold nothing but calls merged into one entry. A state that shows the
+   start of each output (a benchmark setting, off in every compaction; see
+   [Result heads](#result-heads)) drops those starts before anything else
+   (`result heads dropped`). For a provider that caps
    the request body in bytes, the same reductions go on until the state
    also fits that cap with room left for one request's questions. Sizes
    are estimates; no tokenizer is used.
@@ -715,6 +718,7 @@ for that reason alone. The `stage` column tells the two apart.
 | `--repeat <n>` | Compactions per route and scenario (1 by default); the summary then gives medians and how often the actions agreed across repeats. |
 | `--dry-run` | Builds each route's first request through the mod and sends nothing. |
 | `--questions <name>` | The wording asked in: `current` (the default, the mod's own), `legacy`, `call-need` or `result-exact`; see [Wordings](#wordings). |
+| `--state none\|head:<n>` | What the state shows of each call's output: nothing (`none`, the default, what a compaction sends) or its first n characters, n from 1 to 1000 (`head:<n>`, only with `--questions current`); see [Result heads](#result-heads). |
 | `--openrouter-catalog static\|live\|off` | The OpenRouter-only models below: the table in `bench/openrouter-catalog.ts` (`static`, the default), OpenRouter's listing fetched now (`live`, which prints the ids the table lacks and the ones the listing dropped), or none (`off`). |
 | `--out <path>` | Also writes a JSON record of every run. Nothing is written without it. |
 
@@ -996,6 +1000,59 @@ call kept, the head of its result) rather than `keep`. That is better than
 same; whether a cut Read is harmful when the file can be read again is a
 question for the labels, and putting the head of each result into the
 state is the next change to the wording to measure.
+
+#### Result heads
+
+`--state head:<n>` has the state show the start of each call's output.
+The note in place of the output becomes `ok, 1000 characters; first 300:
+<the first 300 characters>`, or `ok, 120 characters, shown whole: <the
+output>` when the output is no longer than n; a head never ends on half a
+surrogate pair, so it can be one character shorter than n. The state's
+context then says that the output "is shown in part: `result` says whether
+it succeeded, how long it was, and how it starts" instead of that it "is
+not shown". The other wordings describe a state without heads, so
+`--state head:<n>` with a `--questions` other than `current` is a usage
+error. A real run with heads names them in the report's caveat, and the
+`--out` JSON records the flag as `flags.state`.
+
+The heads are the first detail the state gives up. When the state with
+them is over its budget, every head is dropped at once and the compaction
+reports the stage `result heads dropped`, between `whole` and `inputs
+shortened`. The context then goes back to saying the output is not shown,
+so a state whose heads were dropped is byte for byte the one built without
+heads, context included, and so is every later stage. A dry run prints no
+stage: against the `--state none` dry run, a row is larger where the heads
+were kept and equal where they were dropped or the state was held at its
+budget anyway, and a dropped row reads `cut` `yes` because the whole state
+it is compared with carries the heads. The real run's tables and
+`outcome.stage` name the stage.
+
+`--state none` is what every compaction sends: `DEFAULT_RESULT_HEAD` in
+`hooks/state.ts` is 0, and a compaction shows no output. It becomes 300
+only if a comparison of `--state none` with `--state head:300` on the six
+hand-written scenarios (`fix-test`, `exploration`, `retry`,
+`long-output`, `all-needed`, `prose-60`) over ten routes meets all three
+conditions below, fixed before the runs. The seven mature routes are
+`typesafe/jev-latest`, `typesafe/jev-1.14.0`, `cloudflare/clef`,
+`cloudflare/clef-flash`, `cloudflare/clef-omni`, `openai/gpt-6-luna` and
+`perplexity/pplx-decider-v1.1-27b`; the ten are those seven and
+`codiv/openjev-latest`, `openrouter/~typesafe/jev-latest` and
+`openrouter/liquid/d1-ultra`.
+
+1. At `head:300`, `all-needed` agreement is at least 80% on each of the
+   seven mature routes, counted on the records whose stage kept the heads
+   (`whole`).
+2. At `head:300`, the harmful drops are not above those of the `none` arm
+   on any of the ten routes.
+3. The median increase of `stateTokens` from `none` to `head:300`, paired
+   by route and scenario over the six scenarios, is at most 2,000 tokens.
+
+Each route has one `all-needed` record per arm, so a mature route whose
+`all-needed` record dropped the heads has nothing to count for the first
+condition, which is then not met for it. Such a route, and any mature
+route that dropped the heads on half or more of its six records, gets a
+third arm at `--state head:120` before the rule is read. Unless all three
+conditions hold, the default stays 0 and the bench keeps the flag.
 
 The runner's own tests use stubs for every `fetch` and never reach a
 network:

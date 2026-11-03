@@ -26,7 +26,13 @@ import {
 } from './providers'
 import type { Credentials, Route } from './providers'
 import { chooseRoute, profileOf } from './route'
-import { estimatedTokensOf, goalOf, pairCalls, stateWithin } from './state'
+import {
+  DEFAULT_RESULT_HEAD,
+  estimatedTokensOf,
+  goalOf,
+  pairCalls,
+  stateWithin,
+} from './state'
 import type { Call, Fitted } from './state'
 
 /**
@@ -47,6 +53,12 @@ export type Job = {
    * through the same path a compaction takes; a compaction leaves it unset.
    */
   wording?: QuestionWording & { context: string }
+  /**
+   * How many characters of each call's output the state shows, in place of
+   * `DEFAULT_RESULT_HEAD`. A benchmark sets it to measure what the heads
+   * change; a compaction leaves it unset.
+   */
+  state?: { resultHead: number }
 }
 
 /**
@@ -207,6 +219,7 @@ export async function run(job: Job): Promise<Result> {
       preserveRecentMessages: config.preserveRecentMessages,
       goal,
       wire: wireOf(configured),
+      resultHead: job.state?.resultHead ?? DEFAULT_RESULT_HEAD,
       ...(wording === undefined ? {} : { context: wording.context }),
       // Held to the same share of a byte cap as the request is below, with
       // the bytes of one request's questions left free.

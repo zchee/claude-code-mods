@@ -6,7 +6,7 @@ import type { Wording } from '../bench/wordings'
 import { questionsOf, questionsWith } from '../hooks/compact'
 import { configOf } from '../hooks/config'
 import { run } from '../hooks/run'
-import { estimatedTokensOf, pairCalls } from '../hooks/state'
+import { contextOf, estimatedTokensOf, pairCalls } from '../hooks/state'
 import type { Job } from '../hooks/run'
 import { listenersOf, readsOf } from './fixtures'
 
@@ -363,5 +363,63 @@ describe('a wording other than the usual', () => {
 
     expect(usual, 'forty calls go in two batches').toHaveLength(2)
     expect(await bodiesOf(40, wordingOf('current'))).toEqual(usual)
+  })
+})
+
+describe('result heads in the state', () => {
+  /**
+   * The call notes and the context of every request a compaction of three
+   * answered Read calls sends, with `state` on the job when one is given.
+   */
+  async function sentOf(state?: Job['state']) {
+    const sent: { context: string; results: string[] }[] = []
+    const { ports } = worldOf(init => {
+      const body = JSON.parse(init.body ?? '{}') as {
+        state: {
+          context: string
+          conversation: { calls?: { result: string }[] }[]
+        }
+      }
+
+      sent.push({
+        context: body.state.context,
+        results: body.state.conversation.flatMap(entry =>
+          (entry.calls ?? []).map(call => call.result),
+        ),
+      })
+
+      return answeredAll(init)
+    })
+
+    await run({
+      messages: readsOf(3),
+      config: configOf(OPTIONS),
+      credentials: CREDENTIALS,
+      ports,
+      ...(state === undefined ? {} : { state }),
+    })
+
+    return sent
+  }
+
+  test("success: the job's result head reaches the state that is sent", async () => {
+    const sent = await sentOf({ resultHead: 300 })
+
+    expect(sent, 'three calls go in one batch').toHaveLength(1)
+    expect(sent[0]?.results).toEqual(
+      Array(3).fill(`ok, 600 characters; first 300: ${'x'.repeat(300)}`),
+    )
+    expect(sent[0]?.context).toBe(contextOf(300))
+  })
+
+  test('success: a job without a state sends no output, as a compaction does', async () => {
+    const sent = await sentOf()
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.results).toEqual(
+      Array(3).fill('ok, 600 characters, not shown'),
+    )
+    expect(sent[0]?.context).toBe(contextOf(0))
+    expect(await sentOf({ resultHead: 0 })).toEqual(sent)
   })
 })

@@ -72,6 +72,7 @@ import {
   estimatedTokensOf,
   goalOf,
   pairCalls,
+  RESULT_HEAD_MAX,
   stateWithin,
 } from '../mods/decision-compaction/hooks/state'
 import { bytesOf } from '../mods/decision-compaction/hooks/systemone'
@@ -84,6 +85,10 @@ export const USAGE = `usage: bun scripts/decision-compaction-bench.ts [flags]
   --repeat <n>             compactions per route and scenario (default 1)
   --questions <name>       the wording asked in (default current, the mod's own):
                            ${WORDINGS.map(wording => wording.name).join(', ')}
+  --state none|head:<n>    what the state shows of each call's output: nothing
+                           (none, the default, the mod's own) or its first n
+                           characters, n from 1 to ${RESULT_HEAD_MAX} (head:<n>, only with
+                           --questions current)
   --dry-run                build each route's first request and send nothing
   --out <path>             also write a JSON record of every run (not with --dry-run)
   --openrouter-catalog static|live|off
@@ -110,6 +115,11 @@ export type Flags = {
    * asked in; `current` is the mod's own.
    */
   questions: string
+  /**
+   * What the state shows of each call's output: `none`, as a compaction
+   * sends it, or `head:<n>`, its first n characters.
+   */
+  state: string
   dryRun: boolean
   out?: string
   catalog: CatalogMode
@@ -121,6 +131,29 @@ export type Flags = {
  * exits 2.
  */
 export class UsageError extends Error {}
+
+/**
+ * The characters of each output a `--state` value shows.
+ *
+ * @param state `none` or `head:<n>`
+ * @returns 0 for `none`, n for `head:<n>` with n from 1 to
+ * `RESULT_HEAD_MAX`, undefined for anything else
+ */
+export function resultHeadOf(state: string): number | undefined {
+  if (state === 'none') {
+    return 0
+  }
+
+  const count = /^head:(\d+)$/.exec(state)?.[1]
+  const head = Number(count)
+
+  return count !== undefined &&
+    Number.isSafeInteger(head) &&
+    head >= 1 &&
+    head <= RESULT_HEAD_MAX
+    ? head
+    : undefined
+}
 
 /**
  * What a dry run's `fetch` throws, before anything reaches a network.
@@ -143,6 +176,7 @@ export function parseArgs(argv: readonly string[]): Flags {
     scenarios: [],
     repeat: 1,
     questions: 'current',
+    state: 'none',
     dryRun: false,
     catalog: 'static',
     help: false,
@@ -226,6 +260,19 @@ export function parseArgs(argv: readonly string[]): Flags {
         flags.questions = value
         break
       }
+      case '--state': {
+        const value = valueAfter(index++, arg)
+
+        if (resultHeadOf(value) === undefined) {
+          throw new UsageError(
+            `--state ${value} is neither none nor head:<n> with n a whole ` +
+              `number from 1 to ${RESULT_HEAD_MAX}`,
+          )
+        }
+
+        flags.state = value
+        break
+      }
       case '--dry-run':
         flags.dryRun = true
         break
@@ -259,6 +306,13 @@ export function parseArgs(argv: readonly string[]): Flags {
 
   if (flags.dryRun && flags.out !== undefined) {
     throw new UsageError('--out records real runs; a dry run has none')
+  }
+
+  if (flags.state !== 'none' && flags.questions !== 'current') {
+    throw new UsageError(
+      `--state ${flags.state} needs --questions current: the other ` +
+        'wordings describe a state without result heads',
+    )
   }
 
   return flags
@@ -439,7 +493,8 @@ function wordingNamed(questions: string): Wording {
 /**
  * One compaction of a scenario over one route, with only that provider's
  * credential. A wording other than `current` goes on the job, so `run()`
- * asks in it; with `current` the job is the one a compaction would get.
+ * asks in it, and so do result heads; with `current` and no heads the job
+ * is the one a compaction would get.
  *
  * @param scenario the conversation
  * @param route the provider and the model
@@ -447,6 +502,7 @@ function wordingNamed(questions: string): Wording {
  * @param credentials every credential resolved
  * @param ports the engine's ports
  * @param questions the name of the wording to ask in
+ * @param resultHead the characters of each output the state shows
  * @returns the job for `run()`
  */
 export function jobOf(
@@ -456,6 +512,7 @@ export function jobOf(
   credentials: Credentials,
   ports: Ports,
   questions = 'current',
+  resultHead = 0,
 ): Job {
   const job: Job = {
     messages: scenario.messages,
@@ -466,6 +523,10 @@ export function jobOf(
 
   if (questions !== 'current') {
     job.wording = wordingNamed(questions)
+  }
+
+  if (resultHead > 0) {
+    job.state = { resultHead }
   }
 
   return job
@@ -494,6 +555,11 @@ export type BenchDeps = {
    * absent.
    */
   questions?: string
+  /**
+   * The characters of each output every compaction's state shows; none
+   * when absent.
+   */
+  resultHead?: number
 }
 
 /**
@@ -547,6 +613,7 @@ export async function benchOf(
           deps.credentials,
           ports,
           deps.questions,
+          deps.resultHead,
         )
         const t0 = deps.now()
         let ran: Run
@@ -708,8 +775,12 @@ export async function dryRunOf(
     }
 
     const preserve = configFor(route, override).preserveRecentMessages
+    const questions = deps.questions ?? 'current'
     // Framed with the context the compactions asked in, so that a context
-    // of another length is not counted as a cut.
+    // of another length is not counted as a cut, and with the heads they
+    // showed. The mod's own wording is left to the mod, whose context
+    // follows the heads; another wording's context is passed as the job
+    // passes it.
     const whole = stateWithin(
       scenario.messages,
       pairCalls(scenario.messages, preserve),
@@ -718,7 +789,10 @@ export async function dryRunOf(
         preserveRecentMessages: preserve,
         goal: goalOf(scenario.messages),
         wire: wireOf(route),
-        context: wordingNamed(deps.questions ?? 'current').context,
+        resultHead: deps.resultHead ?? 0,
+        ...(questions === 'current'
+          ? {}
+          : { context: wordingNamed(questions).context }),
       },
     )
     const bytes = bytesOf(JSON.stringify(whole.state))
@@ -1035,6 +1109,7 @@ export async function main(
       },
       stopped: () => interrupted,
       questions: flags.questions,
+      resultHead: resultHeadOf(flags.state) ?? 0,
     }
     const driven = routes.filter(planned => planned.skip === undefined)
 
@@ -1111,6 +1186,15 @@ export async function main(
         `The questions and the state's context were the ${flags.questions} ` +
           `wording (${wordingNamed(flags.questions).note}), not the mod's ` +
           'own.',
+      )
+    }
+
+    if (flags.state !== 'none') {
+      say(
+        `The state showed up to the first ${resultHeadOf(flags.state)} ` +
+          `characters of each call's output (--state ${flags.state}) ` +
+          "unless its budget dropped them (stage 'result heads dropped'); " +
+          'a compaction shows none.',
       )
     }
 

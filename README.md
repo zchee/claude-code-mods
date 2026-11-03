@@ -51,7 +51,8 @@ installed through Claude Code.
 
 Requirements: [pnpm](https://pnpm.io) 12.9.1 (the `packageManager` field;
 Corepack or pnpm itself downloads it), Claude Code 2.1.292 or later on
-`PATH`, and [Bun](https://bun.sh) only for the live smoke script.
+`PATH`, and [Bun](https://bun.sh) only for the live smoke script and the
+benchmark.
 
 ```sh
 pnpm install
@@ -66,6 +67,7 @@ pnpm run check   # validate + typecheck + test, every mod
 | `pnpm run types:update` | After a Claude Code upgrade: loads every mod so the installed version writes fresh declarations, runs `types:sync`, and updates the version in this README. |
 | `pnpm run types:sync` | Only the copy step: refreshes `mods/types` from the declarations a mod already loaded by the installed Claude Code holds. |
 | `pnpm run live:decision-compaction` | Sends one synthetic request to every decision provider whose key is in the environment. Prints no secret. |
+| `pnpm run bench:decision-compaction` | Runs invented conversations through every decision model whose key is in the environment, one compaction at a time, and compares each one's decisions with labelled answers; `--dry-run` sends nothing. Prints no secret. |
 
 `scripts/each-mod.bash` runs a command once per folder under `mods/` that
 has a `.claude-plugin/plugin.json`, and stops at the first failure.
@@ -86,10 +88,12 @@ and commit the new snapshot with whatever it breaks.
 mods/<mod>/.claude-plugin/        plugin.json (manifest, options schema)
 mods/<mod>/hooks/                 hooks.json and the TypeScript modules
 mods/<mod>/tests/                 claude plugin test suites
+mods/<mod>/bench/                 a mod's benchmark corpus and metrics
 mods/types/                       plugin API declarations (snapshot)
 mods/tsconfig.json                one tsc project over every mod
 scripts/                          each-mod.bash, sync-types.bash,
-                                  update-types.bash, live smoke
+                                  update-types.bash, live smoke,
+                                  decision-compaction benchmark
 docs/                             what a mod can extend (en, ja)
 ```
 

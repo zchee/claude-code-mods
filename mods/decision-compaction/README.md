@@ -49,6 +49,7 @@ without. What you and the assistant wrote stays word for word.
 - [`providerDecision`](#providerdecision)
 - [What a compaction reports](#what-a-compaction-reports)
 - [Development](#development)
+  - [Benchmark](#benchmark)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
@@ -623,6 +624,197 @@ pnpm run live:decision-compaction
 It prints one verdict line per provider and no secret, and exits non-zero
 when any provider it called failed. Nothing from a real conversation is
 sent.
+
+### Benchmark
+
+The benchmark runs the conversations in `bench/corpus.ts` through every
+model whose key is in the environment, and compares what each one decides
+with the actions the corpus labels as right for every call:
+
+```sh
+pnpm run bench:decision-compaction --dry-run
+pnpm run bench:decision-compaction --provider cloudflare --model clef-flash --scenario fix-test
+pnpm run bench:decision-compaction --out /tmp/bench.json
+```
+
+The conversations are invented by hand; nothing from a real conversation is
+sent. Each compaction goes through the mod's own `run()`, with
+`providerDecision` off so that it stays on one route and
+`preserveRecentMessages` at 6. Compactions run one at a time, so the time
+measured is that compaction's alone. A route whose key is unset prints one
+`skip` line, as the smoke script does.
+
+Before the first request goes out, a run prints how many compactions it
+plans (`planned: N compactions (R routes x S scenarios x n repeats)`) and
+the first request of each, as a dry run shows them below, so the spend is
+seen before it is incurred.
+
+It prints one table per scenario and one summary per route. A scenario's
+table gives, per route, whether the compaction succeeded, its requests and
+time, the `stage` the state was fitted at, the state's tokens, whether the
+byte cap the route asks for held (`asked bytes held`, `-` for a route
+without one), the reduction, the calls kept, cut and dropped, the share of
+calls whose action the labels accept, the harmful drops (a call the labels
+say to keep that was cut or dropped), the tokens and cost the provider
+reported, and the release a model answered as. The summary gives the same
+per route across its runs, with the distinct `stages` joined by `/`. After
+the summary come the calls on which every route that ran them disagreed
+with the label, one line each with every route's action (or `no call
+disputed by every route`): a label every model contradicts is more likely
+wrong than the models, and is to be checked by hand. Every line, and every
+file written with `--out`, passes through the mod's redaction with every
+resolved credential, an error's included. The JSON holds ids, actions,
+probabilities and figures, never a conversation's text or a request.
+
+The figures compare routes as the mod drives them, not models on the same
+input: each route has its own question cap, wire format, byte cap and
+budgets, and a route that had to cut the state may disagree with the labels
+for that reason alone. The `stage` column tells the two apart.
+
+| Flag | What it does |
+| --- | --- |
+| `--provider <name>` | Only this provider; repeatable. |
+| `--model <name>` | Only this model, of the one `--provider` given. Any id is accepted. |
+| `--scenario <id>` | Only this scenario; repeatable. |
+| `--repeat <n>` | Compactions per route and scenario (1 by default); the summary then gives medians and how often the actions agreed across repeats. |
+| `--dry-run` | Builds each route's first request through the mod and sends nothing. |
+| `--openrouter-catalog static\|live\|off` | The OpenRouter-only models below: the table in `bench/openrouter-catalog.ts` (`static`, the default), OpenRouter's listing fetched now (`live`, which prints the ids the table lacks and the ones the listing dropped), or none (`off`). |
+| `--out <path>` | Also writes a JSON record of every run. Nothing is written without it. |
+
+A dry run calls `run()` with a `fetch` that throws before anything leaves
+the process, and prints, per route and scenario, the first request as it
+would go out: its bytes, the state's bytes and estimated tokens, the
+questions in it, whether the state is cut (`cut` is `yes` when the state's
+bytes are below those of the whole state, `no` when it is the whole, `-`
+when no request was caught, because the route failed first or every call
+was pinned), and the budget override when one applies. The batch count and
+the `stage` are not known before a request is sent: `run()` fits the state
+and batches the questions internally, and the dry run stops it at the first
+request. The dry run does not print them; the real run's tables do. With
+`--openrouter-catalog live` the listing is the one request a dry run makes.
+
+The script exits 1 when any compaction or the bench itself failed, 2 on a
+mistake in the command line, 130 after an interrupt (Ctrl-C), and 0
+otherwise. An interrupt gives up the compaction under way and starts no
+other; a second one ends the process at once. A model that cannot answer the mod's
+questions is a `FAIL` row with the redacted reason, and the run goes on.
+
+#### Models only OpenRouter reaches
+
+OpenRouter lists 33 models whose output is a decision
+(`GET https://openrouter.ai/api/v1/models?output_modalities=decisions`,
+fetched on 2026-11-03 at 08:27 JST). The TypeSafe, Cloudflare, Perplexity
+and OpenAI ones the mod reaches directly; the rest run as models of the
+`openrouter` route, whose request builder takes any id as written:
+
+| Vendor | Model ids | Context (tokens) | Price (per million input) |
+| --- | --- | --- | --- |
+| Baseten | `baseten/joey-1`, `baseten/elephant-1`, `baseten/mammoth-1` | 16,384 | $0.01, $0.035, $0.10 |
+| Inception | `inception/mercury-decide` | 65,536 | $0.02 |
+| Jared Palmer | `jaredpalmer/kev-4b` | 8,192 | $0.042 |
+| Liquid AI | `liquid/d1`, `liquid/d1.1`, `liquid/d1-ultra` | 65,536; 32,768 (ultra) | $0.02; $0.042 (ultra) |
+| Microsoft | `microsoft/microsoft-decision-1` | 32,768 | $0.042 |
+| Nace AI | `nace-ai/drex-v1.5`, `nace-ai/drex-v2.0`, `nace-ai/drex-max` | 131,072; 262,144 (max) | $0.04, $0.06, $0.06 |
+| Respan | `respan/span-01`, `respan/span-01-lite`, `respan/span-01-lite:free`, `respan/span-02` | not stated for span-01 and lite; 131,072 for span-02 | $0.02, $0, $0, $0.01 |
+| ScaleDown | `scaledown/classify-1` | 1,000,000 | $0.04 |
+| Together | `togethercomputer/tev1-4b-experimental` | 32,768 | $0.042 |
+| Upstage | `upstage/solar-decide`, `upstage/solar-decide-flash` | 524,288 | $0.05, $0.05 |
+
+The `~liquid/d1-latest` and `~liquid/d1-ultra-latest` aliases are not run
+twice; the release a model answered as is in the report. The mod holds a
+model it does not know to a 32,000-token window, so a model whose window is
+smaller (Baseten's, `kev-4b`) runs with `maxStateTokens` and
+`maxRequestTokens` set to its window, and every other one runs at the same
+27,200-token state cap as Jev through OpenRouter. Jev through OpenRouter is
+also held to the byte cap it asks for, so on the `large` scenario it sees a
+smaller state than those models at the same token cap (8,340 estimated
+tokens against 23,387 in the table below); the report's caveat says so. A
+model that answers in another shape than System One's fails as a row, not
+as a crash.
+
+#### Spend
+
+Measured on the first full run, 2026-11-03 09:43 to 09:48 JST (times from
+`date`): 32 routes, 6 scenarios, one repeat, 192 compactions in under five
+minutes. The providers that report a count counted 902,043 input tokens
+together; the OpenRouter routes, the only ones that report a price, cost
+$0.0301 together. The estimate the plan started from (under 8 million
+billed tokens, under $1.50) was an upper bound by a wide margin: a
+compaction sends far fewer requests than the 16 it may, and most routes
+take the whole state in one. `perplexity` counted 21,886 tokens over its
+six compactions, not the 1.2 million the state-times-questions rule gives
+for a 200,000-token state, because the largest scenario's state is 9,884
+tokens there.
+
+#### What the first run found
+
+The run is only as good as its labels and its corpus, and the first run
+says more about those than about the models. Every mature route (TypeSafe
+Jev 1.13 and 1.14, Clef, Clef-flash, Clef-omni, Jev through OpenRouter,
+GPT-6 Luna, pplx-decider) answered a probability near zero for both
+questions on nearly every call (median 0.01 to 0.16 for the call, 0.00 to
+0.10 for the result) and so dropped everything: 0 kept, 1 to 8 cut, 85 to
+93 dropped of 93 judged calls, agreement 61% at every threshold from 0.3 to
+0.7, 13 harmful drops. 61% is the share of labels that allow `drop`; the
+13 harmful drops are the calls labelled `keep` alone, among them every
+call of `all-needed`, whose newest prompt depends on all of them. The
+routes that differ (Baseten joey-1 keeps 85 of 93; Liquid d1 and d1.1 keep
+14 to 22; Codiv OpenJev cuts 25) are the ones whose answers vary with the
+call. Before the agreement figures are read as model quality, the mod's two
+questions and the state it sends (a call's result is a status and a length,
+never its text) need to be checked against a conversation where the right
+answer is known to be `keep`, and the labels revised where the mod's
+notion of "needed to carry on with the goal" differs from the labeller's.
+The `disputed` diagnostic listed nothing, because one route that keeps
+everything agrees with every `keep` label.
+
+Of the twenty OpenRouter-only models, eleven answered the mod's requests
+and nine did not, on 2026-11-03:
+
+| Model | Result |
+| --- | --- |
+| `respan/span-01`, `span-01-lite`, `span-01-lite:free` | HTTP 400 on every scenario: Respan takes a state that is a string or `{input, output}` messages, not System One's object |
+| `scaledown/classify-1` | HTTP 400 on every scenario: ScaleDown takes `{text, document, document_mime_type}` |
+| `nace-ai/drex-max`, `drex-v2.0` | HTTP 422 on `exploration` and `large`: at most 16 questions a request |
+| `togethercomputer/tev1-4b-experimental` | HTTP 400 on the same two: at most 32 questions a request |
+| `upstage/solar-decide` | the same two not answered within the 30-second deadline (median 16 seconds on the others) |
+| `upstage/solar-decide-flash`, `respan/span-02` | the same two refused by the mod: the reply counted 87,000 to 1,173,565 input tokens, so the state was cut at the 32,000-token window the mod holds an unknown model to |
+
+So the four Respan and ScaleDown ids are not System One endpoints for this
+mod's purpose, and the Nace, Together and Upstage models need a question
+cap of their own (16, 32, and fewer than 40) that `limitsOf` does not know;
+until the mod carries per-model limits for OpenRouter, those routes answer
+the four small scenarios only. `decisions-api-dev` and `decisionapi-net`
+answered HTTP 402 (no credits on the account used) and measured nothing.
+
+The whole-state dry run of 08:56 JST the same day, which sent nothing,
+measured the state in the first request of the `large` scenario on each
+route. Whole, that state is 80,888 bytes, about 23,400 estimated tokens. A
+route's state is cut when it is smaller than that:
+
+| Route | State bytes | Estimated tokens | Questions | Cut |
+| --- | --- | --- | --- | --- |
+| `typesafe` (both models) | 80,888 | 23,387 | 112 | no |
+| `openrouter` Jev | 20,351 | 8,340 | 32 | yes |
+| `cloudflare` `clef`, `clef-omni` | 80,888 | 23,387 | 64 | no |
+| `cloudflare` `clef-flash` | 42,551 | 13,907 | 64 | yes |
+| `codiv` | 80,888 | 23,387 | 100 | no |
+| `perplexity` | 26,456 | 9,884 | 62 | yes |
+| `decisions-api-dev`, `decisionapi-net` | 25,901 | 9,741 | 8 | yes |
+| `openai` | 80,888 | 23,387 | 112 | no |
+| OpenRouter-only, Baseten | 43,661 | 14,187 | 32 | yes |
+| OpenRouter-only, `kev-4b` | 13,526 | 6,010 | 32 | yes |
+| OpenRouter-only, every other model | 80,888 | 23,387 | 58 | no |
+
+A dry run sees only the first request of a compaction; the request count
+and the totals above come from the real run.
+
+The runner's own tests use stubs for every `fetch` and never reach a
+network:
+
+```sh
+bun test scripts/decision-compaction-bench.test.ts
+```
 
 A hot reload of the mod while a compaction is running cancels the mod's
 pending waits, the deadline's timer among them, so that compaction's

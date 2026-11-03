@@ -20,6 +20,7 @@
   "author": "Koichi Shiraishi <zchee.io@gmail.com>",
   "type": "module",
   "scripts": {
+    "bench:decision-compaction": "bun scripts/decision-compaction-bench.ts",
     "check": "pnpm run validate && pnpm run typecheck && pnpm run test",
     "live:decision-compaction": "bun scripts/decision-compaction-live.ts",
     "test": "bash scripts/each-mod.bash claude plugin test",

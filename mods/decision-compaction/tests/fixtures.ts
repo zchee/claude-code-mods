@@ -10,8 +10,11 @@ import type {
 import { mock } from 'claude-code/testing'
 import type { MockClock, Plugin } from 'claude-code/testing'
 
+import { answering, calling, said, withOutcomes } from '../bench/corpus'
 import type { ProviderName } from '../hooks/providers'
 import type { Call } from '../hooks/state'
+
+export { answering, calling, said, withOutcomes } from '../bench/corpus'
 
 /**
  * Obvious fakes: nothing here is, or looks like, a real credential.
@@ -762,89 +765,6 @@ export const PASSING_OVER: Plugin = {
       ),
     )
   },
-}
-
-/**
- * A message the person typed.
- */
-export function said(text: string, handle?: string): SessionMessage {
-  return handle === undefined
-    ? { role: 'user', text, toolUses: [] }
-    : { role: 'user', text, toolUses: [], handle }
-}
-
-/**
- * An assistant message making the given calls: `[tool_use_id, tool, input]`.
- */
-export function calling(
-  text: string,
-  uses: readonly (readonly [string, string, Record<string, unknown>])[],
-  handle?: string,
-): SessionMessage {
-  const message: SessionMessage = {
-    role: 'assistant',
-    text,
-    toolUses: uses.map(([id, tool, input]) => ({
-      tool_use_id: id,
-      tool,
-      input,
-    })),
-  }
-
-  if (handle !== undefined) {
-    message.handle = handle
-  }
-
-  return message
-}
-
-/**
- * A user message answering calls: `[tool_use_id, text, isError?]`.
- */
-export function answering(
-  results: readonly (readonly [string, string, boolean?])[],
-  handle?: string,
-): SessionMessage {
-  const message: SessionMessage = {
-    role: 'user',
-    text: '',
-    toolUses: [],
-    toolResults: results.map(([id, text, isError]) => ({
-      tool_use_id: id,
-      text,
-      isError: isError === true,
-    })),
-  }
-
-  if (handle !== undefined) {
-    message.handle = handle
-  }
-
-  return message
-}
-
-/**
- * Copies every result onto the tool use it answers, as a transcript has it
- * once the call is answered.
- */
-export function withOutcomes(messages: SessionMessage[]): SessionMessage[] {
-  for (const message of messages) {
-    for (const result of message.toolResults ?? []) {
-      for (const other of messages) {
-        for (const use of other.toolUses) {
-          if (use.tool_use_id === result.tool_use_id) {
-            use.text = result.text
-
-            if (result.isError) {
-              use.isError = true
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return messages
 }
 
 /**

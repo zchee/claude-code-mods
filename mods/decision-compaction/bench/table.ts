@@ -269,6 +269,11 @@ export function summaryTableOf(summaries: readonly RouteSummary[]): string {
       cell: summary => (summary.suspect ? 'suspect' : NONE),
     },
     {
+      title: 'degenerate',
+      isFigure: false,
+      cell: summary => summary.degenerate ?? NONE,
+    },
+    {
       title: 'answered as',
       isFigure: false,
       cell: summary => modelsOrNone(summary.models),
@@ -279,15 +284,16 @@ export function summaryTableOf(summaries: readonly RouteSummary[]): string {
 }
 
 /**
- * The calls every route disagreed with the label on, one line each, so a
- * label that is more likely wrong than every model is checked by hand.
+ * The calls most routes disagreed with the label on, one line each with
+ * the routes that agreed, so a label that is more likely wrong than most
+ * models is checked by hand.
  *
  * @param disputed the calls, as `disputedOf` lists them
  * @returns the lines, or one line saying that no call is disputed
  */
 export function disputedLinesOf(disputed: readonly Disputed[]): string {
   if (disputed.length === 0) {
-    return 'no call disputed by every route'
+    return 'no call disputed by most routes'
   }
 
   return disputed
@@ -297,7 +303,9 @@ export function disputedLinesOf(disputed: readonly Disputed[]): string {
         `${call.expected.join('/')}, answered ` +
         Object.entries(call.actions)
           .map(([route, actions]) => `${actions} by ${route}`)
-          .join(', '),
+          .join(', ') +
+        '; agreed by: ' +
+        (call.agreeing.length === 0 ? 'none' : call.agreeing.join(', ')),
     )
     .join('\n')
 }

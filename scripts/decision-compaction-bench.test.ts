@@ -12,6 +12,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   answering,
   calling,
+  PRESERVE_RECENT,
   said,
   SCENARIOS,
   scenarioOf,
@@ -26,7 +27,11 @@ import {
   budgetOverrideOf,
   OPENROUTER_CATALOG,
 } from '../mods/decision-compaction/bench/openrouter-catalog'
+import { WORDINGS, wordingOf } from '../mods/decision-compaction/bench/wordings'
+import type { Wording } from '../mods/decision-compaction/bench/wordings'
+import { questionsWith } from '../mods/decision-compaction/hooks/compact'
 import { run } from '../mods/decision-compaction/hooks/run'
+import { pairCalls } from '../mods/decision-compaction/hooks/state'
 import type { Job, Result } from '../mods/decision-compaction/hooks/run'
 import { modelsOf, PROVIDERS } from '../mods/decision-compaction/hooks/providers'
 import type {
@@ -50,6 +55,7 @@ import {
   parseArgs,
   portsOf,
   routesOf,
+  USAGE,
   UsageError,
 } from './decision-compaction-bench'
 import type {
@@ -169,10 +175,16 @@ const DEFAULT_FLAGS: Flags = {
   providers: [],
   scenarios: [],
   repeat: 1,
+  questions: 'current',
   dryRun: false,
   catalog: 'static',
   help: false,
 }
+
+/**
+ * Every wording's name, in order, as a usage error lists them.
+ */
+const WORDING_NAMES = 'current, legacy, call-need, result-exact'
 
 describe('parseArgs', () => {
   test('success: no flags gives every provider, scenario, one repeat', () => {
@@ -229,6 +241,25 @@ describe('parseArgs', () => {
     expect(parseArgs(['--help']).help).toBe(true)
   })
 
+  test('success: --questions takes every wording by name, the last one given winning', () => {
+    for (const wording of WORDINGS) {
+      expect(parseArgs(['--questions', wording.name])).toEqual({
+        ...DEFAULT_FLAGS,
+        questions: wording.name,
+      })
+    }
+
+    expect(
+      parseArgs(['--questions', 'legacy', '--questions', 'call-need'])
+        .questions,
+    ).toBe('call-need')
+  })
+
+  test('success: the usage lists every wording', () => {
+    expect(USAGE).toContain(`--questions <name>`)
+    expect(USAGE).toContain(WORDING_NAMES)
+  })
+
   const mistakes: Record<string, { argv: string[]; says: RegExp }> = {
     'error: --repeat 0': { argv: ['--repeat', '0'], says: /--repeat 0/ },
     'error: --repeat negative': {
@@ -271,6 +302,14 @@ describe('parseArgs', () => {
         'jev-latest',
       ],
       says: /exactly one --provider/,
+    },
+    'error: unknown wording': {
+      argv: ['--questions', 'plain'],
+      says: new RegExp(`^--questions plain is none of ${WORDING_NAMES}$`),
+    },
+    'error: --questions without a value': {
+      argv: ['--questions', '--dry-run'],
+      says: /--questions needs a value/,
     },
     'error: --out with --dry-run': {
       argv: ['--dry-run', '--out', '/tmp/x.json'],
@@ -493,6 +532,40 @@ describe('jobOf', () => {
     expect(job.config.maxStateTokens).toBeUndefined()
     expect(job.config.maxRequestTokens).toBeUndefined()
     expect(job.credentials).toEqual({ typesafeApiKey: 'test-typesafe-key' })
+    expect('wording' in job, 'no wording: the job a compaction gets').toBe(
+      false,
+    )
+  })
+
+  test('success: a wording other than current goes on the job, current does not', () => {
+    const jobIn = (questions: string) =>
+      jobOf(
+        smallScenario(),
+        { provider: 'typesafe', model: 'jev-latest' },
+        undefined,
+        { typesafeApiKey: 'test-typesafe-key' },
+        portsOf(new AbortController()),
+        questions,
+      )
+
+    expect('wording' in jobIn('current')).toBe(false)
+
+    for (const wording of WORDINGS.slice(1)) {
+      expect(jobIn(wording.name).wording).toBe(wording)
+    }
+  })
+
+  test('error: a name that is no wording is refused', () => {
+    expect(() =>
+      jobOf(
+        smallScenario(),
+        { provider: 'typesafe', model: 'jev-latest' },
+        undefined,
+        {},
+        portsOf(new AbortController()),
+        'plain',
+      ),
+    ).toThrow('no wording is named plain')
   })
 })
 
@@ -828,6 +901,82 @@ describe('benchOf', () => {
   })
 })
 
+describe('the wording a bench asks in', () => {
+  test("success: the real run() sends the wording's questions and context", async () => {
+    const bodies: string[] = []
+    const fetchImpl: FetchImpl = async (url, init) => {
+      bodies.push(String(init.body))
+
+      return answeringFetch(0.9, 'typesafe/jev-1.14')(url, init)
+    }
+    const scenario = smallScenario()
+    const wording = wordingOf('call-need') as Wording
+    const runs = await benchOf(
+      [{ route: { provider: 'openrouter', model: '~typesafe/jev-latest' } }],
+      [scenario],
+      1,
+      {
+        run,
+        now: () => 0,
+        log: () => {},
+        credentials: OPENROUTER_ONLY,
+        fetchFor: () => fetchImpl,
+        questions: wording.name,
+      },
+    )
+    const sent = bodies.map(
+      body =>
+        JSON.parse(body) as {
+          state: { context: string }
+          questions: Record<string, { instructions: string }>
+        },
+    )
+
+    const judged = pairCalls(scenario.messages, PRESERVE_RECENT).filter(
+      call => !call.isPinned,
+    )
+
+    expect(runs.map(ran => ran.failure)).toEqual([undefined])
+    expect(judged.length, 'some calls are asked about').toBeGreaterThan(0)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.state.context).toBe(wording.context)
+    expect(sent[0]?.questions).toEqual(
+      Object.fromEntries(
+        judged.flatMap(call => Object.entries(questionsWith(call, wording))),
+      ),
+    )
+    expect(sent[0]?.questions.result_t1?.instructions).toStartWith(
+      'Does the complete output of tool call t1 (Read)',
+    )
+  })
+
+  test('success: a dry run in a wording with another context is not counted as a cut', async () => {
+    const counter = countGlobalFetch()
+    const fixTest = scenarioOf('fix-test') as Scenario
+    const deps = {
+      run,
+      now: () => 0,
+      log: () => {},
+      credentials: { typesafeApiKey: 'test-typesafe-key' },
+    }
+    const routes: Planned[] = [
+      { route: { provider: 'typesafe', model: 'jev-latest' } },
+    ]
+
+    for (const wording of WORDINGS) {
+      const rows = await dryRunOf(routes, [fixTest], {
+        ...deps,
+        questions: wording.name,
+      })
+
+      expect(rows.map(row => row.failure), wording.name).toEqual([undefined])
+      expect(rows.map(row => row.cut), wording.name).toEqual([false])
+    }
+
+    expect(counter.entries).toBe(0)
+  })
+})
+
 describe('outDocumentOf', () => {
   test('success: ids and figures only, no text, no request, no key', async () => {
     const scenario = smallScenario()
@@ -993,7 +1142,7 @@ describe('dry run', () => {
 
   test('success: cut says which route sends less than the whole state, through the real run()', async () => {
     const counter = countGlobalFetch()
-    const large = scenarioOf('large')
+    const large = scenarioOf('prose-60')
     const fixTest = scenarioOf('fix-test')
 
     expect(large).toBeDefined()
@@ -1031,9 +1180,9 @@ describe('dry run', () => {
     expect(counter.entries).toBe(0)
     expect(rows).toHaveLength(6)
     expect(rows.map(row => row.failure)).toEqual(Array(6).fill(undefined))
-    expect(cutOf('cloudflare/clef-flash', 'large')).toBe(true)
-    expect(cutOf('typesafe/jev-latest', 'large')).toBe(false)
-    expect(cutOf('openai/gpt-6-luna', 'large')).toBe(false)
+    expect(cutOf('cloudflare/clef-flash', 'prose-60')).toBe(true)
+    expect(cutOf('typesafe/jev-latest', 'prose-60')).toBe(false)
+    expect(cutOf('openai/gpt-6-luna', 'prose-60')).toBe(false)
     expect(cutOf('cloudflare/clef-flash', 'fix-test')).toBe(false)
     expect(cutOf('typesafe/jev-latest', 'fix-test')).toBe(false)
     expect(cutOf('openai/gpt-6-luna', 'fix-test')).toBe(false)
@@ -1041,8 +1190,8 @@ describe('dry run', () => {
     const lines = dryTableOf(rows).split('\n')
 
     expect(lines[0]).toContain('| questions | cut | budget override')
-    expect(lines.find(line => line.startsWith('cloudflare/clef-flash | large |'))).toMatch(/ \| yes \| $/)
-    expect(lines.find(line => line.startsWith('typesafe/jev-latest | large |'))).toMatch(/ \| no \| $/)
+    expect(lines.find(line => line.startsWith('cloudflare/clef-flash | prose-60 |'))).toMatch(/ \| yes \| $/)
+    expect(lines.find(line => line.startsWith('typesafe/jev-latest | prose-60 |'))).toMatch(/ \| no \| $/)
     expect(lines.find(line => line.startsWith('typesafe/jev-latest | fix-test |'))).toMatch(/ \| no \| $/)
   })
 
@@ -1278,7 +1427,7 @@ describe('main', () => {
     const text = lines.join('\n')
     const summary = text.indexOf('route  ')
     const disputed = text.search(
-      /^(disputed |no call disputed by every route)/m,
+      /^(disputed |no call disputed by most routes)/m,
     )
     const caveat = text.indexOf('These figures compare routes')
 
@@ -1320,6 +1469,116 @@ describe('main', () => {
         (document as { records: unknown[] }).records,
         'two repeats of one route and one scenario',
       ).toHaveLength(2)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('success: --questions reaches every job, the plan and the caveat', async () => {
+    const lines: string[] = []
+    const jobs: Job[] = []
+    const asked: string[] = []
+    const status = await main(
+      [...ONE_ROUTE, '--questions', 'call-need'],
+      ioWith(lines, {
+        run: job => {
+          jobs.push(job)
+
+          return run(job)
+        },
+        fetch: async (url, init) => {
+          const { questions } = JSON.parse(String(init.body)) as {
+            questions: Record<string, { instructions: string }>
+          }
+
+          asked.push(
+            ...Object.values(questions).map(question => question.instructions),
+          )
+
+          return answeringFetch(0.9, 'typesafe/jev-1.14')(url, init)
+        },
+      }),
+    )
+    const wording = wordingOf('call-need') as Wording
+
+    expect(status).toBe(0)
+    expect(jobs, 'the dry run of the plan, then the real run').toHaveLength(2)
+    expect(jobs.map(job => job.wording)).toEqual([wording, wording])
+    expect(asked.length).toBeGreaterThan(0)
+    expect(
+      asked.filter(text => text.startsWith('Will the assistant need the fact')),
+      'one call question for every result question',
+    ).toHaveLength(asked.length / 2)
+    expect(lines).toContain(
+      'planned: 1 compaction (1 route x 1 scenario x 1 repeat) with the ' +
+        'questions call-need',
+    )
+    expect(lines.at(-1)).toBe(
+      "The questions and the state's context were the call-need wording " +
+        `(${wording.note}), not the mod's own.`,
+    )
+  })
+
+  test("success: without --questions the jobs carry no wording and nothing says one", async () => {
+    const lines: string[] = []
+    const jobs: Job[] = []
+    const status = await main(
+      ONE_ROUTE,
+      ioWith(lines, {
+        run: job => {
+          jobs.push(job)
+
+          return run(job)
+        },
+        fetch: answeringFetch(0.9, 'typesafe/jev-1.14'),
+      }),
+    )
+
+    expect(status).toBe(0)
+    expect(jobs.every(job => !('wording' in job))).toBe(true)
+    expect(lines).toContain(
+      'planned: 1 compaction (1 route x 1 scenario x 1 repeat)',
+    )
+    expect(lines.join('\n')).not.toContain('wording')
+  })
+
+  test('error: an unknown --questions exits 2 naming every wording', async () => {
+    const lines: string[] = []
+    let ran = 0
+    const status = await main(
+      [...ONE_ROUTE, '--questions', 'plain'],
+      ioWith(lines, {
+        run: async job => {
+          ran++
+
+          return run(job)
+        },
+      }),
+    )
+
+    expect(status).toBe(2)
+    expect(ran).toBe(0)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toStartWith(
+      `error: --questions plain is none of ${WORDING_NAMES}\n\nusage: `,
+    )
+  })
+
+  test('success: --out records the wording asked in', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'decision-compaction-bench-'))
+    const out = join(directory, 'bench.json')
+
+    try {
+      const status = await main(
+        [...ONE_ROUTE, '--questions', 'legacy', '--out', out],
+        ioWith([], { fetch: answeringFetch(0.9, 'typesafe/jev-1.14') }),
+      )
+      const document = JSON.parse(readFileSync(out, 'utf8')) as {
+        flags: Flags
+      }
+
+      expect(status).toBe(0)
+      expect(document.flags.questions).toBe('legacy')
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

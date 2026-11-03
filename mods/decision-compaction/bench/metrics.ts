@@ -288,6 +288,14 @@ export type RouteSummary = {
    * present but meaningless, which no reply check catches.
    */
   suspect: boolean
+  /**
+   * Set when the route kept none (`keeps nothing`) or all (`keeps
+   * everything`) of the calls it judged across its successful runs, by the
+   * actions the mod took at the configured threshold. A call that was cut
+   * is not kept, so a route that cuts every call keeps nothing. Absent when
+   * the route judged no call.
+   */
+  degenerate?: 'keeps nothing' | 'keeps everything'
   stages?: string[]
 }
 
@@ -411,6 +419,34 @@ function isSuspect(records: readonly RunRecord[]): boolean {
   )
 }
 
+/**
+ * Whether a route kept none or all of the calls it judged, over the
+ * successful runs that counted their actions.
+ */
+function degenerateOf(
+  ok: readonly RunRecord[],
+): RouteSummary['degenerate'] | undefined {
+  let judged = 0
+  let kept = 0
+
+  for (const record of ok) {
+    if (record.counts !== undefined) {
+      judged += record.judged
+      kept += record.counts.keep
+    }
+  }
+
+  if (judged === 0) {
+    return undefined
+  }
+
+  return kept === 0
+    ? 'keeps nothing'
+    : kept === judged
+      ? 'keeps everything'
+      : undefined
+}
+
 function summaryOf(records: readonly RunRecord[]): RouteSummary {
   const [first] = records as [RunRecord, ...RunRecord[]]
   const ok = records.filter(record => record.ok)
@@ -420,6 +456,11 @@ function summaryOf(records: readonly RunRecord[]): RouteSummary {
     runs: records.length,
     failed: records.length - ok.length,
     suspect: isSuspect(records),
+  }
+  const degenerate = degenerateOf(ok)
+
+  if (degenerate !== undefined) {
+    summary.degenerate = degenerate
   }
   const figures = {
     medianMs: medianOf(ok.map(record => record.ms)),
@@ -464,7 +505,7 @@ function summaryOf(records: readonly RunRecord[]): RouteSummary {
 }
 
 /**
- * A labelled call whose action no route that ran it accepted.
+ * A labelled call whose action most routes that ran it did not accept.
  */
 export type Disputed = {
   scenario: string
@@ -475,15 +516,23 @@ export type Disputed = {
    * of its repeats joined with `/` when they differ.
    */
   actions: Record<string, string>
+  /**
+   * The routes that agreed with the label in at least one repeat, by their
+   * label, in the order the records first name them.
+   */
+  agreeing: string[]
 }
 
 /**
- * The labelled calls on which every route that ran them disagrees with the
- * label. When every model judges a call the other way, the label is more
- * likely wrong than every model, and a wrong label lowers every route's
- * agreement alike; listing these calls lets the label be checked by hand
- * instead of being read as model noise. Only successful runs count, and a
- * route that agrees in any of its repeats keeps the call off the list.
+ * The labelled calls on which more than half of the routes that ran them
+ * disagree with the label. When most models judge a call the other way, the
+ * label is more likely wrong than they are, and a wrong label lowers every
+ * route's agreement alike; listing these calls, with the routes that did
+ * agree, lets the label be checked by hand instead of being read as model
+ * noise. A rule of every route would let one route that keeps everything
+ * hide every `keep` label. Only successful runs count, and a route agrees
+ * when it agrees in any of its repeats. Half or fewer is not a majority, so
+ * a call one of two routes disagrees with is not listed.
  *
  * @param records every run's record
  * @returns the disputed calls, by scenario in the order the records first
@@ -492,7 +541,11 @@ export type Disputed = {
 export function disputedOf(records: readonly RunRecord[]): Disputed[] {
   const byCall = new Map<
     string,
-    { disputed: Disputed; seen: Map<string, Action[]>; isAccepted: boolean }
+    {
+      disputed: Omit<Disputed, 'agreeing'>
+      seen: Map<string, Action[]>
+      agreeing: Set<string>
+    }
   >()
 
   for (const record of records) {
@@ -514,7 +567,7 @@ export function disputedOf(records: readonly RunRecord[]): Disputed[] {
           actions: {},
         },
         seen: new Map<string, Action[]>(),
-        isAccepted: false,
+        agreeing: new Set<string>(),
       }
       const actions = entry.seen.get(record.routeLabel) ?? []
 
@@ -523,18 +576,25 @@ export function disputedOf(records: readonly RunRecord[]): Disputed[] {
       }
 
       entry.seen.set(record.routeLabel, actions)
-      entry.isAccepted ||= call.expected.includes(call.action)
+
+      if (call.expected.includes(call.action)) {
+        entry.agreeing.add(record.routeLabel)
+      }
+
       byCall.set(key, entry)
     }
   }
 
   return [...byCall.values()]
-    .filter(entry => !entry.isAccepted)
-    .map(({ disputed, seen }) => ({
+    .filter(({ seen, agreeing }) => seen.size - agreeing.size > seen.size / 2)
+    .map(({ disputed, seen, agreeing }) => ({
       ...disputed,
       actions: Object.fromEntries(
         [...seen].map(([label, actions]) => [label, actions.join('/')]),
       ),
+      // In the order the routes were first seen on the call, not the order
+      // their agreeing repeat came in.
+      agreeing: [...seen.keys()].filter(label => agreeing.has(label)),
     }))
 }
 

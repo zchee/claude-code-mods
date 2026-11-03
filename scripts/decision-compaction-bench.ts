@@ -40,6 +40,11 @@ import {
   scenarioTableOf,
   summaryTableOf,
 } from '../mods/decision-compaction/bench/table'
+import {
+  WORDINGS,
+  wordingOf,
+} from '../mods/decision-compaction/bench/wordings'
+import type { Wording } from '../mods/decision-compaction/bench/wordings'
 import type { Ports } from '../mods/decision-compaction/hooks/ask'
 import { configOf } from '../mods/decision-compaction/hooks/config'
 import type { Config } from '../mods/decision-compaction/hooks/config'
@@ -77,6 +82,8 @@ export const USAGE = `usage: bun scripts/decision-compaction-bench.ts [flags]
   --model <name>           only this model; needs exactly one --provider
   --scenario <id>          only this scenario; repeatable
   --repeat <n>             compactions per route and scenario (default 1)
+  --questions <name>       the wording asked in (default current, the mod's own):
+                           ${WORDINGS.map(wording => wording.name).join(', ')}
   --dry-run                build each route's first request and send nothing
   --out <path>             also write a JSON record of every run (not with --dry-run)
   --openrouter-catalog static|live|off
@@ -98,6 +105,11 @@ export type Flags = {
   model?: string
   scenarios: string[]
   repeat: number
+  /**
+   * The name of the wording the questions and the state's context are
+   * asked in; `current` is the mod's own.
+   */
+  questions: string
   dryRun: boolean
   out?: string
   catalog: CatalogMode
@@ -130,6 +142,7 @@ export function parseArgs(argv: readonly string[]): Flags {
     providers: [],
     scenarios: [],
     repeat: 1,
+    questions: 'current',
     dryRun: false,
     catalog: 'static',
     help: false,
@@ -198,6 +211,19 @@ export function parseArgs(argv: readonly string[]): Flags {
         }
 
         flags.repeat = repeat
+        break
+      }
+      case '--questions': {
+        const value = valueAfter(index++, arg)
+
+        if (wordingOf(value) === undefined) {
+          throw new UsageError(
+            `--questions ${value} is none of ` +
+              WORDINGS.map(wording => wording.name).join(', '),
+          )
+        }
+
+        flags.questions = value
         break
       }
       case '--dry-run':
@@ -395,14 +421,32 @@ export function configFor(
 }
 
 /**
+ * The wording of a name the command line accepted.
+ *
+ * @param questions one of the `WORDINGS` names
+ * @returns the wording; throws for a name that is none of them
+ */
+function wordingNamed(questions: string): Wording {
+  const wording = wordingOf(questions)
+
+  if (wording === undefined) {
+    throw new Error(`no wording is named ${questions}`)
+  }
+
+  return wording
+}
+
+/**
  * One compaction of a scenario over one route, with only that provider's
- * credential.
+ * credential. A wording other than `current` goes on the job, so `run()`
+ * asks in it; with `current` the job is the one a compaction would get.
  *
  * @param scenario the conversation
  * @param route the provider and the model
  * @param override the budgets a catalogue model is held to, if any
  * @param credentials every credential resolved
  * @param ports the engine's ports
+ * @param questions the name of the wording to ask in
  * @returns the job for `run()`
  */
 export function jobOf(
@@ -411,13 +455,20 @@ export function jobOf(
   override: Planned['override'],
   credentials: Credentials,
   ports: Ports,
+  questions = 'current',
 ): Job {
-  return {
+  const job: Job = {
     messages: scenario.messages,
     config: configFor(route, override),
     credentials: credentialsFor([route.provider], credentials),
     ports,
   }
+
+  if (questions !== 'current') {
+    job.wording = wordingNamed(questions)
+  }
+
+  return job
 }
 
 export type BenchDeps = {
@@ -438,6 +489,11 @@ export type BenchDeps = {
    * True once the bench is to start no further compaction.
    */
   stopped?: () => boolean
+  /**
+   * The name of the wording every compaction asks in; `current` when
+   * absent.
+   */
+  questions?: string
 }
 
 /**
@@ -490,6 +546,7 @@ export async function benchOf(
           planned.override,
           deps.credentials,
           ports,
+          deps.questions,
         )
         const t0 = deps.now()
         let ran: Run
@@ -651,6 +708,8 @@ export async function dryRunOf(
     }
 
     const preserve = configFor(route, override).preserveRecentMessages
+    // Framed with the context the compactions asked in, so that a context
+    // of another length is not counted as a cut.
     const whole = stateWithin(
       scenario.messages,
       pairCalls(scenario.messages, preserve),
@@ -659,6 +718,7 @@ export async function dryRunOf(
         preserveRecentMessages: preserve,
         goal: goalOf(scenario.messages),
         wire: wireOf(route),
+        context: wordingNamed(deps.questions ?? 'current').context,
       },
     )
     const bytes = bytesOf(JSON.stringify(whole.state))
@@ -974,6 +1034,7 @@ export async function main(
         current = controller
       },
       stopped: () => interrupted,
+      questions: flags.questions,
     }
     const driven = routes.filter(planned => planned.skip === undefined)
 
@@ -996,12 +1057,14 @@ export async function main(
     }
 
     const compactions = driven.length * scenarios.length * flags.repeat
+    const isCurrent = flags.questions === 'current'
 
     say(
       `planned: ${countOf(compactions, 'compaction')} ` +
         `(${countOf(driven.length, 'route')} x ` +
         `${countOf(scenarios.length, 'scenario')} x ` +
-        `${countOf(flags.repeat, 'repeat')})`,
+        `${countOf(flags.repeat, 'repeat')})` +
+        (isCurrent ? '' : ` with the questions ${flags.questions}`),
     )
     say(dryTableOf(await dryRunOf(driven, scenarios, deps)))
     say('')
@@ -1042,6 +1105,14 @@ export async function main(
     say(disputedLinesOf(disputedOf(records)))
     say('')
     say(CAVEAT)
+
+    if (!isCurrent) {
+      say(
+        `The questions and the state's context were the ${flags.questions} ` +
+          `wording (${wordingNamed(flags.questions).note}), not the mod's ` +
+          'own.',
+      )
+    }
 
     if (flags.out !== undefined) {
       writeFileSync(

@@ -530,6 +530,79 @@ describe('summariesOf', () => {
       expect(summariesOf(records)[0]?.suspect).toBe(suspect)
     })
   }
+
+  /**
+   * The counts of a run that judged `keep + truncate + drop` calls.
+   */
+  const countsOf = (keep: number, truncate: number, drop: number) => ({
+    judged: keep + truncate + drop,
+    counts: { keep, truncate, drop, pinned: 1 },
+  })
+
+  const degenerates: Record<
+    string,
+    { records: RunRecord[]; degenerate?: 'keeps nothing' | 'keeps everything' }
+  > = {
+    'success: a route that cut or dropped every judged call keeps nothing': {
+      records: [
+        recordWith(countsOf(0, 2, 5)),
+        recordWith({ scenario: 'retry', ...countsOf(0, 0, 4) }),
+      ],
+      degenerate: 'keeps nothing',
+    },
+    'success: a route that cut every judged call keeps nothing': {
+      records: [recordWith(countsOf(0, 3, 0))],
+      degenerate: 'keeps nothing',
+    },
+    'success: a route that kept every judged call keeps everything': {
+      records: [
+        recordWith(countsOf(6, 0, 0)),
+        recordWith({ scenario: 'retry', ...countsOf(4, 0, 0) }),
+      ],
+      degenerate: 'keeps everything',
+    },
+    'success: one kept call among dropped ones is no mark': {
+      records: [
+        recordWith(countsOf(0, 0, 5)),
+        recordWith({ scenario: 'retry', ...countsOf(1, 0, 3) }),
+      ],
+    },
+    'success: one dropped call among kept ones is no mark': {
+      records: [
+        recordWith(countsOf(6, 0, 0)),
+        recordWith({ scenario: 'retry', ...countsOf(3, 0, 1) }),
+      ],
+    },
+    'error: a failed run has no say in the mark': {
+      records: [
+        recordWith(countsOf(0, 1, 4)),
+        failedWith({ scenario: 'retry', ...countsOf(3, 0, 0) }),
+      ],
+      degenerate: 'keeps nothing',
+    },
+    'success: a route that judged no call has no mark': {
+      records: [recordWith(countsOf(0, 0, 0))],
+    },
+    'error: a route whose every run failed has no mark': {
+      records: [failedWith(), failedWith({ repeat: 2 })],
+    },
+    'success: a run without counts is left out of the mark': {
+      records: [
+        recordWith(),
+        recordWith({ scenario: 'retry', ...countsOf(2, 0, 0) }),
+      ],
+      degenerate: 'keeps everything',
+    },
+  }
+
+  for (const [name, { records, degenerate }] of Object.entries(degenerates)) {
+    test(name, () => {
+      const [summary] = summariesOf(records)
+
+      expect(summary?.degenerate).toBe(degenerate)
+      expect('degenerate' in (summary ?? {})).toBe(degenerate !== undefined)
+    })
+  }
 })
 
 describe('scenarioTableOf', () => {
@@ -666,9 +739,9 @@ describe('summaryTableOf', () => {
     expect(summaries[0]?.medianMs).toBe((1234.4 + 1000) / 2)
     expect(summaryTableOf(summaries)).toBe(
       [
-        'route                runs  failed  median ms  stages  agreement  harmful  missed  reduction  requests  tokens       cost  consistency  suspect  answered as',
-        '-------------------  ----  ------  ---------  ------  ---------  -------  ------  ---------  --------  ------  ---------  -----------  -------  -----------',
-        'typesafe/jev-latest     2       0       1117  whole         50%        2       2        60%         2    9600  $0.000400         100%  -        jev-1.14',
+        'route                runs  failed  median ms  stages  agreement  harmful  missed  reduction  requests  tokens       cost  consistency  suspect  degenerate  answered as',
+        '-------------------  ----  ------  ---------  ------  ---------  -------  ------  ---------  --------  ------  ---------  -----------  -------  ----------  -----------',
+        'typesafe/jev-latest     2       0       1117  whole         50%        2       2        60%         2    9600  $0.000400         100%  -        -           jev-1.14',
       ].join('\n'),
     )
   })
@@ -698,11 +771,13 @@ describe('summaryTableOf', () => {
       '-',
       'suspect',
       '-',
+      '-',
     ])
     expect(lines[3]?.split(/ {2,}/)).toEqual([
       'cloudflare/clef-flash',
       '1',
       '1',
+      '-',
       '-',
       '-',
       '-',
@@ -728,6 +803,28 @@ describe('summaryTableOf', () => {
     ).split('\n')
 
     expect(lines[2]?.split(/ {2,}/)[4]).toBe('whole/inputs shortened')
+  })
+
+  test('success: a route that keeps nothing and one that keeps everything say so in the degenerate column', () => {
+    const OTHER: Route = { provider: 'cloudflare', model: 'clef' }
+    const lines = summaryTableOf(
+      summariesOf([
+        recordWith({
+          judged: 4,
+          counts: { keep: 0, truncate: 1, drop: 3, pinned: 0 },
+        }),
+        recordWith({
+          route: OTHER,
+          judged: 4,
+          counts: { keep: 4, truncate: 0, drop: 0, pinned: 0 },
+        }),
+      ]),
+    ).split('\n')
+    const column = lines[0]?.split(/ {2,}/).indexOf('degenerate') ?? -1
+
+    expect(column, 'the column follows suspect').toBe(14)
+    expect(lines[2]?.split(/ {2,}/)[column]).toBe('keeps nothing')
+    expect(lines[3]?.split(/ {2,}/)[column]).toBe('keeps everything')
   })
 })
 
@@ -758,7 +855,9 @@ describe('disputedOf', () => {
       ...over,
     })
 
-  test('success: a call every ok route answers against its label is listed', () => {
+  const ROUTE_C: Route = { provider: 'cloudflare', model: 'clef' }
+
+  test('success: a call every ok route answers against its label is listed, with no route agreeing', () => {
     const disputed = disputedOf([
       judgedBy(ROUTE, [
         ['u1', 'keep', ['keep']],
@@ -794,12 +893,97 @@ describe('disputedOf', () => {
           'typesafe/jev-latest': 'keep',
           'openrouter/~typesafe/jev-latest': 'truncate/keep',
         },
+        agreeing: [],
       },
     ])
     expect(disputedLinesOf(disputed)).toBe(
       'disputed fix-test u2: labelled drop, answered keep by ' +
-        'typesafe/jev-latest, truncate/keep by openrouter/~typesafe/jev-latest',
+        'typesafe/jev-latest, truncate/keep by ' +
+        'openrouter/~typesafe/jev-latest; agreed by: none',
     )
+  })
+
+  test('success: two of three routes disagreeing is a majority, and the one that agreed is named', () => {
+    const disputed = disputedOf([
+      judgedBy(ROUTE, [['u1', 'drop', ['keep']]]),
+      judgedBy(ROUTE_B, [['u1', 'keep', ['keep']]]),
+      judgedBy(ROUTE_C, [['u1', 'truncate', ['keep']]]),
+    ])
+
+    expect(disputed).toEqual([
+      {
+        scenario: 'fix-test',
+        toolUseId: 'u1',
+        expected: ['keep'],
+        actions: {
+          'typesafe/jev-latest': 'drop',
+          'openrouter/~typesafe/jev-latest': 'keep',
+          'cloudflare/clef': 'truncate',
+        },
+        agreeing: ['openrouter/~typesafe/jev-latest'],
+      },
+    ])
+    expect(disputedLinesOf(disputed)).toBe(
+      'disputed fix-test u1: labelled keep, answered drop by ' +
+        'typesafe/jev-latest, keep by openrouter/~typesafe/jev-latest, ' +
+        'truncate by cloudflare/clef; agreed by: ' +
+        'openrouter/~typesafe/jev-latest',
+    )
+  })
+
+  test('success: one of three routes disagreeing is no majority', () => {
+    expect(
+      disputedOf([
+        judgedBy(ROUTE, [['u1', 'drop', ['keep']]]),
+        judgedBy(ROUTE_B, [['u1', 'keep', ['keep']]]),
+        judgedBy(ROUTE_C, [['u1', 'keep', ['keep']]]),
+      ]),
+    ).toEqual([])
+  })
+
+  test('success: one of two routes disagreeing is a tie, not a majority', () => {
+    expect(
+      disputedOf([
+        judgedBy(ROUTE, [['u1', 'drop', ['keep']]]),
+        judgedBy(ROUTE_B, [['u1', 'keep', ['keep']]]),
+      ]),
+    ).toEqual([])
+  })
+
+  test('error: failed runs neither make nor break a majority', () => {
+    const failedAgreeing = (route: Route, repeat: number) =>
+      failedWith({
+        route,
+        repeat,
+        calls: [
+          {
+            id: 't1',
+            toolUseId: 'u1',
+            action: 'keep',
+            keepCall: 1,
+            keepResult: 1,
+            expected: ['keep'],
+          },
+        ],
+      })
+    const disputed = disputedOf([
+      judgedBy(ROUTE, [['u1', 'drop', ['keep']]]),
+      judgedBy(ROUTE_B, [['u1', 'drop', ['keep']]]),
+      judgedBy(ROUTE_C, [['u1', 'keep', ['keep']]]),
+      // Two more routes whose runs failed: had they counted, two of five
+      // disagreeing would be no majority.
+      failedAgreeing(
+        { provider: 'perplexity', model: 'pplx-decider-v1.1-27b' },
+        1,
+      ),
+      failedAgreeing({ provider: 'openai', model: 'gpt-6-luna' }, 1),
+      // A failed repeat of a disagreeing route does not make it agree.
+      failedAgreeing(ROUTE, 2),
+    ])
+
+    expect(disputed.map(call => [call.toolUseId, call.agreeing])).toEqual([
+      ['u1', ['cloudflare/clef']],
+    ])
   })
 
   test('success: with every label met by some route, nothing is disputed', () => {
@@ -815,10 +999,10 @@ describe('disputedOf', () => {
     ])
 
     expect(disputed).toEqual([])
-    expect(disputedLinesOf(disputed)).toBe('no call disputed by every route')
+    expect(disputedLinesOf(disputed)).toBe('no call disputed by most routes')
   })
 
-  test('success: one route that agrees keeps a call off the list', () => {
+  test('success: of two routes, one that agrees in any repeat keeps a call off the list', () => {
     expect(
       disputedOf([
         judgedBy(ROUTE, [['u2', 'keep', ['drop']]]),

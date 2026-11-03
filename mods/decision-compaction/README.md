@@ -789,7 +789,7 @@ as a crash.
 
 #### Spend
 
-Two full runs on 2026-11-03 (times from `date`). The first, 09:43 to
+Three full runs on 2026-11-03 (times from `date`). The first, 09:43 to
 09:48 JST, in the wording the mod sent until that day (`legacy`): 32
 routes, 6 scenarios, 192 compactions; 902,043 input tokens counted by the
 providers that report one, $0.0301 reported by the OpenRouter routes, the
@@ -799,12 +799,17 @@ three generated scenarios: 28 routes, 9 scenarios, 252 compactions;
 7,060,468 tokens counted and $0.862 reported, of which `solar-decide-flash`
 ($0.595, 1.9 million tokens) and `span-02` ($0.132, 3.1 million) were, in
 that run, the two models counted once per question; every other route
-cost under $0.02. The estimate the plan started from (under 8 million
-tokens, under $1.50) holds for a run of this size: about ten minutes and
-under $1, of which most went to those two models. The next full run will
-cost differently: `tev1` and `solar-decide` are now asked 8 questions a
-request and counted once per question too, and `tev1` bills the state
-once a question (about $0.09 a compaction on `prose-60`).
+cost under $0.02. The third, 17:20 to 17:30 JST, after the per-model
+caps of `tev1` and `solar-decide` (8 questions a request, the state
+counted once a question) and at `--state none`: 28 routes, 9 scenarios,
+252 compactions; 7,417,910 tokens counted and $1.016 reported, of which
+`solar-decide-flash` $0.595, `tev1` $0.148 (333,585 tokens: it bills the
+state once a question, about $0.09 a compaction on `prose-60`), `span-02`
+$0.132 and `solar-decide` $0.025; every other route under $0.02. The
+result-heads comparison of the same afternoon (120 compactions on the six
+hand-written scenarios, ten routes, two arms) cost $0.009. About ten
+minutes and about $1 a full run, most of it on the models counted once a
+question.
 
 #### What the runs found
 
@@ -833,75 +838,93 @@ sessions before `/compact` (see below). Agreement is against labels that
 allow `drop` or `truncate` on most calls and `keep` alone on the few the
 newest prompt depends on; `harmful` counts a `keep` call cut or dropped,
 `missed` a droppable call kept. This run predates the split of `harmful`
-into `harmful` and `lossy`, so its `Harmful` figures below are the sum of
-the two: 383 = 257 drops + 126 cuts, recounted from its JSON by the
-scripts test.
+into `harmful` and `lossy`, so its harmful figure is the sum of the two:
+383 over the run = 257 drops + 126 cuts, recounted from its JSON by the
+scripts test. Its per-route table is superseded by the third run below,
+measured on the same scenarios in the same wording with the split; the
+mature routes scored 68-79% agreement and 14 to 22 harmful-or-lossy calls
+each in this run, and the same in the third.
 
-| Route | ok / 9 | Agreement | Harmful | Missed | Kept / cut / dropped | Reduction | Median ms | Tokens counted | Cost | `all-needed` | `session-55` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `typesafe/jev-latest` (Jev 1.14) | 9 | 78% | 17 | 0 | 5 / 10 / 379 | 79% | 225 | 121,063 | - | 50% | 96% |
-| `typesafe/jev-1.14.0` | 9 | 75% | 18 | 0 | 4 / 9 / 381 | 81% | 198 | 121,063 | - | 25% | 96% |
-| `cloudflare/clef` | 9 | 79% | 14 | 0 | 8 / 3 / 383 | 80% | 1,113 | 109,331 | - | 50% | 98% |
-| `cloudflare/clef-flash` | 8 | 68% | 19 | 0 | 0 / 8 / 158 | 86% | 1,072 | 60,848 | - | 0% | 94% |
-| `cloudflare/clef-omni` | 9 | 74% | 21 | 0 | 1 / 4 / 389 | 83% | 500 | 110,026 | - | 25% | 94% |
-| `openrouter` Jev | 9 | 78% | 18 | 0 | 4 / 6 / 384 | 81% | 436 | 82,282 | $0.0065 | 50% | 96% |
-| `baseten/elephant-1` | 8 | 75% | 12 | 1 | 8 / 9 / 149 | 77% | 564 | 54,471 | $0.0038 | 50% | 98% |
-| `baseten/joey-1` | 8 | 54% | 4 | 86 | 101 / 17 / 48 | 41% | 448 | 54,471 | $0.0011 | 50% | 23% |
-| `baseten/mammoth-1` | 8 | 75% | 13 | 0 | 6 / 1 / 159 | 80% | 657 | 54,471 | $0.0110 | 50% | 98% |
-| `inception/mercury-decide` | 9 | 75% | 16 | 3 | 9 / 0 / 385 | 81% | 808 | 86,157 | $0.0082 | 25% | 98% |
-| `jaredpalmer/kev-4b` | 8 | 72% | 15 | 0 | 4 / 2 / 160 | 81% | 1,082 | 26,318 | $0.0026 | 25% | 94% |
-| `liquid/d1` | 9 | 74% | 19 | 1 | 4 / 11 / 379 | 79% | 737 | 84,640 | $0.0090 | 25% | 96% |
-| `liquid/d1-ultra` | 9 | 81% | 14 | 0 | 8 / 3 / 383 | 77% | 749 | 84,640 | $0.0189 | 75% | 96% |
-| `liquid/d1.1` | 9 | 74% | 15 | 4 | 11 / 7 / 376 | 78% | 711 | 84,640 | $0.0090 | 25% | 94% |
-| `microsoft/microsoft-decision-1` | 9 | 73% | 17 | 1 | 6 / 15 / 373 | 84% | 700 | 71,651 | $0.0147 | 0% | 98% |
-| `nace-ai/drex-max` | 8 | 80% | 8 | 0 | 11 / 0 / 155 | 75% | 1,325 | 53,545 | $0.0158 | 75% | 100% |
-| `nace-ai/drex-v1.5` | 9 | 71% | 21 | 0 | 1 / 12 / 381 | 86% | 915 | 73,543 | $0.0151 | 0% | 96% |
-| `nace-ai/drex-v2.0` | 8 | 72% | 16 | 1 | 4 / 2 / 160 | 81% | 946 | 50,260 | $0.0164 | 25% | 94% |
-| `respan/span-02` | 9 | 71% | 21 | 0 | 1 / 3 / 390 | 87% | 1,659 | 3,138,529 | $0.1320 | 0% | 96% |
-| `togethercomputer/tev1-4b-experimental` | 4 | 44% | 9 | 0 | 0 / 6 / 11 | 86% | 796 | 30,920 | $0.0013 | 0% | - |
-| `upstage/solar-decide` | 3 | 59% | 6 | 0 | 2 / 5 / 8 | 56% | 12,904 | 36,916 | $0.0018 | 50% | - |
-| `upstage/solar-decide-flash` | 9 | 77% | 14 | 10 | 18 / 215 / 161 | 48% | 2,602 | 1,901,038 | $0.5947 | 100% | 92% |
-| `codiv/openjev-latest` | 8 | 74% | 12 | 13 | 20 / 50 / 96 | 66% | 1,246 | 294,995 | - | 75% | 79% |
-| `perplexity/pplx-decider-v1.1-27b` | 8 | 76% | 14 | 0 | 5 / 0 / 161 | 80% | 446 | 40,365 | - | 50% | 94% |
-| `decisions-api-dev/jev-latest` | 3 | 56% | 5 | 0 | 2 / 3 / 7 | 70% | 1,833 | 4,545 | - | 50% | - |
-| `decisions-api-dev/typesafe/jev-1.14` | 2 | 55% | 3 | 0 | 0 / 1 / 6 | 88% | 1,900 | 2,938 | - | - | - |
-| `decisionapi-net/jev-latest` | 0 | - | - | - | - | - | - | - | - | - | - |
-| `openai/gpt-6-luna` | 9 | 71% | 22 | 0 | 0 / 63 / 331 | 80% | 540 | 226,802 | - | 0% | 94% |
+**The third run, 2026-11-03 17:20 to 17:30 JST (times from `date`),** on
+the same nine scenarios and wording, after the per-model caps of
+`tev1-4b-experimental` and `solar-decide` (8 questions a request, the
+state counted once a question), with `harmful` and `lossy` counted apart,
+at `--state none`, which is what a compaction sends
+(`.omc/bench/run3-none.json`, a local file). 28 routes, 252 compactions,
+211 answered; 7,417,910 tokens counted, $1.016 reported by the OpenRouter
+routes. Harmful 249 and lossy 133 over the run, 382 in all (the second
+run: 257 and 126, 383); on the six hand-written scenarios 145 and 90 (152
+and 90); 509 keep-labelled calls at a median P(call) / P(result) of 0.47 /
+0.23 (506 at 0.46 / 0.22). `Harmful` is a keep-only call dropped, `Lossy`
+one cut to its head, `Keep P(result)` the median of the result question on
+the route's keep-only calls:
+
+| Route | ok / 9 | Agreement | Harmful | Lossy | Keep P(result) | Missed | Kept / cut / dropped | Reduction | Median ms | Tokens counted | Cost | `all-needed` | `session-55` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `typesafe/jev-latest` (Jev 1.14) | 9 | 78% | 10 | 7 | 0.36 | 0 | 5 / 9 / 380 | 80% | 215 | 121,063 | - | 50% | 96% |
+| `typesafe/jev-1.14.0` | 9 | 78% | 9 | 8 | 0.33 | 0 | 5 / 10 / 379 | 79% | 192 | 121,063 | - | 50% | 96% |
+| `cloudflare/clef` | 9 | 79% | 11 | 3 | 0.27 | 0 | 8 / 3 / 383 | 80% | 1,019 | 109,331 | - | 50% | 98% |
+| `cloudflare/clef-flash` | 8 | 68% | 13 | 6 | 0.11 | 0 | 0 / 8 / 158 | 86% | 1,114 | 60,848 | - | 0% | 94% |
+| `cloudflare/clef-omni` | 9 | 74% | 20 | 1 | 0.06 | 0 | 1 / 4 / 389 | 83% | 341 | 110,026 | - | 25% | 94% |
+| `openrouter` Jev | 9 | 75% | 11 | 7 | 0.30 | 0 | 4 / 9 / 381 | 80% | 431 | 82,282 | $0.0065 | 25% | 96% |
+| `baseten/elephant-1` | 8 | 75% | 4 | 8 | 0.36 | 1 | 8 / 9 / 149 | 77% | 515 | 54,471 | $0.0038 | 50% | 98% |
+| `baseten/joey-1` | 8 | 54% | 1 | 3 | 0.65 | 86 | 101 / 17 / 48 | 41% | 447 | 54,471 | $0.0011 | 50% | 23% |
+| `baseten/mammoth-1` | 8 | 75% | 12 | 1 | 0.26 | 0 | 6 / 1 / 159 | 80% | 959 | 54,471 | $0.0110 | 50% | 98% |
+| `inception/mercury-decide` | 9 | 74% | 16 | 1 | 0.05 | 4 | 9 / 1 / 384 | 80% | 755 | 85,997 | $0.0082 | 25% | 98% |
+| `jaredpalmer/kev-4b` | 8 | 72% | 13 | 2 | 0.32 | 0 | 4 / 2 / 160 | 81% | 1,348 | 26,318 | $0.0026 | 25% | 94% |
+| `liquid/d1` | 9 | 78% | 11 | 4 | 0.20 | 1 | 8 / 6 / 380 | 78% | 887 | 84,640 | $0.0090 | 50% | 96% |
+| `liquid/d1-ultra` | 8 | 79% | 9 | 3 | 0.32 | 0 | 7 / 4 / 155 | 75% | 697 | 59,168 | $0.0040 | 75% | 94% |
+| `liquid/d1.1` | 9 | 81% | 10 | 3 | 0.36 | 0 | 9 / 13 / 372 | 79% | 717 | 84,640 | $0.0090 | 75% | 98% |
+| `microsoft/microsoft-decision-1` | 9 | 72% | 5 | 12 | 0.18 | 3 | 8 / 16 / 370 | 83% | 1,242 | 71,651 | $0.0147 | 0% | 98% |
+| `nace-ai/drex-max` | 8 | 80% | 8 | 0 | 0.53 | 0 | 11 / 0 / 155 | 75% | 1,413 | 53,545 | $0.0158 | 75% | 100% |
+| `nace-ai/drex-v1.5` | 9 | 71% | 11 | 10 | 0.07 | 0 | 1 / 12 / 381 | 86% | 974 | 73,543 | $0.0151 | 0% | 96% |
+| `nace-ai/drex-v2.0` | 8 | 72% | 15 | 1 | 0.19 | 1 | 4 / 3 / 159 | 81% | 2,390 | 50,260 | $0.0164 | 25% | 94% |
+| `respan/span-02` | 9 | 71% | 17 | 4 | 0.06 | 0 | 1 / 4 / 389 | 87% | 1,151 | 3,138,529 | $0.1320 | 0% | 96% |
+| `togethercomputer/tev1-4b-experimental` | 8 | 68% | 8 | 10 | 0.27 | 0 | 1 / 16 / 149 | 84% | 1,401 | 333,585 | $0.1475 | 0% | 96% |
+| `upstage/solar-decide` | 6 | 68% | 2 | 9 | 0.14 | 0 | 3 / 16 / 38 | 71% | 16,098 | 124,808 | $0.0249 | 50% | - |
+| `upstage/solar-decide-flash` | 9 | 71% | 1 | 13 | 0.42 | 17 | 25 / 229 / 140 | 48% | 2,495 | 1,901,038 | $0.5947 | 75% | 92% |
+| `codiv/openjev-latest` | 8 | 75% | 12 | 1 | 0.16 | 13 | 19 / 44 / 103 | 68% | 1,249 | 294,995 | - | 75% | 77% |
+| `perplexity/pplx-decider-v1.1-27b` | 8 | 76% | 14 | 0 | 0.10 | 0 | 5 / 0 / 161 | 80% | 481 | 40,365 | - | 50% | 94% |
+| `decisions-api-dev/jev-latest` | 0 | - | - | - | - | - | - | - | - | - | - | - | - |
+| `decisions-api-dev/typesafe/jev-1.14` | 0 | - | - | - | - | - | - | - | - | - | - | - | - |
+| `decisionapi-net/jev-latest` | 0 | - | - | - | - | - | - | - | - | - | - | - | - |
+| `openai/gpt-6-luna` | 9 | 71% | 6 | 16 | 0.05 | 0 | 0 / 63 / 331 | 80% | 492 | 226,802 | - | 0% | 94% |
 
 What the table says, read with the caveat the report prints:
 
-- The wording change moved the mature routes from 61% to 71-79% agreement
-  and from "keeps nothing" to a few keeps and more cuts, but a call the
-  reference keeps still mostly lands on `truncate` (the call stays, the
-  result is cut to its head): the result question scores a median of 0.20
-  on those calls. `clef-flash` and GPT-6 Luna still keep nothing. Whether a
-  truncated read of a file still on disk is harmful is the next label
-  question; the metric counts it as `lossy` now.
+- The mature routes agree with the labels at 68-79%, as in the second
+  run, and still mostly drop a call the reference keeps: of their 170
+  keep-only calls (Jev through OpenRouter among the eight), 94 were
+  dropped, 48 cut to the head and 28 kept; their median P(result) on
+  those calls is 0.05 to 0.36, and on `all-needed`, where every call is
+  to keep, no mature route gets above 50%. `clef-flash` and GPT-6 Luna
+  keep nothing (the `degenerate` mark). A cut of a read that can be repeated now counts
+  as `lossy`; whether it is harmful at all is the open label question
+  under Follow-ups.
 - The generated sessions, whose labels keep three calls of 20 to 53 and
-  allow dropping the rest, score 92-100% on nearly every route: they
-  measure that a model drops what it may, not that it keeps what it must.
-  `joey-1`, which keeps 101 of its 166 judged calls, scores 23% there;
-  the `degenerate` mark is for a route that keeps all or none, and the
-  routes it marks in this run are `clef-flash`, GPT-6 Luna, `tev1` and
-  one `decisions-api-dev` row, which kept nothing.
-- `session-230` (230 calls, 104,000 state tokens) does not fit the state
-  budget of `clef-flash`, Baseten, `kev-4b` and `perplexity` (about 17,250
-  tokens are left after every reduction) and would take 29 requests on
-  the two Nace models with their 16-question cap, so those routes refuse
-  it before sending; Codiv did not answer it within 30 seconds; TypeSafe
-  and Clef judged it with the state cut, and OpenAI, whose budget is
-  200,000 tokens, took it whole.
-- `tev1-4b-experimental` counts the state once per question: at 32
-  questions it refused two scenarios ("Tev1 sends state once per question;
-  the prompts for 32 questions exceed the 1048576-byte limit") and its
-  counts on three were read as cuts. `solar-decide` missed the 30-second
-  deadline on five scenarios and its count on a sixth was read as a cut
-  (median 12.9 s where it answered). Since this run
-  `OPENROUTER_MODEL_LIMITS` asks both at most 8 questions a request and
-  counts the state of both once a question.
-- `decisions-api-dev` answered five compactions before its credits ran
-  out; `decisionapi-net` has none (HTTP 402 on every request). Neither row
-  measures the model.
+  allow dropping the rest, measure that a model drops what it may, not
+  that it keeps what it must: `session-55` scores 92-100% on every route
+  but Codiv (77%) and `joey-1` (23%, it keeps 101 of its 166 judged
+  calls), `session-22` 75-90% on every route but `joey-1` (15%).
+- `session-230` (230 calls, 104,000 state tokens) is refused before
+  anything is sent by `clef-flash`, the three Baseten models, `kev-4b`
+  and `perplexity` (about 17,250 tokens are left after every reduction
+  and their budgets are smaller), by the two Nace models with their
+  16-question cap (29 requests) and by `tev1` and `solar-decide` with
+  their 8-question cap (57 requests); `d1-ultra` and Codiv did not answer
+  it within 30 seconds; TypeSafe, Clef, Clef-omni and the other OpenRouter
+  routes judged it with the state cut, and OpenAI took it whole.
+- `tev1-4b-experimental`, asked 8 questions and counted once a question,
+  answered every scenario it was allowed to send (8 of 9) at 68%
+  agreement, keeping one call; its 333,585 tokens and $0.148 are the
+  state billed once a question (`prose-60`, a 23,000-token state, counted
+  149,772 tokens over 14 requests). `solar-decide` at 8 questions answered
+  6 of 9 in a median of 16.1 s: `exploration` and `session-22` in 27 and
+  28 s, `prose-60` and `session-55` not within the 30 seconds.
+- `decisions-api-dev` and `decisionapi-net` answered nothing: 27 of the
+  41 failures are those rows, 24 of them HTTP 402 (no credits) and the
+  three `session-230` records refused before a request for the body cap,
+  and neither measures the model.
 
 **What a session looks like before `/compact`.** The generated scenarios
 take their shape from 268 compactions in this machine's Claude Code
@@ -1053,6 +1076,48 @@ condition, which is then not met for it. Such a route, and any mature
 route that dropped the heads on half or more of its six records, gets a
 third arm at `--state head:120` before the rule is read. Unless all three
 conditions hold, the default stays 0 and the bench keeps the flag.
+
+**Measured on 2026-11-03, 17:18 to 17:20 JST (times from `date`).** Four
+invocations, 120 compactions, all answered: the nine direct routes and
+`liquid/d1-ultra` through OpenRouter, each at `--state none` and at
+`--state head:300`; 1,062,612 tokens counted, $0.0093 reported by the two
+OpenRouter routes. Read with `recountOf` over the four JSONs
+(`.omc/bench/ab-{none,head300}-{direct,d1-ultra}.json`, local files):
+
+| Route | `all-needed` none / head:300 | Harmful none / head:300 | Lossy none / head:300 | Keep P(result) none / head:300 | Heads dropped (of 6) | Median state-token increase | (i) / (ii) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `typesafe/jev-latest` | 25% / 25% | 5 / 5 | 5 / 5 | 0.28 / 0.35 | 1 | 599 | no / yes |
+| `typesafe/jev-1.14.0` | 50% / 25% | 5 / 5 | 4 / 5 | 0.31 / 0.34 | 1 | 599 | no / yes |
+| `cloudflare/clef` | 50% / 25% | 5 / 6 | 2 / 2 | 0.32 / 0.37 | 0 | 708 | no / no |
+| `cloudflare/clef-flash` | 0% / 0% | 7 / 9 | 6 / 3 | 0.11 / 0.08 | 0 | 599 | no / no |
+| `cloudflare/clef-omni` | 25% / 0% | 12 / 9 | 0 / 3 | 0.05 / 0.05 | 0 | 708 | no / yes |
+| `openai/gpt-6-luna` | 0% / 0% | 6 / 4 | 7 / 9 | 0.05 / 0.05 | 0 | 781 | no / yes |
+| `perplexity/pplx-decider-v1.1-27b` | 50% / 50% | 8 / 8 | 0 / 1 | 0.36 / 0.46 | 0 | 599 | no / yes |
+| `codiv/openjev-latest` | 75% / 50% | 7 / 11 | 1 / 0 | 0.11 / 0.13 | 1 | 599 | - / no |
+| `openrouter` Jev | 50% / 25% | 4 / 5 | 6 / 6 | 0.31 / 0.35 | 0 | 599 | - / no |
+| `liquid/d1-ultra` | 75% / 75% | 4 / 4 | 2 / 2 | 0.51 / 0.56 | 1 | 599 | - / yes |
+
+Every `all-needed` record of the head:300 arm kept its heads (stage
+`whole`); the heads were dropped on one record (`prose-60`) of four
+routes and on none of the others, so no route needed the `head:120` arm.
+The last column marks the first condition for the seven mature routes
+(`-` where it does not apply) and the second for all ten; the third is
+pooled. The rule's three conditions:
+
+1. Not met on any of the seven mature routes: `all-needed` agreement at
+   head:300 is 0% to 50%, and on three of them it is lower than at `none`.
+2. Not met: harmful drops rose at head:300 on `cloudflare/clef` (5 to 6),
+   `cloudflare/clef-flash` (7 to 9), `codiv/openjev-latest` (7 to 11)
+   and `openrouter` Jev (4 to 5).
+3. Met: the median state-token increase over the 60 paired records is
+   664 tokens.
+
+So `DEFAULT_RESULT_HEAD` stays 0 and a compaction shows no output. What
+the heads did move is the result question: the keep-labelled median
+P(result) rose on seven of the ten routes (by 0.02 to 0.10), which is the
+direction the lever was meant to push, but not far enough for a model to
+keep the calls the labels keep, and on four routes the extra text cost a
+harmful drop or more.
 
 The runner's own tests use stubs for every `fetch` and never reach a
 network:

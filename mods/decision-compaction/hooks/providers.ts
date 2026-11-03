@@ -357,47 +357,61 @@ function jevFamilyOf(provider: ProviderName): (model: string) => string {
 }
 
 /**
- * The window a model OpenRouter forwards is held to when it is not Jev, as
- * measured on 2026-10-11 where it cuts a state, below the window its
- * listing states. OpenRouter's Clef and Clef-flash cut a state at 16,384
- * tokens, the window of the cheapest host it routes them to, not at the
- * figures Cloudflare's own endpoint cuts it at; its Clef-omni, which only
- * Cloudflare hosts, cut at 64,000.
- */
-const OPENROUTER_CLEF_WINDOWS: Readonly<Record<string, number>> = {
-  'cloudflare/clef': 16_384,
-  'cloudflare/clef-flash': 16_384,
-  'cloudflare/clef-omni': 64_000,
-}
-
-/**
- * The window of any other model OpenRouter forwards that is not Jev: what
- * the mod holds a model to whose limit no one documented.
+ * The window of any other model OpenRouter forwards that is not Jev and
+ * that `OPENROUTER_MODEL_LIMITS` gives no window: what the mod holds a
+ * model to whose limit no one documented.
  */
 const OPENROUTER_OTHER_WINDOW = 32_000
 
 /**
- * What some models OpenRouter forwards take beyond the window, as measured
- * on 2026-11-03 with requests of 40 and 58 questions. Nace's drex-max and
- * drex-v2.0 refused more than 16 questions (HTTP 422, "questions must be an
- * object of 1..16 questions", "too many questions (40); limit is 16") and
- * Together's tev1 more than 32 (HTTP 400, "Tev1 accepts at most 32
- * questions per request"). Upstage's solar-decide answered 8 to 12
- * questions in a median of 16 seconds and did not answer 40 within 30, so
- * it is held to 32. Upstage's solar-decide-flash and Respan's span-02
+ * What some models OpenRouter forwards take, where it differs from 64
+ * questions, the state counted once, and `OPENROUTER_OTHER_WINDOW`.
+ *
+ * The window, as measured on 2026-10-11 where OpenRouter cuts a state,
+ * below the window its listing states: its Clef and Clef-flash cut a state
+ * at 16,384 tokens, the window of the cheapest host it routes them to, not
+ * at the figures Cloudflare's own endpoint cuts it at; its Clef-omni, which
+ * only Cloudflare hosts, cut at 64,000.
+ *
+ * The questions, as measured on 2026-11-03 with requests of 40 and 58
+ * questions. Nace's drex-max and drex-v2.0 refused more than 16 questions
+ * (HTTP 422, "questions must be an object of 1..16 questions", "too many
+ * questions (40); limit is 16") and Together's tev1 more than 32 (HTTP 400,
+ * "Tev1 accepts at most 32 questions per request"). Upstage's solar-decide
+ * answered 8 to 12 questions in a median of 16 seconds and did not answer
+ * 40 within 30 seconds. Upstage's solar-decide-flash and Respan's span-02
  * answered, but their `usage.input_tokens` counted the state once for
  * every question (87,192 and 89,030 tokens on 40 questions, 1,042,485 and
  * 1,173,565 on 58), so what one reading took is the count divided by the
- * questions asked. A model not named here takes 64 questions and counts
- * the state once.
+ * questions asked.
+ *
+ * In the full run of the same day, at 32 questions a request, Together's
+ * tev1 refused requests (HTTP 400, "Tev1 sends state once per question;
+ * the prompts for 32 questions exceed the 1048576-byte limit") and its
+ * counts on others were read as cuts, so it is asked 8 and counted per
+ * question; asked so, it answered every scenario probed within the 32,000
+ * window, which it keeps. Upstage's solar-decide missed the 30-second
+ * deadline at 32 and its counts, too, were of the state once a question,
+ * so it is asked 8 and counted per question; asked so, it answered what
+ * fits in one or two requests and missed the deadline on every scenario
+ * that needs three or more.
  */
 const OPENROUTER_MODEL_LIMITS: Readonly<
-  Record<string, { maxQuestions?: number; countsStatePerQuestion?: true }>
+  Record<
+    string,
+    { maxQuestions?: number; countsStatePerQuestion?: true; window?: number }
+  >
 > = {
+  'cloudflare/clef': { window: 16_384 },
+  'cloudflare/clef-flash': { window: 16_384 },
+  'cloudflare/clef-omni': { window: 64_000 },
   'nace-ai/drex-max': { maxQuestions: 16 },
   'nace-ai/drex-v2.0': { maxQuestions: 16 },
-  'togethercomputer/tev1-4b-experimental': { maxQuestions: 32 },
-  'upstage/solar-decide': { maxQuestions: 32 },
+  'togethercomputer/tev1-4b-experimental': {
+    maxQuestions: 8,
+    countsStatePerQuestion: true,
+  },
+  'upstage/solar-decide': { maxQuestions: 8, countsStatePerQuestion: true },
   'upstage/solar-decide-flash': {
     maxQuestions: 32,
     countsStatePerQuestion: true,
@@ -893,9 +907,10 @@ export function providerOf(value: unknown): ProviderName | undefined {
  * other model it serves is held to Cloudflare's 64 questions as well,
  * because Clef, the one other System One model, is served there and refuses
  * a request with more (HTTP 422, "Dictionary should have at most 64
- * items"), unless `OPENROUTER_MODEL_LIMITS` holds it to fewer. A Clef model
- * is held to where OpenRouter cuts it, and any other model to the window of
- * a model whose limit no one documented.
+ * items"), unless `OPENROUTER_MODEL_LIMITS` holds it to fewer. A model
+ * that table gives a window, such as a Clef model held to where OpenRouter
+ * cuts it, is held to that window, and any other model to the window of a
+ * model whose limit no one documented.
  *
  * @param route the provider and the model
  * @returns its limits
@@ -904,18 +919,13 @@ export function limitsOf(route: Route): Limits {
   const { limits, modelLimitsOf } = TABLE[route.provider]
 
   if (route.provider === 'openrouter' && !JEV.test(route.model.trim())) {
-    const model = route.model.trim()
-    const window =
-      (Object.hasOwn(OPENROUTER_CLEF_WINDOWS, model)
-        ? OPENROUTER_CLEF_WINDOWS[model]
-        : undefined) ?? OPENROUTER_OTHER_WINDOW
+    const named = openrouterModelLimitsOf(route.model)
+    const window = named?.window ?? OPENROUTER_OTHER_WINDOW
 
     return {
       maxStateTokens: window,
       maxRequestTokens: window,
-      maxQuestions:
-        openrouterModelLimitsOf(model)?.maxQuestions ??
-        TABLE.cloudflare.limits.maxQuestions,
+      maxQuestions: named?.maxQuestions ?? TABLE.cloudflare.limits.maxQuestions,
     }
   }
 

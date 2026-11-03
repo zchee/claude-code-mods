@@ -284,11 +284,25 @@ tokens on 2026-10-11, the window of the cheapest host OpenRouter sends them
 to, and `cloudflare/clef-omni`, which only Cloudflare hosts, at 64,000. Any
 other model it forwards is held to 32,000 tokens, since no limit of its is
 documented here. Measured on 2026-11-03, `nace-ai/drex-max` and
-`nace-ai/drex-v2.0` are asked at most 16 questions a request,
-`togethercomputer/tev1-4b-experimental` and both Upstage models at most 32,
-and the input tokens `upstage/solar-decide-flash` and `respan/span-02`
-count are divided by the questions asked before they are compared with the
-window, since those two count the state once a question, as `perplexity`
+`nace-ai/drex-v2.0` take 16 questions a request and 16 requests a
+compaction, so a conversation with more than 128 judged calls is refused
+before anything is sent (`session-230` needs 29 requests).
+`togethercomputer/tev1-4b-experimental` and `upstage/solar-decide` are
+asked at most 8 questions a request, which is 64 judged calls a compaction
+at most. At 32, tev1 failed five of nine compactions, each on its counting
+of the state once a question, and solar-decide six, five of them past the
+30-second deadline. Asked 8 on seven scenarios, tev1 answered all seven
+within the 32,000-token window, which it keeps; since it bills the state
+once a question, a 23,000-token conversation (`prose-60`) costs about
+$0.09 a compaction. Asked 8 questions and counted per question,
+solar-decide answered four of seven scenarios, in a median of 15.1
+seconds; the three it missed (`exploration`, `prose-60`, `session-22`)
+each need three or more requests and none finished within the 30-second
+deadline, so a conversation of more than 8 judged calls is unlikely to get
+an answer from it in time. `upstage/solar-decide-flash` is asked at most
+32. The input tokens tev1, both Upstage models and `respan/span-02` count
+are divided by the questions asked before they are compared with the
+window, since those four count the state once a question, as `perplexity`
 does.
 
 ### Credentials
@@ -748,9 +762,15 @@ smaller (Baseten's, `kev-4b`) runs with `maxStateTokens` and
 `maxRequestTokens` set to its window, and every other one runs at the same
 27,200-token state cap as Jev through OpenRouter. The Nace, Together and
 Upstage models run with the question caps given under
-[Providers](#providers) (16 for `drex-max` and `drex-v2.0`, 32 for `tev1`
-and both Upstage models), so a scenario with more calls is split over more
-requests instead of being refused for its question count. Jev through
+[Providers](#providers) (16 for `drex-max` and `drex-v2.0`, 8 for `tev1`
+and `solar-decide`, 32 for `solar-decide-flash`), so a scenario with more
+calls is split over more requests instead of being refused for its question
+count, up to 16 requests: `drex-max` and `drex-v2.0` take 16 questions a
+request and 16 requests a compaction, so a conversation with more than 128
+judged calls is refused before anything is sent (`session-230` needs 29
+requests), and `tev1` and `solar-decide` take at most 64 judged calls.
+`tev1`'s and `solar-decide`'s input tokens are divided by the questions
+asked, as `solar-decide-flash`'s and `span-02`'s are. Jev through
 OpenRouter is
 also held to the byte cap it asks for, so on the `prose-60` scenario it sees a
 smaller state than those models at the same token cap (8,340 estimated
@@ -768,12 +788,14 @@ only ones that report a price. The second, 10:58 to 11:09 JST, in the
 mod's wording now (`current`), after the per-model OpenRouter caps and the
 three generated scenarios: 28 routes, 9 scenarios, 252 compactions;
 7,060,468 tokens counted and $0.862 reported, of which `solar-decide-flash`
-($0.595, 1.9 million tokens) and `span-02` ($0.132, 3.1 million) are the
-two models that count the state once per question; every other route
+($0.595, 1.9 million tokens) and `span-02` ($0.132, 3.1 million) were, in
+that run, the two models counted once per question; every other route
 cost under $0.02. The estimate the plan started from (under 8 million
-tokens, under $1.50) holds for a run of this size, and the second run is
-what a full run costs now: about ten minutes and under $1, of which most
-goes to those two models.
+tokens, under $1.50) holds for a run of this size: about ten minutes and
+under $1, of which most went to those two models. The next full run will
+cost differently: `tev1` and `solar-decide` are now asked 8 questions a
+request and counted once per question too, and `tev1` bills the state
+once a question (about $0.09 a compaction on `prose-60`).
 
 #### What the runs found
 
@@ -857,11 +879,14 @@ What the table says, read with the caveat the report prints:
   it before sending; Codiv did not answer it within 30 seconds; TypeSafe
   and Clef judged it with the state cut, and OpenAI, whose budget is
   200,000 tokens, took it whole.
-- `tev1-4b-experimental` counts the state once per question and refuses
-  32 questions ("Tev1 sends state once per question"); `solar-decide`
-  still misses the 30-second deadline on six scenarios at 32 questions
-  (median 12.9 s where it answers). Both need a smaller cap, and `tev1`
-  the state-per-question flag, in `OPENROUTER_MODEL_LIMITS`.
+- `tev1-4b-experimental` counts the state once per question: at 32
+  questions it refused two scenarios ("Tev1 sends state once per question;
+  the prompts for 32 questions exceed the 1048576-byte limit") and its
+  counts on three were read as cuts. `solar-decide` missed the 30-second
+  deadline on five scenarios and its count on a sixth was read as a cut
+  (median 12.9 s where it answered). Since this run
+  `OPENROUTER_MODEL_LIMITS` asks both at most 8 questions a request and
+  counts the state of both once a question.
 - `decisions-api-dev` answered five compactions before its credits ran
   out; `decisionapi-net` has none (HTTP 402 on every request). Neither row
   measures the model.

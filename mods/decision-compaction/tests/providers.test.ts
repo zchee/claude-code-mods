@@ -592,14 +592,14 @@ describe('limits', () => {
       { model: 'nace-ai/drex-max', maxQuestions: 16, window: 32000 },
     'success: nace drex-v2.0 over openrouter takes the 16 questions it accepts':
       { model: 'nace-ai/drex-v2.0', maxQuestions: 16, window: 32000 },
-    'success: together tev1 over openrouter takes the 32 questions it accepts':
+    'success: together tev1 over openrouter, which counts the state once a question, takes 8 questions':
       {
         model: 'togethercomputer/tev1-4b-experimental',
-        maxQuestions: 32,
+        maxQuestions: 8,
         window: 32000,
       },
-    'success: upstage solar-decide over openrouter takes 32 questions, the most it answers in time':
-      { model: 'upstage/solar-decide', maxQuestions: 32, window: 32000 },
+    'success: upstage solar-decide over openrouter, which counts the state once a question, takes 8 questions, since 32 missed the deadline':
+      { model: 'upstage/solar-decide', maxQuestions: 8, window: 32000 },
     'success: upstage solar-decide-flash over openrouter takes 32 questions':
       { model: 'upstage/solar-decide-flash', maxQuestions: 32, window: 32000 },
     'success: a capped model named with white space around it keeps its cap':
@@ -1548,6 +1548,29 @@ describe('replyFrom', () => {
           'short, so the answers decide nothing',
       })
     })
+
+    // Neither tev1 nor solar-decide has a window of its own, so each is
+    // held to the 32,000 tokens of a model whose limit no one documented,
+    // over the 8 questions it is asked.
+    for (const model of [
+      'togethercomputer/tev1-4b-experimental',
+      'upstage/solar-decide',
+    ]) {
+      test(`success: ${model} counting one token under the window a question on 8 questions is a reply`, () => {
+        expect(replying(model, 8, 8 * 31_999).usage).toEqual({
+          input_tokens: 8 * 31_999,
+        })
+      })
+
+      test(`error: ${model} counting the whole window a question on 8 questions is taken as a cut state`, () => {
+        expect(() => replying(model, 8, 8 * 32_000)).toThrow({
+          message:
+            'openrouter counted 32000 input tokens a question, all that a ' +
+            'request of its may hold (32000): the state was probably cut ' +
+            'short, so the answers decide nothing',
+        })
+      })
+    }
 
     test('error: span-02 counting the whole window on one question is taken as a cut state', () => {
       expect(() => replying('respan/span-02', 1, 32_000)).toThrow({

@@ -1,6 +1,8 @@
 import type { SessionMessage } from 'claude-code'
 
 import type { Action } from '../hooks/compact'
+import { generateScenario } from './generate'
+import { SHAPES } from './shape'
 
 /**
  * A message the person typed.
@@ -109,12 +111,7 @@ export type Scenario = {
   expected: Readonly<Record<string, readonly Exclude<Action, 'pinned'>[]>>
 }
 
-/**
- * The `preserveRecentMessages` every scenario is labelled for: the mod's
- * default. A call in the newest six messages, or in the first message, is
- * pinned and has no label.
- */
-export const PRESERVE_RECENT = 6
+export { PRESERVE_RECENT } from './generate'
 
 type Label = readonly Exclude<Action, 'pinned'>[]
 
@@ -1349,7 +1346,7 @@ function allNeededOf(): Body {
 }
 
 /**
- * Where the `large` session runs. Its calls name files by absolute path, as
+ * Where the `prose-60` session runs. Its calls name files by absolute path, as
  * the tools write them, which also gives each input the length a real one
  * has.
  */
@@ -1414,7 +1411,7 @@ const ROLES: Readonly<Record<(typeof MODULES)[number], string>> = {
 }
 
 /**
- * One call of the `large` exploration before its conclusion.
+ * One call of the `prose-60` exploration before its conclusion.
  */
 type Step =
   | { kind: 'overview' }
@@ -1520,7 +1517,7 @@ function nextOf(step: Step): string {
 }
 
 /**
- * The length an assistant message of the `large` session is written to,
+ * The length an assistant message of the `prose-60` session is written to,
  * and the most it may reach.
  */
 const PROSE_CHARS = 1140
@@ -1660,7 +1657,7 @@ function outputOf(step: Step, chars: number): string {
  * of the two files the conclusion names are `keep`, every other call is
  * `drop` or `truncate`.
  */
-function largeOf(): Body {
+function writtenOutOf(): Body {
   const probes = 56
   const chars = 3300
   const idOf = (n: number) => `lg${String(n).padStart(2, '0')}`
@@ -1718,6 +1715,40 @@ function scenario(id: string, title: string, body: Body): Scenario {
   return { id, title, ...body }
 }
 
+/**
+ * The scenarios generated in the shape of a measured project: its median
+ * session of each project, and one near the 90th percentile of the larger.
+ */
+export const GENERATED = [
+  {
+    id: 'session-22',
+    title: '22 calls shaped like a ganja-code session before /compact (its median)',
+    calls: 22,
+    project: 'ganja-code',
+    seed: 22,
+  },
+  {
+    id: 'session-55',
+    title: '55 calls shaped like an ai-gateway session before /compact (its median)',
+    calls: 55,
+    project: 'ai-gateway',
+    seed: 55,
+  },
+  {
+    id: 'session-230',
+    title: '230 calls shaped like an ai-gateway session before /compact (about its p90)',
+    calls: 230,
+    project: 'ai-gateway',
+    seed: 230,
+  },
+] as const satisfies readonly {
+  id: string
+  title: string
+  calls: number
+  project: keyof typeof SHAPES.projects
+  seed: number
+}[]
+
 export const SCENARIOS: readonly Scenario[] = [
   scenario(
     'fix-test',
@@ -1745,9 +1776,18 @@ export const SCENARIOS: readonly Scenario[] = [
     allNeededOf(),
   ),
   scenario(
-    'large',
-    'the exploration at 60 calls, its reasoning written out at length',
-    largeOf(),
+    'prose-60',
+    'the exploration at 60 calls, its reasoning written out at length, to force cut stages',
+    writtenOutOf(),
+  ),
+  ...GENERATED.map(({ id, title, calls, project, seed }) =>
+    generateScenario({
+      id,
+      title,
+      calls,
+      shape: SHAPES.projects[project],
+      seed,
+    }),
   ),
 ]
 

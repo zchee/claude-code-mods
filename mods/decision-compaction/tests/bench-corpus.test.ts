@@ -1,8 +1,14 @@
 import type { SessionMessage } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
-import { PRESERVE_RECENT, SCENARIOS, scenarioOf } from '../bench/corpus'
+import {
+  GENERATED,
+  PRESERVE_RECENT,
+  SCENARIOS,
+  scenarioOf,
+} from '../bench/corpus'
 import type { Scenario } from '../bench/corpus'
+import { generateScenario } from '../bench/generate'
 import {
   CATALOG_FETCHED_AT,
   DIRECT_VENDORS,
@@ -13,10 +19,11 @@ import {
   vendorOf,
 } from '../bench/openrouter-catalog'
 import type { CatalogEntry } from '../bench/openrouter-catalog'
+import { SHAPES } from '../bench/shape'
 import { routeOf, wireOf } from '../hooks/providers'
 import type { Route } from '../hooks/providers'
 import { goalOf, pairCalls, stateWithin } from '../hooks/state'
-import type { Stage } from '../hooks/state'
+import type { Call, Stage } from '../hooks/state'
 import { ADDED_ENV, ENV } from './fixtures'
 
 /**
@@ -29,7 +36,10 @@ const SIZES: Readonly<Record<string, readonly [number, number]>> = {
   retry: [8, 20_000],
   'long-output': [4, 45_000],
   'all-needed': [5, 8_000],
-  large: [60, 250_000],
+  'prose-60': [60, 250_000],
+  'session-22': [22, 33_500],
+  'session-55': [55, 88_000],
+  'session-230': [230, 530_000],
 }
 
 /**
@@ -115,8 +125,25 @@ function concludedPathsOf(scenario: Scenario): string[] {
   )
 }
 
+/**
+ * The stage the mod's own fitting reaches for a scenario, under a state
+ * budget and in a route's wire format.
+ */
+function stageOf(scenario: Scenario, budget: number, route: Route): Stage {
+  return stateWithin(
+    scenario.messages,
+    pairCalls(scenario.messages, PRESERVE_RECENT),
+    {
+      maxStateTokens: budget,
+      preserveRecentMessages: PRESERVE_RECENT,
+      goal: goalOf(scenario.messages),
+      wire: wireOf(route),
+    },
+  ).stage
+}
+
 describe('bench corpus', () => {
-  test('success: the scenarios are the six sized above, in order', () => {
+  test('success: the scenarios are the nine sized above, in order', () => {
     expect(SCENARIOS.map(scenario => scenario.id)).toEqual(Object.keys(SIZES))
   })
 
@@ -196,16 +223,16 @@ describe('bench corpus', () => {
     })
   }
 
-  test('success: large has 60 calls, 56 of them judged', () => {
-    const large = scenarioOf('large')
-    const calls = pairCalls(large?.messages ?? [], PRESERVE_RECENT)
+  test('success: prose-60 has 60 calls, 56 of them judged', () => {
+    const prose = scenarioOf('prose-60')
+    const calls = pairCalls(prose?.messages ?? [], PRESERVE_RECENT)
 
     expect(calls.length).toBe(60)
     expect(calls.filter(call => !call.isPinned).length).toBe(56)
   })
 
-  test('success: large puts its size in what the state carries', () => {
-    const messages = scenarioOf('large')?.messages ?? []
+  test('success: prose-60 puts its size in what the state carries', () => {
+    const messages = scenarioOf('prose-60')?.messages ?? []
     const judged = messages
       .filter(message => message.role === 'assistant')
       .filter(message => message.toolUses.length > 0)
@@ -233,44 +260,34 @@ describe('bench corpus', () => {
     expect(inputs.filter(length => length < 80 || length > 150)).toEqual([])
   })
 
-  /**
-   * The stage the mod's own fitting reaches for a scenario, under a state
-   * budget and in a route's wire format.
-   */
-  function stageOf(scenario: Scenario, budget: number, route: Route): Stage {
-    return stateWithin(
-      scenario.messages,
-      pairCalls(scenario.messages, PRESERVE_RECENT),
-      {
-        maxStateTokens: budget,
-        preserveRecentMessages: PRESERVE_RECENT,
-        goal: goalOf(scenario.messages),
-        wire: wireOf(route),
-      },
-    ).stage
-  }
+  test("success: prose-60 does not fit clef-flash's state budget whole", () => {
+    const prose = scenarioOf('prose-60')
 
-  test("success: large does not fit clef-flash's state budget whole", () => {
-    const large = scenarioOf('large')
+    expect(prose).toBeDefined()
 
-    expect(large).toBeDefined()
-
-    if (large === undefined) {
+    if (prose === undefined) {
       return
     }
 
     expect(
-      stageOf(large, 14_000, routeOf('cloudflare', 'clef-flash')),
+      stageOf(prose, 14_000, routeOf('cloudflare', 'clef-flash')),
     ).not.toBe('whole')
   })
 
-  for (const scenario of SCENARIOS.filter(each => each.id !== 'large')) {
+  // prose-60 and session-230 are built to exceed this budget, and session-55
+  // comes within about 1,400 tokens of it, so whether it fits depends on the
+  // wording of the state's context rather than on the corpus.
+  const overBudget = ['prose-60', 'session-55', 'session-230']
+
+  for (const scenario of SCENARIOS.filter(
+    each => !overBudget.includes(each.id),
+  )) {
     test(`success: ${scenario.id} fits a 27,000-token state whole`, () => {
       expect(stageOf(scenario, 27_000, routeOf('typesafe'))).toBe('whole')
     })
   }
 
-  for (const id of ['exploration', 'large']) {
+  for (const id of ['exploration', 'prose-60']) {
     test(`success: ${id} keeps the last read of every file its conclusion names`, () => {
       const scenario = scenarioOf(id)
 
@@ -307,6 +324,289 @@ describe('bench corpus', () => {
 
   test('error: scenarioOf answers undefined for an unknown id', () => {
     expect(scenarioOf('no-such-scenario')).toBeUndefined()
+  })
+})
+
+/**
+ * The middle of a list of numbers, the upper of the two for an even count.
+ */
+function medianOf(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+
+  return sorted[Math.floor(sorted.length / 2)] ?? 0
+}
+
+/**
+ * What a scenario's newest prompt depends on: the paths it names in
+ * backticks and the output it quotes in double quotes.
+ */
+function dependedOf(scenario: Scenario | undefined): {
+  paths: string[]
+  quotes: string[]
+} {
+  const text = scenario?.messages.findLast(isPrompt)?.text ?? ''
+
+  return {
+    paths: [...text.matchAll(/`([^`\s]+\/[^`\s]+\.[a-z]+)`/g)].map(
+      match => match[1] ?? '',
+    ),
+    quotes: [...text.matchAll(/"([^"]+)"/g)].map(match => match[1] ?? ''),
+  }
+}
+
+/**
+ * The tool_use ids of every result in a scenario whose text holds `quote`.
+ */
+function quotedResultsOf(scenario: Scenario, quote: string): string[] {
+  return scenario.messages.flatMap(message =>
+    (message.toolResults ?? []).flatMap(result =>
+      result.text.includes(quote) ? [result.tool_use_id] : [],
+    ),
+  )
+}
+
+/**
+ * The file a call reads, edits or writes; undefined for any other call.
+ */
+function fileOf(call: Call): string | undefined {
+  const path = call.input.file_path
+
+  return ['Read', 'Edit', 'Write'].includes(call.tool) &&
+    typeof path === 'string'
+    ? path
+    : undefined
+}
+
+describe('generated corpus', () => {
+  for (const spec of GENERATED) {
+    const shares: Readonly<Record<string, number>> =
+      SHAPES.projects[spec.project].toolShares
+    const scenario = scenarioOf(spec.id)
+    const messages = scenario?.messages ?? []
+    const calls = pairCalls(messages, PRESERVE_RECENT)
+    const labelOf = (call: Call) => scenario?.expected[call.toolUseId] ?? []
+    const results = new Map(
+      messages.flatMap(message =>
+        (message.toolResults ?? []).map(
+          result => [result.tool_use_id, result.text] as const,
+        ),
+      ),
+    )
+    const quotingOf = (quotes: readonly string[]) =>
+      calls.filter(
+        call =>
+          call.tool === 'Bash' &&
+          quotes.some(quote =>
+            (results.get(call.toolUseId) ?? '').includes(quote),
+          ),
+      )
+
+    test(`success: ${spec.id} is in the corpus with exactly ${spec.calls} calls`, () => {
+      expect(scenario).toBeDefined()
+      expect(calls.length).toBe(spec.calls)
+    })
+
+    test(`success: ${spec.id} calls each tool within 10 points of its ${spec.project} share`, () => {
+      const total = Object.values(shares).reduce((sum, share) => sum + share, 0)
+      const tools = new Set([
+        ...Object.keys(shares),
+        ...calls.map(call => call.tool),
+      ])
+      const strays = [...tools].flatMap(tool => {
+        const share = (shares[tool] ?? 0) / total
+        const made =
+          calls.filter(call => call.tool === tool).length / calls.length
+
+        return Math.abs(made - share) <= 0.1 ? [] : [[tool, made, share]]
+      })
+
+      expect(strays).toEqual([])
+    })
+
+    test(`success: ${spec.id} writes under 150 characters of text per call, at the median`, () => {
+      const perCall = messages
+        .filter(
+          message => message.role === 'assistant' && message.toolUses.length > 0,
+        )
+        .map(message => message.text.length / message.toolUses.length)
+
+      expect(medianOf(perCall)).toBeLessThan(150)
+    })
+
+    test(`success: ${spec.id} sends over 800 characters of input per call, at the median`, () => {
+      expect(
+        medianOf(calls.map(call => JSON.stringify(call.input).length)),
+      ).toBeGreaterThan(800)
+    })
+
+    test(`success: ${spec.id} answers in under 2,000 characters, at the median`, () => {
+      expect(medianOf(calls.map(call => call.resultChars))).toBeLessThan(2_000)
+    })
+
+    test(`success: ${spec.id} keeps the last operation of every file its newest prompt names`, () => {
+      const { paths } = dependedOf(scenario)
+
+      expect(paths.length).toBeGreaterThanOrEqual(1)
+
+      for (const path of paths) {
+        const last = calls.findLast(call => fileOf(call) === path)
+
+        expect([path, last?.isPinned]).toEqual([path, false])
+        expect([path, last === undefined ? [] : labelOf(last)]).toEqual([
+          path,
+          ['keep'],
+        ])
+      }
+    })
+
+    test(`success: ${spec.id} keeps the one Bash whose output its newest prompt quotes`, () => {
+      const { quotes } = dependedOf(scenario)
+      const quoting = quotingOf(quotes)
+
+      expect(quotes.length).toBe(1)
+      expect(quoting.length).toBe(1)
+      expect(quoting.map(call => [call.isPinned, labelOf(call)])).toEqual([
+        [false, ['keep']],
+      ])
+    })
+
+    test(`success: ${spec.id} keeps nothing its newest prompt does not depend on`, () => {
+      const { paths, quotes } = dependedOf(scenario)
+      const depended = [
+        ...paths.map(
+          path => calls.findLast(call => fileOf(call) === path)?.toolUseId,
+        ),
+        ...quotingOf(quotes).map(call => call.toolUseId),
+      ]
+      const kept = calls
+        .filter(call => labelOf(call).includes('keep'))
+        .map(call => call.toolUseId)
+
+      expect(kept.sort()).toEqual(depended.sort())
+    })
+
+    test(`success: ${spec.id} keeps no read a later operation on its file supersedes`, () => {
+      const superseded = calls.filter(
+        (call, at) =>
+          call.tool === 'Read' &&
+          calls.slice(at + 1).some(later => fileOf(later) === fileOf(call)),
+      )
+
+      expect(
+        superseded
+          .filter(call => labelOf(call).includes('keep'))
+          .map(call => call.toolUseId),
+      ).toEqual([])
+    })
+
+    test(`success: ${spec.id} keeps no call that failed`, () => {
+      expect(
+        calls
+          .filter(call => call.isError && labelOf(call).includes('keep'))
+          .map(call => call.toolUseId),
+      ).toEqual([])
+    })
+  }
+
+  test('success: the generated scenarios hold superseded reads and failed runs to judge', () => {
+    const judged = GENERATED.map(spec =>
+      pairCalls(scenarioOf(spec.id)?.messages ?? [], PRESERVE_RECENT).filter(
+        call => !call.isPinned,
+      ),
+    )
+    const superseded = judged.flatMap(calls =>
+      calls.filter(
+        (call, at) =>
+          call.tool === 'Read' &&
+          calls.slice(at + 1).some(later => fileOf(later) === fileOf(call)),
+      ),
+    )
+
+    expect(superseded.length).toBeGreaterThan(0)
+    expect(judged.flat().filter(call => call.isError).length).toBeGreaterThan(0)
+  })
+
+  test('success: one seed gives one scenario every time, another seed another', () => {
+    for (const { id, title, calls, project, seed } of GENERATED) {
+      const generated = (from: number) =>
+        generateScenario({
+          id,
+          title,
+          calls,
+          shape: SHAPES.projects[project],
+          seed: from,
+        })
+
+      expect(generated(seed)).toEqual(generated(seed))
+      expect(generated(seed)).toEqual(scenarioOf(id))
+      expect(JSON.stringify(generated(seed + 1))).not.toBe(
+        JSON.stringify(generated(seed)),
+      )
+    }
+  })
+
+  test('success: the line the newest prompt quotes is printed by one result, a kept one, at seed 19 and 55 calls', () => {
+    const scenario = generateScenario({
+      id: 'quoted',
+      title: 'quoted',
+      calls: 55,
+      shape: SHAPES.projects['ai-gateway'],
+      seed: 19,
+    })
+    const { quotes } = dependedOf(scenario)
+    const ids = quotedResultsOf(scenario, quotes[0] ?? '')
+
+    expect(quotes.length).toBe(1)
+    expect(ids.length).toBe(1)
+    expect(ids.map(id => scenario.expected[id])).toEqual([['keep']])
+  })
+
+  test('success: the line the newest prompt quotes is printed by one result, a kept one, for seeds 1-40', () => {
+    const strays: [string, number, string[], unknown[]][] = []
+    let quoted = 0
+
+    for (const project of ['ai-gateway', 'ganja-code'] as const) {
+      for (const calls of [22, 55]) {
+        for (let seed = 1; seed <= 40; seed++) {
+          const scenario = generateScenario({
+            id: 'sweep',
+            title: 'sweep',
+            calls,
+            shape: SHAPES.projects[project],
+            seed,
+          })
+          const [quote] = dependedOf(scenario).quotes
+
+          if (quote === undefined) {
+            continue
+          }
+
+          quoted++
+
+          const ids = quotedResultsOf(scenario, quote)
+          const labels = ids.map(id => scenario.expected[id])
+
+          if (ids.length !== 1 || labels[0]?.[0] !== 'keep') {
+            strays.push([`${project}/${calls}`, seed, ids, labels])
+          }
+        }
+      }
+    }
+
+    expect(quoted).toBeGreaterThan(0)
+    expect(strays).toEqual([])
+  })
+
+  test("success: session-230 does not fit typesafe's 27,000-token state whole", () => {
+    const session = scenarioOf('session-230')
+
+    expect(session).toBeDefined()
+
+    if (session === undefined) {
+      return
+    }
+
+    expect(stageOf(session, 27_000, routeOf('typesafe'))).not.toBe('whole')
   })
 })
 

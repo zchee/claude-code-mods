@@ -6,6 +6,7 @@ import type { Scenario } from '../bench/corpus'
 import {
   CATALOG_FETCHED_AT,
   DIRECT_VENDORS,
+  NOT_SYSTEM_ONE,
   OPENROUTER_CATALOG,
   budgetOverrideOf,
   openrouterOnlyOf,
@@ -716,8 +717,8 @@ describe('openrouter catalog', () => {
     expect(openrouterOnlyOf(EXCERPT)).toEqual(OPENROUTER_CATALOG)
   })
 
-  test('success: the static table holds the twenty OpenRouter-only models', () => {
-    expect(OPENROUTER_CATALOG.length).toBe(20)
+  test('success: the static table holds the sixteen OpenRouter-only models', () => {
+    expect(OPENROUTER_CATALOG.length).toBe(16)
     expect(CATALOG_FETCHED_AT).toMatch(/^\d{4}-\d{2}-\d{2}$/)
 
     for (const entry of OPENROUTER_CATALOG) {
@@ -739,17 +740,28 @@ describe('openrouter catalog', () => {
     ])
   })
 
-  test('success: a window the listing does not state reads as 0', () => {
-    const span = openrouterOnlyOf(EXCERPT).find(
-      entry => entry.id === 'respan/span-01',
+  test('success: the models that do not take System One are filtered out', () => {
+    const listed = EXCERPT.data.flatMap(model =>
+      typeof model === 'object' && model !== null && 'id' in model
+        ? [String(model.id)]
+        : [],
     )
+    const ids = openrouterOnlyOf(EXCERPT).map(entry => entry.id)
 
-    expect(span).toEqual({
-      id: 'respan/span-01',
-      vendor: 'respan',
-      contextLength: 0,
-      promptPricePerToken: 0.00000002,
-    })
+    expect(
+      NOT_SYSTEM_ONE.filter(id => listed.includes(id)),
+      'the saved listing holds every excluded id',
+    ).toEqual([...NOT_SYSTEM_ONE])
+    expect(ids.filter(id => NOT_SYSTEM_ONE.includes(id))).toEqual([])
+    expect(
+      OPENROUTER_CATALOG.filter(entry => NOT_SYSTEM_ONE.includes(entry.id)),
+    ).toEqual([])
+    expect([...NOT_SYSTEM_ONE].sort()).toEqual([
+      'respan/span-01',
+      'respan/span-01-lite',
+      'respan/span-01-lite:free',
+      'scaledown/classify-1',
+    ])
   })
 
   test('success: the result is sorted by id whatever the listing order', () => {
@@ -774,6 +786,19 @@ describe('openrouter catalog', () => {
     architecture: { output_modalities: ['decisions'] },
     pricing: { prompt: '0.00000002' },
     ...over,
+  })
+
+  test('success: a window the listing does not state reads as 0', () => {
+    expect(
+      openrouterOnlyOf({ data: [listedWith({ context_length: 0 })] }),
+    ).toEqual([
+      {
+        id: 'example/decide-1',
+        vendor: 'example',
+        contextLength: 0,
+        promptPricePerToken: 0.00000002,
+      },
+    ])
   })
 
   test('success: the model the malformed ones are made from passes the filter', () => {

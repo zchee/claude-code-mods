@@ -29,10 +29,25 @@ export const DIRECT_VENDORS: readonly string[] = [
 ]
 
 /**
+ * The models OpenRouter lists with the `decisions` output modality that do
+ * not take System One's request: on 2026-11-03 each answered every request
+ * of the bench with HTTP 400. Respan's span-01 family takes a state that is
+ * a string or `{input: messages, output: message}`, and ScaleDown's
+ * classify-1 takes `{text, document, document_mime_type}`.
+ */
+export const NOT_SYSTEM_ONE: readonly string[] = [
+  'respan/span-01',
+  'respan/span-01-lite',
+  'respan/span-01-lite:free',
+  'scaledown/classify-1',
+]
+
+/**
  * The models OpenRouter lists with the `decisions` output modality whose
- * vendor the mod has no provider for, sorted by id as `openrouterOnlyOf`
- * sorts them. The `~` aliases are left out: each points at one of these,
- * and a run records the release an alias answers as instead.
+ * vendor the mod has no provider for, less `NOT_SYSTEM_ONE`, sorted by id
+ * as `openrouterOnlyOf` sorts them. The `~` aliases are left out: each
+ * points at one of these, and a run records the release an alias answers
+ * as instead.
  */
 export const OPENROUTER_CATALOG: readonly CatalogEntry[] = [
   {
@@ -108,34 +123,10 @@ export const OPENROUTER_CATALOG: readonly CatalogEntry[] = [
     promptPricePerToken: 0.00000006,
   },
   {
-    id: 'respan/span-01',
-    vendor: 'respan',
-    contextLength: 0,
-    promptPricePerToken: 0.00000002,
-  },
-  {
-    id: 'respan/span-01-lite',
-    vendor: 'respan',
-    contextLength: 0,
-    promptPricePerToken: 0,
-  },
-  {
-    id: 'respan/span-01-lite:free',
-    vendor: 'respan',
-    contextLength: 0,
-    promptPricePerToken: 0,
-  },
-  {
     id: 'respan/span-02',
     vendor: 'respan',
     contextLength: 131_072,
     promptPricePerToken: 0.00000001,
-  },
-  {
-    id: 'scaledown/classify-1',
-    vendor: 'scaledown',
-    contextLength: 1_000_000,
-    promptPricePerToken: 0.00000004,
   },
   {
     id: 'togethercomputer/tev1-4b-experimental',
@@ -220,9 +211,9 @@ function entryOf(model: unknown): CatalogEntry | undefined {
 /**
  * The decision models of a fetched OpenRouter listing (the shape of
  * `GET /api/v1/models`) that only OpenRouter reaches: those whose output
- * modalities include `decisions`, less the models of `DIRECT_VENDORS` and
- * the `~` aliases. An entry missing a field it needs is skipped, not
- * refused, so one malformed model does not hide the rest.
+ * modalities include `decisions`, less the models of `DIRECT_VENDORS`, the
+ * `~` aliases and `NOT_SYSTEM_ONE`. An entry missing a field it needs is
+ * skipped, not refused, so one malformed model does not hide the rest.
  *
  * @param listing the parsed JSON of the listing
  * @returns the candidates, sorted by id
@@ -240,7 +231,8 @@ export function openrouterOnlyOf(listing: unknown): CatalogEntry[] {
     if (
       entry !== undefined &&
       !entry.id.startsWith('~') &&
-      !DIRECT_VENDORS.includes(entry.vendor)
+      !DIRECT_VENDORS.includes(entry.vendor) &&
+      !NOT_SYSTEM_ONE.includes(entry.id)
     ) {
       entries.push(entry)
     }

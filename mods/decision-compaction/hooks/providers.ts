@@ -169,6 +169,12 @@ type Descriptor = {
    */
   countsStatePerQuestion?: true
   /**
+   * Whether a model counts the state once for every question, for a
+   * provider whose models differ in this; `countsStatePerQuestion` stands
+   * for every model when it is set.
+   */
+  modelCountsStatePerQuestionOf?: (model: string) => true | undefined
+  /**
    * True for a provider that refuses a request too long for its window
    * rather than cutting the state, so that its count of input tokens is
    * never read as a cut.
@@ -369,6 +375,50 @@ const OPENROUTER_CLEF_WINDOWS: Readonly<Record<string, number>> = {
  * the mod holds a model to whose limit no one documented.
  */
 const OPENROUTER_OTHER_WINDOW = 32_000
+
+/**
+ * What some models OpenRouter forwards take beyond the window, as measured
+ * on 2026-11-03 with requests of 40 and 58 questions. Nace's drex-max and
+ * drex-v2.0 refused more than 16 questions (HTTP 422, "questions must be an
+ * object of 1..16 questions", "too many questions (40); limit is 16") and
+ * Together's tev1 more than 32 (HTTP 400, "Tev1 accepts at most 32
+ * questions per request"). Upstage's solar-decide answered 8 to 12
+ * questions in a median of 16 seconds and did not answer 40 within 30, so
+ * it is held to 32. Upstage's solar-decide-flash and Respan's span-02
+ * answered, but their `usage.input_tokens` counted the state once for
+ * every question (87,192 and 89,030 tokens on 40 questions, 1,042,485 and
+ * 1,173,565 on 58), so what one reading took is the count divided by the
+ * questions asked. A model not named here takes 64 questions and counts
+ * the state once.
+ */
+const OPENROUTER_MODEL_LIMITS: Readonly<
+  Record<string, { maxQuestions?: number; countsStatePerQuestion?: true }>
+> = {
+  'nace-ai/drex-max': { maxQuestions: 16 },
+  'nace-ai/drex-v2.0': { maxQuestions: 16 },
+  'togethercomputer/tev1-4b-experimental': { maxQuestions: 32 },
+  'upstage/solar-decide': { maxQuestions: 32 },
+  'upstage/solar-decide-flash': {
+    maxQuestions: 32,
+    countsStatePerQuestion: true,
+  },
+  'respan/span-02': { countsStatePerQuestion: true },
+}
+
+/**
+ * The entry of `OPENROUTER_MODEL_LIMITS` for a model, by its id as written
+ * or with white space around it; none for a model the table does not name,
+ * an object key such as `constructor` included.
+ */
+function openrouterModelLimitsOf(
+  model: string,
+): (typeof OPENROUTER_MODEL_LIMITS)[string] | undefined {
+  const named = model.trim()
+
+  return Object.hasOwn(OPENROUTER_MODEL_LIMITS, named)
+    ? OPENROUTER_MODEL_LIMITS[named]
+    : undefined
+}
 
 /**
  * The text OpenRouter sends to Jev in TypeSafe's default mode: "Requests
@@ -672,7 +722,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
   // `~typesafe/jev-latest`. An id that has an author prefix is sent on as
   // written, so the same name without the `~` is an id its documentation
   // does not list. Any other model it forwards has limits of its own
-  // (`limitsOf`).
+  // (`limitsOf`), and some count the state once a question
+  // (`OPENROUTER_MODEL_LIMITS`).
   openrouter: {
     title: 'OpenRouter',
     defaultModel: '~typesafe/jev-latest',
@@ -680,6 +731,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
     family: jevFamilyOf('openrouter'),
     isGateway: true,
     limits: { maxStateTokens: 262_144, maxRequestTokens: 262_144 },
+    modelCountsStatePerQuestionOf: model =>
+      openrouterModelLimitsOf(model)?.countsStatePerQuestion,
     wanted: OPENROUTER_JEV_WANTED,
     modelWantedOf: model =>
       JEV.test(model.trim()) ? undefined : OPENROUTER_OTHER_WANTED,
@@ -840,8 +893,9 @@ export function providerOf(value: unknown): ProviderName | undefined {
  * other model it serves is held to Cloudflare's 64 questions as well,
  * because Clef, the one other System One model, is served there and refuses
  * a request with more (HTTP 422, "Dictionary should have at most 64
- * items"). A Clef model is held to where OpenRouter cuts it, and any other
- * model to the window of a model whose limit no one documented.
+ * items"), unless `OPENROUTER_MODEL_LIMITS` holds it to fewer. A Clef model
+ * is held to where OpenRouter cuts it, and any other model to the window of
+ * a model whose limit no one documented.
  *
  * @param route the provider and the model
  * @returns its limits
@@ -859,7 +913,9 @@ export function limitsOf(route: Route): Limits {
     return {
       maxStateTokens: window,
       maxRequestTokens: window,
-      maxQuestions: TABLE.cloudflare.limits.maxQuestions,
+      maxQuestions:
+        openrouterModelLimitsOf(model)?.maxQuestions ??
+        TABLE.cloudflare.limits.maxQuestions,
     }
   }
 
@@ -1398,7 +1454,11 @@ export function replyFrom(
   // the model saw part of are no ground for removing anything. A provider
   // that counts the state once a question is held to what one reading took;
   // one that refuses a request too long has nothing to be held to.
-  const { countsStatePerQuestion, refusesOverlong } = TABLE[route.provider]
+  const descriptor = TABLE[route.provider]
+  const { refusesOverlong } = descriptor
+  const countsStatePerQuestion =
+    descriptor.countsStatePerQuestion ??
+    descriptor.modelCountsStatePerQuestionOf?.(route.model)
   const { maxRequestTokens } = limitsOf(route)
   const counted =
     reply.usage.input_tokens === undefined || !countsStatePerQuestion

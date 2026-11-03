@@ -48,7 +48,7 @@ const DECIDED = scoring({ t1: [0.9, 0.1], t2: [0.1, 0.1], t3: [0.9, 0.9] })
  */
 const DECIDED_BY_TEXT: Answerer = (id, question, seen) => {
   const call = /tool call (\S+) \(/.exec(question.instructions)?.[1]
-  const kind = question.instructions.startsWith('Does the complete output')
+  const kind = question.instructions.startsWith('Will the assistant need the exact output')
     ? 'result'
     : 'call'
 

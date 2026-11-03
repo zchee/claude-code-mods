@@ -1,9 +1,12 @@
 import type { HttpInit, HttpResponse } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
+import { wordingOf } from '../bench/wordings'
+import type { Wording } from '../bench/wordings'
+import { questionsOf, questionsWith } from '../hooks/compact'
 import { configOf } from '../hooks/config'
 import { run } from '../hooks/run'
-import { estimatedTokensOf } from '../hooks/state'
+import { estimatedTokensOf, pairCalls } from '../hooks/state'
 import type { Job } from '../hooks/run'
 import { listenersOf, readsOf } from './fixtures'
 
@@ -296,5 +299,69 @@ describe('budgets left unset', () => {
     })
 
     expect(omni <= 8_000, `clef-omni sent ${omni}`).toBe(true)
+  })
+})
+
+describe('a wording other than the usual', () => {
+  /**
+   * Compacts `reads` answered Read calls, with the wording on the job when
+   * one is given, and resolves with every request body, in the order sent.
+   */
+  async function bodiesOf(reads: number, wording?: Wording) {
+    const bodies: string[] = []
+    const { ports } = worldOf(init => {
+      bodies.push(init.body ?? '')
+
+      return answeredAll(init)
+    })
+
+    await run({
+      messages: readsOf(reads),
+      config: configOf(OPTIONS),
+      credentials: CREDENTIALS,
+      ports,
+      ...(wording === undefined ? {} : { wording }),
+    })
+
+    return bodies
+  }
+
+  /**
+   * The context and the questions of a request body.
+   */
+  function askedIn(body: string | undefined) {
+    return JSON.parse(body ?? '{}') as {
+      state?: { context?: string }
+      questions?: Record<string, unknown>
+    }
+  }
+
+  test("success: the job's wording is the context and the questions sent", async () => {
+    const wording = wordingOf('legacy') as Wording
+    const [usual, ...moreUsual] = (await bodiesOf(3)).map(askedIn)
+    const [worded, ...moreWorded] = (await bodiesOf(3, wording)).map(askedIn)
+    const calls = pairCalls(readsOf(3), 0)
+
+    expect(moreUsual, 'three calls go in one batch').toEqual([])
+    expect(moreWorded, 'in either wording').toEqual([])
+    expect(worded?.state?.context).toBe(wording.context)
+    expect(worded?.state?.context).not.toBe(usual?.state?.context)
+    expect(worded?.questions).toEqual(
+      Object.fromEntries(
+        calls.flatMap(call => Object.entries(questionsWith(call, wording))),
+      ),
+    )
+    expect(usual?.questions).toEqual(
+      Object.fromEntries(
+        calls.flatMap(call => Object.entries(questionsOf(call))),
+      ),
+    )
+  })
+
+  test('success: a job without a wording sends what the current wording sends, byte for byte', async () => {
+    const usual = await bodiesOf(40)
+
+    expect(usual, 'forty calls go in two batches').toHaveLength(2)
+    expect(await bodiesOf(40, wordingOf('current'))).toEqual(usual)
   })
 })

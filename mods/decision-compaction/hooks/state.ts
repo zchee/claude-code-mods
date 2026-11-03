@@ -111,11 +111,25 @@ type FitNeed = {
    * held to both budgets; absent, it is fitted in tokens alone.
    */
   bytes?: { limit: number; besideOf: (state: State) => number }
+  /**
+   * The frame the questions are read in, in place of `CONTEXT`. A benchmark
+   * sets it to compare wordings; every compaction leaves it unset. It is
+   * part of the state, so the state is fitted with it.
+   */
+  context?: string
 }
 
 /**
  * The frame every question is read in. It carries the rubric once, so the
  * per-call questions can stay short: they are repeated for every call.
+ *
+ * It ties the goal to the newest prompt, which is what decides the next
+ * step, and does not say that the assistant can run any tool again: that
+ * sentence invited a "no" for every file read. Measured on 2026-11-03
+ * against a labelled corpus, the context with it, and the questions of its
+ * time, scored a median of 0.26 for the call and 0.10 for the result on
+ * calls a reference keeps and dropped nearly every call on every provider;
+ * this one, with the questions now asked, scores 0.45 and 0.20.
  */
 const CONTEXT =
   'This is the transcript of a coding assistant session whose context ' +
@@ -125,9 +139,9 @@ const CONTEXT =
   '`calls` with its `id` and its input. Its output is not shown: `result` ' +
   'only says whether it succeeded and how long it was. Long texts may be ' +
   'shortened and old messages may be missing. `goal` says what the ' +
-  'assistant is working on. Each question is about one tool call, named by ' +
-  'its `id`. What is removed is gone for good, but the assistant can run ' +
-  'any tool again and read any file again.'
+  'assistant is working on, and what the assistant will do next depends on ' +
+  'the newest prompt in it. Each question is about one tool call, named by ' +
+  'its `id`.'
 
 /**
  * The successive caps on a call's serialised input, in characters.
@@ -584,7 +598,8 @@ function folded(
  *
  * @param messages the conversation
  * @param calls its paired calls, as `pairCalls` answered them
- * @param need the budget, the pinning, the goal and the wire format
+ * @param need the budget, the pinning, the goal, the wire format and, when
+ * given, the context in place of the usual one
  * @returns the fitted state, its estimated size and the stage reached
  */
 export function stateWithin(
@@ -592,8 +607,9 @@ export function stateWithin(
   calls: readonly Call[],
   need: FitNeed,
 ): Fitted {
+  const context = need.context ?? CONTEXT
   const frame = (conversation: Entry[]): State => ({
-    context: CONTEXT,
+    context,
     goal: need.goal,
     conversation,
   })

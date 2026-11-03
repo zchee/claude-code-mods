@@ -8,11 +8,18 @@ import {
   decide,
   demandOf,
   questionsOf,
+  questionsWith,
   rebuild,
   reductionOf,
   untouched,
 } from '../hooks/compact'
-import type { Ask, Decision, Demand, Scores } from '../hooks/compact'
+import type {
+  Ask,
+  Decision,
+  Demand,
+  QuestionWording,
+  Scores,
+} from '../hooks/compact'
 import { OPENAI } from '../hooks/openai'
 import {
   bytesBesideOf,
@@ -49,6 +56,15 @@ function decisionsOf(
   )
 }
 
+/**
+ * A wording no compaction asks in, plain enough to find in a request.
+ */
+const CANDIDATE: QuestionWording = {
+  callQuestion: named => `Is ${named} needed?`,
+  resultQuestion: (named, outcome, resultChars) =>
+    `Is the output of ${named}, ${outcome}${resultChars} characters, needed?`,
+}
+
 const KEEP_CALL_ONLY: Scores = { keepCall: 0.9, keepResult: 0.1 }
 const KEEP_NOTHING: Scores = { keepCall: 0.1, keepResult: 0.1 }
 
@@ -73,6 +89,42 @@ describe('questionsOf', () => {
     expect(question?.instructions).toContain(
       'tool call t1 (Read), 7 characters long',
     )
+  })
+})
+
+describe('questionsWith', () => {
+  test('success: another wording changes the instructions and nothing else', () => {
+    const calls = [
+      callOf(1),
+      callOf(2, { tool: 'Bash', isError: true, resultChars: 42 }),
+    ]
+
+    for (const call of calls) {
+      const usual = questionsOf(call)
+      const worded = questionsWith(call, CANDIDATE)
+
+      expect(Object.keys(worded)).toEqual(Object.keys(usual))
+
+      for (const [id, question] of Object.entries(worded)) {
+        const { instructions, ...rest } = question
+        const { instructions: usualInstructions, ...usualRest } = usual[
+          id
+        ] as typeof question
+
+        expect(rest).toEqual(usualRest)
+        expect(instructions).not.toBe(usualInstructions)
+      }
+    }
+
+    expect(questionsWith(calls[1] as Call, CANDIDATE)).toEqual({
+      call_t2: { type: 'noul', instructions: 'Is tool call t2 (Bash) needed?' },
+      result_t2: {
+        type: 'noul',
+        instructions:
+          'Is the output of tool call t2 (Bash), an error, 42 characters, ' +
+          'needed?',
+      },
+    })
   })
 })
 
@@ -1001,6 +1053,75 @@ describe('compact', () => {
         4000 +
         '{"command":"npm test"}'.length,
     )
+  })
+
+  test('success: questions given in another wording are the ones every batch asks', async () => {
+    const { messages, calls, fitted } = prepared(2)
+    const usual = fakeAsk({ result_t1: 0.1, call_t2: 0.1, result_t2: 0.1 })
+    const worded = fakeAsk({ result_t1: 0.1, call_t2: 0.1, result_t2: 0.1 })
+    const settings = {
+      ...SETTINGS,
+      budget: { ...SETTINGS.budget, questions: 2 },
+    }
+    const before = await compact(messages, calls, fitted, usual.ask, settings)
+    const after = await compact(messages, calls, fitted, worded.ask, {
+      ...settings,
+      questionsFor: call => questionsWith(call, CANDIDATE),
+    })
+
+    expect(worded.asked.map(request => request.questions)).toEqual(
+      calls
+        .filter(call => !call.isPinned)
+        .map(call => questionsWith(call, CANDIDATE)),
+    )
+    expect(
+      worded.asked.map(request => Object.keys(request.questions)),
+      'the same ids in the same batches',
+    ).toEqual(usual.asked.map(request => Object.keys(request.questions)))
+    expect(
+      usual.asked.map(request => request.questions),
+      'and left unset, the usual questions',
+    ).toEqual(
+      calls.filter(call => !call.isPinned).map(call => questionsOf(call)),
+    )
+
+    for (const request of worded.asked) {
+      expect(request.state).toBe(fitted.state)
+    }
+
+    expect(after.decisions).toEqual(before.decisions)
+  })
+
+  test('success: the batches are sized for the questions that go out', () => {
+    const calls = callsOf(8)
+    const wire = BARE
+    // Every question said twice: one call's questions still fit where all
+    // of the usual ones do, and all of them no longer do.
+    const twiceFor = (call: Call): Questions =>
+      Object.fromEntries(
+        Object.entries(questionsOf(call)).map(([id, question]) => [
+          id,
+          {
+            ...question,
+            instructions: `${question.instructions} ${question.instructions}`,
+          },
+        ]),
+      )
+    const demand = demandOf(calls, wire)
+    const twiceDemand = demandOf(calls, wire, undefined, twiceFor)
+
+    expect(twiceDemand.batchTokens).toBeGreaterThan(demand.batchTokens)
+    expect(twiceDemand.batchBytes).toBeGreaterThan(demand.batchBytes)
+    expect(twiceDemand.longestQuestion).toBeGreaterThan(demand.longestQuestion)
+
+    // The room left beside the state is what the usual questions take.
+    const budget = {
+      stateTokens: 1_000,
+      requestTokens: 1_000 + 32 + demand.batchTokens,
+    }
+
+    expect(batchesOf(calls, 1_000, budget, wire)).toHaveLength(1)
+    expect(batchesOf(calls, 1_000, budget, wire, twiceFor)).toHaveLength(2)
   })
 
   test('success: a provider that reports no usage leaves the figures absent', async () => {

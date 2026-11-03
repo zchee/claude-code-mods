@@ -8,9 +8,11 @@ import {
   compact,
   demandOf,
   LIMIT_SHARE,
+  questionsOf,
+  questionsWith,
   untouched,
 } from './compact'
-import type { Budget, Outcome } from './compact'
+import type { Budget, Outcome, QuestionWording } from './compact'
 import { eligibleOf } from './config'
 import type { Config } from './config'
 import {
@@ -25,7 +27,7 @@ import {
 import type { Credentials, Route } from './providers'
 import { chooseRoute, profileOf } from './route'
 import { estimatedTokensOf, goalOf, pairCalls, stateWithin } from './state'
-import type { Fitted } from './state'
+import type { Call, Fitted } from './state'
 
 /**
  * One compaction to carry out.
@@ -39,6 +41,12 @@ export type Job = {
   config: Config
   credentials: Credentials
   ports: Ports
+  /**
+   * The questions about each call and the state's context, in place of the
+   * ones every compaction asks in. A benchmark sets it to compare wordings
+   * through the same path a compaction takes; a compaction leaves it unset.
+   */
+  wording?: QuestionWording & { context: string }
 }
 
 /**
@@ -83,7 +91,7 @@ export type Result = {
  * @returns the result
  */
 export async function run(job: Job): Promise<Result> {
-  const { messages, config, credentials, ports } = job
+  const { messages, config, credentials, ports, wording } = job
 
   if (config.refusal !== undefined) {
     throw new Error(config.refusal)
@@ -102,8 +110,17 @@ export async function run(job: Job): Promise<Result> {
     return { outcome: untouched(messages, calls), route: configured }
   }
 
+  const questionsFor =
+    wording === undefined
+      ? questionsOf
+      : (call: Call) => questionsWith(call, wording)
   const demandFor = (route: Route) =>
-    demandOf(unpinned, wireOf(route), limitsOf(route).maxQuestions)
+    demandOf(
+      unpinned,
+      wireOf(route),
+      limitsOf(route).maxQuestions,
+      questionsFor,
+    )
   // A budget the person left unset is the one the route asks for, so a
   // provider decision weighs each route by its own.
   const budgetFor = (route: Route) =>
@@ -168,6 +185,7 @@ export async function run(job: Job): Promise<Result> {
           fittedFor(route).tokens,
           heldTo(route, routeAsked),
           wireOf(route),
+          questionsFor,
         )
       } catch {
         return undefined
@@ -189,6 +207,7 @@ export async function run(job: Job): Promise<Result> {
       preserveRecentMessages: config.preserveRecentMessages,
       goal,
       wire: wireOf(configured),
+      ...(wording === undefined ? {} : { context: wording.context }),
       // Held to the same share of a byte cap as the request is below, with
       // the bytes of one request's questions left free.
       ...(maxRequestBytes === undefined
@@ -253,7 +272,7 @@ export async function run(job: Job): Promise<Result> {
               )
             }
 
-            batchesOf(unpinned, tokens, budget, wireOf(route))
+            batchesOf(unpinned, tokens, budget, wireOf(route), questionsFor)
           } catch (error) {
             return messageOf(error)
           }
@@ -289,6 +308,7 @@ export async function run(job: Job): Promise<Result> {
         keepThreshold: config.keepThreshold,
         truncateHeadChars: config.truncateHeadChars,
         halt: attempt.fail,
+        questionsFor,
       },
     )
     const routeAsked = askedBytesOf(result.route)

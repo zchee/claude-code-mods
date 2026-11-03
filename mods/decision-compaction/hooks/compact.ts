@@ -196,34 +196,82 @@ function resultQuestionId(call: Call): string {
 }
 
 /**
- * What is asked about a single call, as two questions. They are separate
- * because the answers differ in practice: that a file was read can matter
- * long after its contents stopped mattering.
+ * How the two questions about a call are worded, given the parts that vary
+ * from call to call: `named` says which call it is, `outcome` is
+ * `'an error, '` for a call that failed and empty otherwise, and
+ * `resultChars` is the length of its output.
+ */
+export type QuestionWording = {
+  callQuestion: (named: string) => string
+  resultQuestion: (
+    named: string,
+    outcome: string,
+    resultChars: number,
+  ) => string
+}
+
+/**
+ * Builds the questions asked about one call.
+ */
+export type QuestionsFor = (call: Call) => Questions
+
+/**
+ * The wording every compaction asks in. It asks whether the assistant will
+ * need the call, and the exact output, for what comes next. Measured on
+ * 2026-11-03 against a labelled corpus, the wording before it ("still need
+ * to know that it made", "word for word", with a context saying the
+ * assistant can run any tool again) scored a median of 0.26 for the call
+ * and 0.10 for the result on calls a reference keeps, and dropped nearly
+ * every call on every provider; this one scores 0.45 and 0.20 and keeps the
+ * calls labelled to stay apart from those labelled to go.
+ */
+const WORDING: QuestionWording = {
+  callQuestion: named =>
+    `Will the assistant need the fact that it ran ${named}, and with which ` +
+    'input, to carry on with the goal?',
+  resultQuestion: (named, outcome, resultChars) =>
+    `Will the assistant need the exact output of ${named}, ${outcome}` +
+    `${resultChars} characters long, for the next step of the goal, rather ` +
+    'than a summary or a fresh run?',
+}
+
+/**
+ * What is asked about a single call, as two questions, in a given wording.
+ * The ids and the answer type do not depend on the wording, so a benchmark
+ * can put another wording to a provider and read its answers the same way.
  *
- * The rubric they are read under is in the state's `context`, sent once.
- *
+ * @param call the call asked about
+ * @param wording how the two questions are worded
  * @returns its two `noul` questions, by id
  */
-export function questionsOf(call: Call): Questions {
+export function questionsWith(call: Call, wording: QuestionWording): Questions {
   const named = `tool call ${call.id} (${call.tool})`
   const outcome = call.isError ? 'an error, ' : ''
 
   return {
     [callQuestionId(call)]: {
       type: 'noul',
-      instructions:
-        `Does the assistant still need to know that it made ${named}, and ` +
-        'with which input, to carry on with the goal?',
+      instructions: wording.callQuestion(named),
     },
     [resultQuestionId(call)]: {
       type: 'noul',
-      instructions:
-        `Does the complete output of ${named}, ${outcome}` +
-        `${call.resultChars} characters long, have to stay word for word ` +
-        'because the assistant still relies on its content and running the ' +
-        'tool again would not bring it back?',
+      instructions: wording.resultQuestion(named, outcome, call.resultChars),
     },
   }
+}
+
+/**
+ * What is asked about a single call, as two questions. They are separate
+ * because the answers differ in practice: that a file was read can matter
+ * long after its contents stopped mattering. They are asked in `WORDING`,
+ * whose comment says why that wording was chosen.
+ *
+ * The rubric they are read under is in the state's `context`, sent once.
+ *
+ * @returns its two `noul` questions, by id
+ */
+export function questionsOf(call: Call): Questions {
+  return questionsWith(call, WORDING)
 }
 
 /**
@@ -235,12 +283,13 @@ export function questionsOf(call: Call): Questions {
 function questionTokensOf(
   call: Call,
   wire: Wire,
+  questionsFor: QuestionsFor,
 ): { both: number; longest: number; bytes: number } {
   let both = 0
   let longest = 0
   let bytes = 0
 
-  for (const [id, question] of Object.entries(questionsOf(call))) {
+  for (const [id, question] of Object.entries(questionsFor(call))) {
     const json = wire.questionJsonOf(id, question)
     const tokens = estimatedTokensOf(json) + 1 + wire.tokensPerQuestion
 
@@ -273,14 +322,18 @@ function largestOf(sizes: readonly number[], count: number): number {
  * @param wire the wire format the questions are written in
  * @param maxQuestions the provider's cap on the questions of one request,
  * when it has one; it bounds only the bytes set aside
+ * @param questionsFor the questions asked about a call; the ones every
+ * compaction asks unless given, and the same that will be sent, so the room
+ * set aside is that of the questions that go out
  * @returns the demand, all zero when there are no calls
  */
 export function demandOf(
   calls: readonly Call[],
   wire: Wire,
   maxQuestions?: number,
+  questionsFor: QuestionsFor = questionsOf,
 ): Demand {
-  const sizes = calls.map(call => questionTokensOf(call, wire))
+  const sizes = calls.map(call => questionTokensOf(call, wire, questionsFor))
   const batchCalls = Math.min(MIN_CALLS_PER_REQUEST, sizes.length)
   const byteCalls =
     maxQuestions === undefined
@@ -366,6 +419,7 @@ export function budgetOf(
  * @param stateTokens the estimated size of the fitted state
  * @param budget what one request may hold
  * @param wire the wire format the questions are written in
+ * @param questionsFor the questions asked about a call, as for `demandOf`
  * @returns the batches, in order; throws when the state leaves room for not
  * even one call's questions, and when there would be more batches than
  * `MAX_REQUESTS`
@@ -375,6 +429,7 @@ export function batchesOf(
   stateTokens: number,
   budget: Budget,
   wire: Wire,
+  questionsFor: QuestionsFor = questionsOf,
 ): Call[][] {
   const room = budget.requestTokens - stateTokens - ENVELOPE_TOKENS
   const byteRoom =
@@ -399,7 +454,7 @@ export function batchesOf(
   let usedBytes = 0
 
   for (const call of calls) {
-    const { both, bytes } = questionTokensOf(call, wire)
+    const { both, bytes } = questionTokensOf(call, wire, questionsFor)
 
     if (both > room) {
       throw new Error(
@@ -680,11 +735,12 @@ async function judge(
   batch: readonly Call[],
   state: unknown,
   ask: Ask,
+  questionsFor: QuestionsFor,
 ): Promise<Judged> {
   const reply = await ask(
     state,
     Object.fromEntries(
-      batch.flatMap(call => Object.entries(questionsOf(call))),
+      batch.flatMap(call => Object.entries(questionsFor(call))),
     ),
   )
 
@@ -778,8 +834,9 @@ async function inTurns<Item, Result>(
  * the route's wire format carries it
  * @param ask how a batch is sent
  * @param settings the budget, the route's wire format, the keep threshold,
- * the truncation length, and `halt`, which hears the reason the moment a
- * batch fails
+ * the truncation length, `halt`, which hears the reason the moment a batch
+ * fails, and `questionsFor`, the questions asked about a call, which a
+ * benchmark sets to compare wordings and every compaction leaves unset
  */
 export async function compact(
   messages: readonly SessionMessage[],
@@ -792,18 +849,21 @@ export async function compact(
     keepThreshold: number
     truncateHeadChars: number
     halt?: (reason: Error) => void
+    questionsFor?: QuestionsFor
   },
 ): Promise<Outcome> {
+  const questionsFor = settings.questionsFor ?? questionsOf
   const batches = batchesOf(
     calls.filter(call => !call.isPinned),
     fitted.tokens,
     settings.budget,
     settings.wire,
+    questionsFor,
   )
   const answered = await inTurns(
     batches,
     CONCURRENT_REQUESTS,
-    batch => judge(batch, fitted.state, ask),
+    batch => judge(batch, fitted.state, ask, questionsFor),
     reason =>
       settings.halt?.(
         reason instanceof Error ? reason : new Error(String(reason)),

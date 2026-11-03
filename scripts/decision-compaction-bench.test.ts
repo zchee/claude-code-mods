@@ -3,7 +3,7 @@
 // counter wherever a request could in principle leave.
 //
 // Usage: bun test scripts/decision-compaction-bench.test.ts
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -21,8 +21,10 @@ import {
 import type { Scenario } from '../mods/decision-compaction/bench/corpus'
 import {
   recordOf,
+  recountOf,
   summariesOf,
 } from '../mods/decision-compaction/bench/metrics'
+import type { RunRecord } from '../mods/decision-compaction/bench/metrics'
 import {
   budgetOverrideOf,
   OPENROUTER_CATALOG,
@@ -1641,5 +1643,120 @@ describe('main', () => {
     expect(fetched, 'the interrupted compaction sends nothing').toBe(0)
     expect(counter.entries).toBe(0)
     expect(process.listenerCount('SIGINT')).toBe(listeners)
+  })
+})
+
+describe('recount of the saved run 2', () => {
+  // The second full run of the bench, written before a cut and a removal of
+  // a keep-only call were told apart, so its `harmfulDrops` counts both. The
+  // file is local (`.omc/` is not tracked), and this test fails rather than
+  // skips without it: the split is only shown comparable with that run if
+  // the recount reproduces it.
+  const RUN2 = join(
+    import.meta.dir,
+    '..',
+    '.omc',
+    'bench',
+    'run2-current-wording.json',
+  )
+  const SMALL_SCENARIOS: readonly string[] = [
+    'fix-test',
+    'exploration',
+    'retry',
+    'long-output',
+    'all-needed',
+    'prose-60',
+  ]
+
+  test('success: the recorded calls of .omc/bench/run2-current-wording.json give back its scores, its harmful drops split into removals and cuts', () => {
+    if (!existsSync(RUN2)) {
+      throw new Error(
+        `${RUN2} is absent: this test recounts the bench's second full run ` +
+          'from that local file, which is not tracked',
+      )
+    }
+
+    const { records } = JSON.parse(readFileSync(RUN2, 'utf8')) as {
+      records: RunRecord[]
+    }
+    const saved = records.filter(
+      record => record.ok && record.calls !== undefined,
+    )
+    const recount = recountOf(records)
+    const mismatches = recount.records.flatMap((entry, index) => {
+      const record = saved[index]
+      const where = `${entry.routeLabel} ${entry.scenario} #${entry.repeat}`
+      const found: string[] = []
+
+      if (record === undefined) {
+        return [`${where}: recounted, but no saved record is left for it`]
+      }
+
+      if (
+        entry.routeLabel !== record.routeLabel ||
+        entry.scenario !== record.scenario ||
+        entry.repeat !== record.repeat
+      ) {
+        found.push(`${where}: recounted out of order`)
+      }
+
+      if (entry.harmfulDrops + entry.lossyCuts !== record.harmfulDrops) {
+        found.push(
+          `${where}: ${entry.harmfulDrops} drops + ${entry.lossyCuts} cuts, ` +
+            `saved harmful ${record.harmfulDrops}`,
+        )
+      }
+
+      if (
+        (entry.agreement === undefined) !== (record.agreement === undefined) ||
+        Math.abs((entry.agreement ?? 0) - (record.agreement ?? 0)) > 1e-9
+      ) {
+        found.push(
+          `${where}: agreement ${entry.agreement}, saved ${record.agreement}`,
+        )
+      }
+
+      if (entry.missedReductions !== record.missedReductions) {
+        found.push(
+          `${where}: missed ${entry.missedReductions}, ` +
+            `saved ${record.missedReductions}`,
+        )
+      }
+
+      return found
+    })
+    const { totals } = recount
+    const small = recountOf(
+      records.filter(record => SMALL_SCENARIOS.includes(record.scenario)),
+    ).totals
+    const keep = totals.keepLabelled
+    const figures =
+      `recounted ${totals.records} records: ${totals.harmfulDrops} drops, ` +
+      `${totals.lossyCuts} cuts, ${totals.harmfulDrops + totals.lossyCuts} ` +
+      `in all; small scenarios ${small.harmfulDrops} drops, ` +
+      `${small.lossyCuts} cuts; keep-labelled ${keep?.count} calls at ` +
+      `P(call) ${keep?.medianCall} and P(result) ${keep?.medianResult}`
+
+    // The figures recounted from the file's recorded calls on 2026-11-03, before
+    // the bench split the two: of its 383 harmful drops, 257 removed the
+    // call and 126 cut its result, 152 and 90 of them on the six small
+    // scenarios; the 506 judged calls labelled keep alone had a median
+    // P(call) of 0.4593 and P(result) of 0.2227.
+    expect(recount.records.length, figures).toBe(saved.length)
+    expect(mismatches, figures).toEqual([])
+    expect(totals.harmfulDrops, figures).toBe(257)
+    expect(totals.lossyCuts, figures).toBe(126)
+    expect(totals.harmfulDrops + totals.lossyCuts, figures).toBe(383)
+    expect(small.harmfulDrops, figures).toBe(152)
+    expect(small.lossyCuts, figures).toBe(90)
+    expect(keep?.count, figures).toBe(506)
+    expect(
+      Math.abs((keep?.medianCall ?? Number.NaN) - 0.4593),
+      figures,
+    ).toBeLessThanOrEqual(0.0005)
+    expect(
+      Math.abs((keep?.medianResult ?? Number.NaN) - 0.2227),
+      figures,
+    ).toBeLessThanOrEqual(0.0005)
   })
 })

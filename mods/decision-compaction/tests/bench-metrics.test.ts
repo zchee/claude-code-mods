@@ -4,6 +4,7 @@ import {
   disputedOf,
   medianOf,
   recordOf,
+  recountOf,
   summariesOf,
   SWEEP_THRESHOLDS,
 } from '../bench/metrics'
@@ -101,6 +102,7 @@ describe('recordOf', () => {
     expect(record.judged, 'the pinned call is not judged').toBe(6)
     expect(record.agreement, 'u1, u2 and u5 of six').toBe(3 / 6)
     expect(record.harmfulDrops, 'u3, to be kept, was dropped').toBe(1)
+    expect(record.lossyCuts, 'u2 was cut, as its label allows').toBe(0)
     expect(record.missedReductions, 'u4, to be dropped, was kept').toBe(1)
     expect(record.unlabelled, 'u6 has no label').toBe(1)
     expect(record.counts).toEqual({ keep: 3, truncate: 1, drop: 2, pinned: 1 })
@@ -248,6 +250,98 @@ describe('recordOf', () => {
     expect(empty.ok).toBe(false)
     expect(empty.failure).toBe('run() returned no result')
   })
+
+  const keepOnly: Record<
+    string,
+    { scores: Scores; action: Action; harmfulDrops: number; lossyCuts: number }
+  > = {
+    'success: a keep-only call whose result was cut is a lossy cut, not a harmful drop':
+      {
+        scores: { keepCall: 0.9, keepResult: 0.2 },
+        action: 'truncate',
+        harmfulDrops: 0,
+        lossyCuts: 1,
+      },
+    'success: a keep-only call that was removed is a harmful drop, not a lossy cut':
+      {
+        scores: { keepCall: 0.1, keepResult: 0.2 },
+        action: 'drop',
+        harmfulDrops: 1,
+        lossyCuts: 0,
+      },
+    'success: a keep-only call kept whole is neither': {
+      scores: { keepCall: 0.9, keepResult: 0.9 },
+      action: 'keep',
+      harmfulDrops: 0,
+      lossyCuts: 0,
+    },
+  }
+
+  for (const [name, figures] of Object.entries(keepOnly)) {
+    const { scores, action, harmfulDrops, lossyCuts } = figures
+
+    test(name, () => {
+      const one = recordOf(
+        { ...RUN, result: resultOf([decide(callOf(1), scores, 0.5)]) },
+        { u1: ['keep'] },
+        0.5,
+      )
+
+      expect(one.calls?.[0]?.action).toBe(action)
+      expect(one.harmfulDrops).toBe(harmfulDrops)
+      expect(one.lossyCuts).toBe(lossyCuts)
+      expect(one.agreement).toBe(action === 'keep' ? 1 : 0)
+      expect(one.missedReductions).toBe(0)
+    })
+  }
+
+  test('success: keepLabelled takes the medians over the judged calls labelled keep alone', () => {
+    const four = recordOf(
+      {
+        ...RUN,
+        result: resultOf([
+          decide(callOf(1), { keepCall: 1, keepResult: 0.5 }, 0.5),
+          decide(callOf(2), { keepCall: 0.25, keepResult: 0.125 }, 0.5),
+          decide(callOf(3), { keepCall: 0.75, keepResult: 0.25 }, 0.5),
+          decide(callOf(4), { keepCall: 0.5, keepResult: 0.875 }, 0.5),
+          // Labelled keep or cut, so not keep alone.
+          decide(callOf(5), { keepCall: 0.01, keepResult: 0.01 }, 0.5),
+          // Labelled keep, but pinned, so not judged.
+          decide(
+            callOf(6, { isPinned: true }),
+            { keepCall: 0, keepResult: 0 },
+            0,
+          ),
+          // No label.
+          decide(callOf(7), { keepCall: 0, keepResult: 0 }, 0.5),
+        ]),
+      },
+      {
+        u1: ['keep'],
+        u2: ['keep'],
+        u3: ['keep'],
+        u4: ['keep'],
+        u5: ['keep', 'truncate'],
+        u6: ['keep'],
+      },
+      0.5,
+    )
+
+    expect(four.keepLabelled).toEqual({
+      count: 4,
+      // 0.25, 0.5, 0.75, 1: the mean of the two middle values.
+      medianCall: 0.625,
+      // 0.125, 0.25, 0.5, 0.875.
+      medianResult: 0.375,
+    })
+  })
+
+  test('success: a run with no call labelled keep alone has no keepLabelled', () => {
+    const none = recordOf(RUN, { u2: ['truncate', 'drop'], u4: ['drop'] }, 0.5)
+
+    expect(none.ok).toBe(true)
+    expect('keepLabelled' in none).toBe(false)
+  })
 })
 
 describe('medianOf', () => {
@@ -295,6 +389,7 @@ function recordWith(over: Partial<RunRecord> = {}): RunRecord {
     judged: 4,
     agreement: 0.75,
     harmfulDrops: 0,
+    lossyCuts: 0,
     missedReductions: 1,
     reduction: 0.5,
     requests: 1,
@@ -388,6 +483,63 @@ describe('summariesOf', () => {
     expect(summary?.requests).toBe(6)
     expect(summary?.inputTokens).toBe(5000)
     expect(summary?.cost).toBe(0.0001)
+  })
+
+  test('success: harmful drops and lossy cuts are summed apart, over the runs that succeeded', () => {
+    const [summary] = summariesOf([
+      recordWith({ harmfulDrops: 1, lossyCuts: 2 }),
+      recordWith({ harmfulDrops: 2, lossyCuts: 0 }),
+      recordWith({ harmfulDrops: 0, lossyCuts: 3 }),
+      failedWith(),
+    ])
+
+    expect(summary?.harmfulDrops).toBe(3)
+    expect(summary?.lossyCuts).toBe(5)
+  })
+
+  test('success: keepLabelled pools the keep-only calls of the runs that succeeded', () => {
+    const keepOnlyCalls = (
+      scores: readonly Scores[],
+    ): NonNullable<RunRecord['calls']> =>
+      scores.map((score, index) => ({
+        id: `t${index + 1}`,
+        toolUseId: `u${index + 1}`,
+        action: 'keep',
+        ...score,
+        expected: ['keep'],
+      }))
+    const [summary] = summariesOf([
+      recordWith({
+        calls: keepOnlyCalls([
+          { keepCall: 0.125, keepResult: 0.5 },
+          { keepCall: 0.25, keepResult: 0.75 },
+          { keepCall: 0.5, keepResult: 1 },
+        ]),
+      }),
+      recordWith({
+        scenario: 'retry',
+        calls: [
+          ...keepOnlyCalls([{ keepCall: 1, keepResult: 0 }]),
+          {
+            id: 't9',
+            toolUseId: 'u9',
+            action: 'drop',
+            keepCall: 0,
+            keepResult: 0,
+            expected: ['drop'],
+          },
+        ],
+      }),
+      failedWith({
+        calls: keepOnlyCalls([{ keepCall: 0, keepResult: 0 }]),
+      }),
+    ])
+
+    expect(
+      summary?.keepLabelled,
+      'the medians of the four pooled calls, not the mean or the median of ' +
+        'the two runs\' medians (0.25 and 1 for P(call))',
+    ).toEqual({ count: 4, medianCall: 0.375, medianResult: 0.625 })
   })
 
   test('success: a route that reported no tokens and no cost has none', () => {
@@ -605,6 +757,75 @@ describe('summariesOf', () => {
   }
 })
 
+describe('recountOf', () => {
+  const RECORDS: readonly RunRecord[] = [
+    recordOf(RUN, EXPECTED, 0.5),
+    // u2, cut at 0.5, labelled keep alone: a lossy cut.
+    recordOf({ ...RUN, repeat: 2 }, { ...EXPECTED, u2: ['keep'] }, 0.5),
+  ]
+
+  test('success: the recount from the recorded calls gives back recordOf\'s scores', () => {
+    const { records, totals } = recountOf(RECORDS)
+
+    expect(records).toEqual(
+      RECORDS.map(record => ({
+        routeLabel: record.routeLabel,
+        scenario: record.scenario,
+        repeat: record.repeat,
+        judged: record.judged,
+        agreement: record.agreement,
+        harmfulDrops: record.harmfulDrops,
+        lossyCuts: record.lossyCuts,
+        missedReductions: record.missedReductions,
+        unlabelled: record.unlabelled,
+        keepLabelled: record.keepLabelled,
+      })),
+    )
+    expect(records[1]?.lossyCuts, 'u2 of the second run').toBe(1)
+    expect(records[1]?.agreement).toBe(2 / 6)
+    expect(totals).toEqual({
+      records: 2,
+      judged: 12,
+      harmfulDrops: 2,
+      lossyCuts: 1,
+      missedReductions: 2,
+      unlabelled: 2,
+      // u1 and u3 of the first run, u1, u2 and u3 of the second.
+      keepLabelled: { count: 5, medianCall: 0.9, medianResult: 0.35 },
+    })
+  })
+
+  test('success: a record written before the split recounts its harmful drops as drops plus cuts', () => {
+    const { lossyCuts: _, ...legacy } = {
+      ...(RECORDS[1] as RunRecord),
+      harmfulDrops: 2,
+    }
+    const [recount] = recountOf([legacy]).records
+
+    expect('lossyCuts' in legacy).toBe(false)
+    expect(recount?.harmfulDrops).toBe(1)
+    expect(recount?.lossyCuts).toBe(1)
+    expect(
+      (recount?.harmfulDrops ?? 0) + (recount?.lossyCuts ?? 0),
+    ).toBe(legacy.harmfulDrops)
+    expect(recount?.agreement).toBe(legacy.agreement)
+  })
+
+  test('error: failed runs and runs with no recorded calls are left out', () => {
+    const { records, totals } = recountOf([failedWith(), recordWith()])
+
+    expect(records).toEqual([])
+    expect(totals).toEqual({
+      records: 0,
+      judged: 0,
+      harmfulDrops: 0,
+      lossyCuts: 0,
+      missedReductions: 0,
+      unlabelled: 0,
+    })
+  })
+})
+
 describe('scenarioTableOf', () => {
   const record = recordOf(RUN, EXPECTED, 0.5)
 
@@ -612,9 +833,9 @@ describe('scenarioTableOf', () => {
     expect(scenarioTableOf('fix-test', [record])).toBe(
       [
         'scenario fix-test',
-        'route                ok/FAIL  requests    ms  stage  state tokens  asked bytes held  reduction  kept/cut/dropped  agreement  harmful  tokens counted       cost  answered as',
-        '-------------------  -------  --------  ----  -----  ------------  ----------------  ---------  ----------------  ---------  -------  --------------  ---------  -----------',
-        'typesafe/jev-latest  ok              1  1234  whole          5000  yes                     60%             3/1/2        50%        1            4800  $0.000200  jev-1.14',
+        'route                ok/FAIL  requests    ms  stage  state tokens  asked bytes held  reduction  kept/cut/dropped  agreement  harmful  lossy  tokens counted       cost  answered as',
+        '-------------------  -------  --------  ----  -----  ------------  ----------------  ---------  ----------------  ---------  -------  -----  --------------  ---------  -----------',
+        'typesafe/jev-latest  ok              1  1234  whole          5000  yes                     60%             3/1/2        50%        1      0            4800  $0.000200  jev-1.14',
       ].join('\n'),
     )
   })
@@ -639,6 +860,7 @@ describe('scenarioTableOf', () => {
       'FAIL',
       '-',
       '88',
+      '-',
       '-',
       '-',
       '-',
@@ -737,11 +959,15 @@ describe('summaryTableOf', () => {
     ])
 
     expect(summaries[0]?.medianMs).toBe((1234.4 + 1000) / 2)
+    expect(
+      summaries[0]?.keepLabelled,
+      'u1 and u3 of both repeats; 0.625 shows as 0.63',
+    ).toEqual({ count: 4, medianCall: 0.5, medianResult: 0.625 })
     expect(summaryTableOf(summaries)).toBe(
       [
-        'route                runs  failed  median ms  stages  agreement  harmful  missed  reduction  requests  tokens       cost  consistency  suspect  degenerate  answered as',
-        '-------------------  ----  ------  ---------  ------  ---------  -------  ------  ---------  --------  ------  ---------  -----------  -------  ----------  -----------',
-        'typesafe/jev-latest     2       0       1117  whole         50%        2       2        60%         2    9600  $0.000400         100%  -        -           jev-1.14',
+        'route                runs  failed  median ms  stages  agreement  harmful  lossy  missed  keep P(call)  keep P(result)  reduction  requests  tokens       cost  consistency  suspect  degenerate  answered as',
+        '-------------------  ----  ------  ---------  ------  ---------  -------  -----  ------  ------------  --------------  ---------  --------  ------  ---------  -----------  -------  ----------  -----------',
+        'typesafe/jev-latest     2       0       1117  whole         50%        2      0       2          0.50            0.63        60%         2    9600  $0.000400         100%  -        -           jev-1.14',
       ].join('\n'),
     )
   })
@@ -763,7 +989,10 @@ describe('summaryTableOf', () => {
       'whole',
       '50%',
       '0',
+      '0',
       '2',
+      '-',
+      '-',
       '50%',
       '2',
       '-',
@@ -777,6 +1006,9 @@ describe('summaryTableOf', () => {
       'cloudflare/clef-flash',
       '1',
       '1',
+      '-',
+      '-',
+      '-',
       '-',
       '-',
       '-',
@@ -822,7 +1054,7 @@ describe('summaryTableOf', () => {
     ).split('\n')
     const column = lines[0]?.split(/ {2,}/).indexOf('degenerate') ?? -1
 
-    expect(column, 'the column follows suspect').toBe(14)
+    expect(column, 'the column follows suspect').toBe(17)
     expect(lines[2]?.split(/ {2,}/)[column]).toBe('keeps nothing')
     expect(lines[3]?.split(/ {2,}/)[column]).toBe('keeps everything')
   })

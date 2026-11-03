@@ -681,12 +681,17 @@ table gives, per route, whether the compaction succeeded, its requests and
 time, the `stage` the state was fitted at, the state's tokens, whether the
 byte cap the route asks for held (`asked bytes held`, `-` for a route
 without one), the reduction, the calls kept, cut and dropped, the share of
-calls whose action the labels accept, the harmful drops (a call the labels
-say to keep that was cut or dropped), the tokens and cost the provider
-reported, and the release a model answered as. The summary gives the same
-per route across its runs, with the distinct `stages` joined by `/`, and a
-`degenerate` column that reads `keeps nothing` or `keeps everything` when a
-route kept none or all of the calls it judged (a cut call is not kept). After
+calls whose action the labels accept, the harmful drops (`harmful`: a call
+the labels say to keep alone that was dropped), the lossy cuts (`lossy`: such
+a call that was kept with its result cut to its head, which costs less,
+since the call stays and the rest can be read again), the tokens and cost the
+provider reported, and the release a model answered as. The summary gives
+the same per route across its runs, with the distinct `stages` joined by
+`/`, the median probabilities the route gave to the calls labelled `keep`
+alone (`keep P(call)` and `keep P(result)`, over those calls of all its
+successful runs pooled), and a `degenerate` column that reads `keeps
+nothing` or `keeps everything` when a route kept none or all of the calls
+it judged (a cut call is not kept). After
 the summary come the calls on which more than half of the routes that ran
 them disagreed with the label, one line each with every route's action and
 the routes that agreed (`agreed by: ...`, or `none`), or `no call disputed
@@ -823,7 +828,10 @@ hand-written ones and three generated from the shape of this machine's
 sessions before `/compact` (see below). Agreement is against labels that
 allow `drop` or `truncate` on most calls and `keep` alone on the few the
 newest prompt depends on; `harmful` counts a `keep` call cut or dropped,
-`missed` a droppable call kept.
+`missed` a droppable call kept. This run predates the split of `harmful`
+into `harmful` and `lossy`, so its `Harmful` figures below are the sum of
+the two: 383 = 257 drops + 126 cuts, recounted from its JSON by the
+scripts test.
 
 | Route | ok / 9 | Agreement | Harmful | Missed | Kept / cut / dropped | Reduction | Median ms | Tokens counted | Cost | `all-needed` | `session-55` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -864,7 +872,7 @@ What the table says, read with the caveat the report prints:
   result is cut to its head): the result question scores a median of 0.20
   on those calls. `clef-flash` and GPT-6 Luna still keep nothing. Whether a
   truncated read of a file still on disk is harmful is the next label
-  question; the metric counts it so today.
+  question; the metric counts it as `lossy` now.
 - The generated sessions, whose labels keep three calls of 20 to 53 and
   allow dropping the rest, score 92-100% on nearly every route: they
   measure that a model drops what it may, not that it keeps what it must.
@@ -984,7 +992,7 @@ Perplexity, was not met: it reaches 50% on TypeSafe and Clef and 0% on
 Clef-flash and OpenAI, because the result question still scores a median
 of 0.20 on calls the labels keep, so those calls land on `truncate` (the
 call kept, the head of its result) rather than `keep`. That is better than
-`legacy`'s `drop`, and the metric counts it as a harmful drop all the
+`legacy`'s `drop`, and the metric counts it as a lossy cut all the
 same; whether a cut Read is harmful when the file can be read again is a
 question for the labels, and putting the head of each result into the
 state is the next change to the wording to measure.
@@ -996,10 +1004,25 @@ network:
 bun test scripts/decision-compaction-bench.test.ts
 ```
 
+One of them, `recount of the saved run 2`, reads the second run's JSON
+from `.omc/bench/run2-current-wording.json`, a local file that is not
+tracked, and checks that the recount gives back every record's agreement
+and missed reductions and splits its harmful drops into 257 drops and 126
+cuts. Without that file it fails and names the path; it is not skipped.
+
 A hot reload of the mod while a compaction is running cancels the mod's
 pending waits, the deadline's timer among them, so that compaction's
 30-second bound does not hold across the reload. This matters only while
 the mod is being developed.
+
+#### Follow-ups
+
+- Whether a cut of a result that can be read again (a `Read` of a file
+  still on disk) is harmful at all is a question for the labels, not yet
+  settled: the labels still say `keep` alone on such calls, and the bench
+  counts their cut as `lossy`. `lo1`, the `pnpm audit` error result, is the
+  one call labelled `keep` alone on an error result, and is to be reviewed
+  with it.
 
 ## Acknowledgements
 

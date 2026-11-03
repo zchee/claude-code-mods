@@ -63,12 +63,28 @@ export type CallRecord = {
 }
 
 /**
+ * The judged calls the reference says to keep whole and nothing else: how
+ * many there are, and the median of each probability over them. A low
+ * median P(result) on these calls is what a state that tells the model too
+ * little about a result shows.
+ */
+export type KeepLabelled = {
+  count: number
+  medianCall: number
+  medianResult: number
+}
+
+/**
  * The figures of one run. The scores against the reference (`agreement`,
- * `harmfulDrops`, `missedReductions`, `unlabelled`, `sweep`) are recomputed
- * from the recorded probabilities at the threshold asked for; `counts`,
- * `reduction` and the actions in `calls` are what the mod in fact did. The
- * two agree when the threshold asked for is the one the run was configured
- * with.
+ * `harmfulDrops`, `lossyCuts`, `missedReductions`, `unlabelled`, `sweep`)
+ * are recomputed from the recorded probabilities at the threshold asked
+ * for; `counts`, `reduction` and the actions in `calls` are what the mod in
+ * fact did. The two agree when the threshold asked for is the one the run
+ * was configured with.
+ *
+ * A record with `lossyCuts` has `harmfulDrops` counting removed calls only.
+ * One without it was written before the two were told apart, and its
+ * `harmfulDrops` counts cut and removed calls together.
  */
 export type RunRecord = {
   route: Route
@@ -82,12 +98,20 @@ export type RunRecord = {
   judged: number
   /** The share of judged calls whose action the reference accepts. */
   agreement?: number
-  /** Calls the reference says to keep whole that were cut or removed. */
+  /** Calls the reference says to keep whole that were removed. */
   harmfulDrops?: number
+  /**
+   * Calls the reference says to keep whole whose result was cut to its
+   * head: the call stays and the rest of the result can be read again, so
+   * it costs less than a removal.
+   */
+  lossyCuts?: number
   /** Calls the reference says to cut or remove that were kept whole. */
   missedReductions?: number
   /** Judged calls the reference has no label for; they count as disagreeing. */
   unlabelled?: number
+  /** Absent when no judged call is labelled `keep` alone. */
+  keepLabelled?: KeepLabelled
   /** The agreement at each threshold, by the threshold as a string. */
   sweep?: Record<string, number>
   counts?: { keep: number; truncate: number; drop: number; pinned: number }
@@ -110,29 +134,33 @@ export type RunRecord = {
 type Scored = {
   agreement?: number
   harmfulDrops: number
+  lossyCuts: number
   missedReductions: number
   unlabelled: number
 }
 
-function scoredAt(
-  judged: readonly Decision[],
-  expected: Expected,
-  threshold: number,
-): Scored {
+/**
+ * One judged call as it is scored: the action taken, and the actions the
+ * reference accepts, if it has a label for the call.
+ */
+type Judged = { action: Action; accepted?: readonly Action[] }
+
+function isKeepOnly(accepted: readonly Action[] | undefined): boolean {
+  return accepted?.length === 1 && accepted[0] === 'keep'
+}
+
+/**
+ * Scores judged calls against the reference. A call with no label counts
+ * as judged and disagreeing, and as neither harmful nor missed.
+ */
+function scoredOf(judged: readonly Judged[]): Scored {
   let agreed = 0
   let harmfulDrops = 0
+  let lossyCuts = 0
   let missedReductions = 0
   let unlabelled = 0
 
-  for (const decision of judged) {
-    const { action } = decide(
-      decision.call,
-      { keepCall: decision.keepCall, keepResult: decision.keepResult },
-      threshold,
-    )
-    const accepted: readonly Action[] | undefined =
-      expected[decision.call.toolUseId]
-
+  for (const { action, accepted } of judged) {
     if (accepted === undefined) {
       unlabelled++
       continue
@@ -142,12 +170,12 @@ function scoredAt(
       agreed++
     }
 
-    if (
-      accepted.length === 1 &&
-      accepted[0] === 'keep' &&
-      (action === 'truncate' || action === 'drop')
-    ) {
-      harmfulDrops++
+    if (isKeepOnly(accepted)) {
+      if (action === 'drop') {
+        harmfulDrops++
+      } else if (action === 'truncate') {
+        lossyCuts++
+      }
     }
 
     if (!accepted.includes('keep') && action === 'keep') {
@@ -158,9 +186,49 @@ function scoredAt(
   return {
     ...(judged.length === 0 ? {} : { agreement: agreed / judged.length }),
     harmfulDrops,
+    lossyCuts,
     missedReductions,
     unlabelled,
   }
+}
+
+function scoredAt(
+  judged: readonly Decision[],
+  expected: Expected,
+  threshold: number,
+): Scored {
+  return scoredOf(
+    judged.map(decision => {
+      const { action } = decide(
+        decision.call,
+        { keepCall: decision.keepCall, keepResult: decision.keepResult },
+        threshold,
+      )
+      const accepted = expected[decision.call.toolUseId]
+
+      return accepted === undefined ? { action } : { action, accepted }
+    }),
+  )
+}
+
+/**
+ * The keep-only figures of some calls; pinned calls and calls with any
+ * other label are left out.
+ *
+ * @returns nothing when none of the calls is labelled `keep` alone
+ */
+function keepLabelledOf(
+  calls: readonly CallRecord[],
+): KeepLabelled | undefined {
+  const kept = calls.filter(
+    call => call.action !== 'pinned' && isKeepOnly(call.expected),
+  )
+  const medianCall = medianOf(kept.map(call => call.keepCall))
+  const medianResult = medianOf(kept.map(call => call.keepResult))
+
+  return medianCall === undefined || medianResult === undefined
+    ? undefined
+    : { count: kept.length, medianCall, medianResult }
 }
 
 function countOf(decisions: readonly Decision[], action: Action): number {
@@ -213,11 +281,28 @@ export function recordOf(
     }
   }
 
+  const calls = decisions.map(({ call, action, keepCall, keepResult }) => {
+    const accepted = expected[call.toolUseId]
+
+    return {
+      id: call.id,
+      toolUseId: call.toolUseId,
+      action,
+      keepCall,
+      keepResult,
+      ...(accepted === undefined || action === 'pinned'
+        ? {}
+        : { expected: [...accepted] }),
+    }
+  })
+  const keepLabelled = keepLabelledOf(calls)
+
   return {
     ...base,
     ok: true,
     judged: judged.length,
     ...scored,
+    ...(keepLabelled === undefined ? {} : { keepLabelled }),
     ...(judged.length === 0 ? {} : { sweep }),
     counts: {
       keep: countOf(decisions, 'keep'),
@@ -237,20 +322,7 @@ export function recordOf(
     ...(reported.models === undefined
       ? {}
       : { models: [...reported.models] }),
-    calls: decisions.map(({ call, action, keepCall, keepResult }) => {
-      const accepted = expected[call.toolUseId]
-
-      return {
-        id: call.id,
-        toolUseId: call.toolUseId,
-        action,
-        keepCall,
-        keepResult,
-        ...(accepted === undefined || action === 'pinned'
-          ? {}
-          : { expected: [...accepted] }),
-      }
-    }),
+    calls,
   }
 }
 
@@ -266,8 +338,16 @@ export type RouteSummary = {
   medianMs?: number
   /** The mean agreement of the runs that succeeded. */
   agreement?: number
+  /** Summed as `RunRecord.harmfulDrops`: keep-only calls that were removed. */
   harmfulDrops?: number
+  /** Summed as `RunRecord.lossyCuts`: keep-only calls that were cut. */
+  lossyCuts?: number
   missedReductions?: number
+  /**
+   * Over the keep-only calls of every run that succeeded, pooled: the
+   * medians are of those calls, not of each run's medians.
+   */
+  keepLabelled?: KeepLabelled
   /** The mean reduction of the runs that succeeded. */
   reduction?: number
   requests?: number
@@ -470,7 +550,9 @@ function summaryOf(records: readonly RunRecord[]): RouteSummary {
       ),
     ),
     harmfulDrops: sumOf(ok.map(record => record.harmfulDrops)),
+    lossyCuts: sumOf(ok.map(record => record.lossyCuts)),
     missedReductions: sumOf(ok.map(record => record.missedReductions)),
+    keepLabelled: keepLabelledOf(ok.flatMap(record => record.calls ?? [])),
     reduction: meanOf(
       ok.flatMap(record =>
         record.reduction === undefined ? [] : [record.reduction],
@@ -623,4 +705,105 @@ export function summariesOf(records: readonly RunRecord[]): RouteSummary[] {
   }
 
   return byRoute.map(summaryOf)
+}
+
+/**
+ * The scores of one run as the recorded calls give them back.
+ */
+export type Recounted = {
+  routeLabel: string
+  scenario: string
+  repeat: number
+  judged: number
+  agreement?: number
+  harmfulDrops: number
+  lossyCuts: number
+  missedReductions: number
+  unlabelled: number
+  keepLabelled?: KeepLabelled
+}
+
+/**
+ * The recounted scores summed over the runs; `keepLabelled` pools their
+ * calls.
+ */
+export type RecountTotals = {
+  records: number
+  judged: number
+  harmfulDrops: number
+  lossyCuts: number
+  missedReductions: number
+  unlabelled: number
+  keepLabelled?: KeepLabelled
+}
+
+/**
+ * The scores of saved runs recounted from the action and the label written
+ * for each call, with no request and no threshold: a saved JSON's figures
+ * can be read again with the split between removed and cut calls, also
+ * from a file written before that split, whose `harmfulDrops` is then
+ * `harmfulDrops + lossyCuts` of the recount. Judged calls are those not
+ * pinned, as `RunRecord.judged` counts them, and a judged call with no
+ * label counts as disagreeing, so `agreement` and `missedReductions` come
+ * out as the record has them when the record was scored at the threshold
+ * its actions were decided with. `recordOf` can score a run at another
+ * threshold while writing the actions the run took, and the recount of
+ * such a record follows the actions, not its scores.
+ *
+ * @param records the saved records; failed runs, and successful ones that
+ * carry no calls, are left out, since they have nothing to recount
+ * @returns one entry per recounted run, in the order given, and the totals
+ */
+export function recountOf(records: readonly RunRecord[]): {
+  records: Recounted[]
+  totals: RecountTotals
+} {
+  const recounted: Recounted[] = []
+  const pooled: CallRecord[] = []
+
+  for (const record of records) {
+    if (!record.ok || record.calls === undefined) {
+      continue
+    }
+
+    const judged = record.calls.filter(call => call.action !== 'pinned')
+    const keepLabelled = keepLabelledOf(judged)
+
+    pooled.push(...judged)
+    recounted.push({
+      routeLabel: record.routeLabel,
+      scenario: record.scenario,
+      repeat: record.repeat,
+      judged: judged.length,
+      ...scoredOf(
+        judged.map(({ action, expected }) =>
+          expected === undefined ? { action } : { action, accepted: expected },
+        ),
+      ),
+      ...(keepLabelled === undefined ? {} : { keepLabelled }),
+    })
+  }
+
+  const total = (
+    key:
+      | 'judged'
+      | 'harmfulDrops'
+      | 'lossyCuts'
+      | 'missedReductions'
+      | 'unlabelled',
+  ) => recounted.reduce((sum, entry) => sum + entry[key], 0)
+  const keepLabelled = keepLabelledOf(pooled)
+
+  return {
+    records: recounted,
+    totals: {
+      records: recounted.length,
+      judged: total('judged'),
+      harmfulDrops: total('harmfulDrops'),
+      lossyCuts: total('lossyCuts'),
+      missedReductions: total('missedReductions'),
+      unlabelled: total('unlabelled'),
+      ...(keepLabelled === undefined ? {} : { keepLabelled }),
+    },
+  }
 }

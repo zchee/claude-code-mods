@@ -42,6 +42,10 @@ function figureOrNone(value: number | undefined): string {
   return value === undefined ? NONE : String(Math.round(value))
 }
 
+function probabilityOrNone(probability: number | undefined): string {
+  return probability === undefined ? NONE : probability.toFixed(2)
+}
+
 function costOrNone(cost: number | undefined): string {
   return cost === undefined ? NONE : `$${cost.toFixed(6)}`
 }
@@ -173,6 +177,11 @@ export function scenarioTableOf(
       cell: ifOk(record => figureOrNone(record.harmfulDrops)),
     },
     {
+      title: 'lossy',
+      isFigure: true,
+      cell: ifOk(record => figureOrNone(record.lossyCuts)),
+    },
+    {
       title: 'tokens counted',
       isFigure: true,
       cell: ifOk(record => figureOrNone(record.inputTokens)),
@@ -234,9 +243,24 @@ export function summaryTableOf(summaries: readonly RouteSummary[]): string {
       cell: summary => figureOrNone(summary.harmfulDrops),
     },
     {
+      title: 'lossy',
+      isFigure: true,
+      cell: summary => figureOrNone(summary.lossyCuts),
+    },
+    {
       title: 'missed',
       isFigure: true,
       cell: summary => figureOrNone(summary.missedReductions),
+    },
+    {
+      title: 'keep P(call)',
+      isFigure: true,
+      cell: summary => probabilityOrNone(summary.keepLabelled?.medianCall),
+    },
+    {
+      title: 'keep P(result)',
+      isFigure: true,
+      cell: summary => probabilityOrNone(summary.keepLabelled?.medianResult),
     },
     {
       title: 'reduction',

@@ -50,6 +50,9 @@ function countOf(decisions: readonly Decision[], action: Action): number {
  * a call whose result was to be cut, but was too short to gain from it,
  * stands whole and is counted so.
  *
+ * The models the replies named close the line when they are other than the
+ * configured one: an alias does not say which release answered it.
+ *
  * @param result the compaction
  * @returns the line, without a lead
  */
@@ -99,6 +102,16 @@ export function summaryOf(result: Result): string {
           : `requests past the ${limit} bytes ${route.provider} asks for, ` +
               'which the conversation does not fit',
       )
+    }
+
+    const { models } = outcome.reported
+
+    if (
+      models !== undefined &&
+      models.length > 0 &&
+      !(models.length === 1 && models[0] === route.model)
+    ) {
+      parts.push(`answered as ${models.join(', ')}`)
     }
   }
 

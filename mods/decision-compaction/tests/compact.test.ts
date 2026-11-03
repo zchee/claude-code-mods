@@ -895,16 +895,22 @@ describe('sizes', () => {
 describe('compact', () => {
   /**
    * A fake provider: answers from a score table and keeps what it was asked.
+   * The nth reply carries the nth usage and, when one is given, the nth
+   * model.
    */
   function fakeAsk(
     scores: Readonly<Record<string, number>>,
     usage: object[] = [],
+    models: (string | undefined)[] = [],
   ) {
     const asked: { state: unknown; questions: Questions }[] = []
     const ask: Ask = async (state, questions) => {
       asked.push({ state, questions })
 
+      const model = models[asked.length - 1]
+
       return {
+        ...(model === undefined ? {} : { model }),
         answers: Object.fromEntries(
           Object.keys(questions)
             .filter(id => scores[id] !== -1)
@@ -1010,6 +1016,81 @@ describe('compact', () => {
     expect(outcome.requests).toBe(1)
     expect(outcome.reported).toEqual({})
     expect(outcome.charsAfter).toBe(outcome.charsBefore)
+  })
+
+  const named: Record<
+    string,
+    { models: (string | undefined)[]; expected: string[] | undefined }
+  > = {
+    'success: the models the replies name are kept once each, in batch order':
+      {
+        models: ['jev-1.14', 'jev-1.13', 'jev-1.14'],
+        expected: ['jev-1.14', 'jev-1.13'],
+      },
+    'success: a reply that names no model adds none': {
+      models: [undefined, 'clef-flash', undefined],
+      expected: ['clef-flash'],
+    },
+    'success: replies that name no model leave the models absent': {
+      models: [undefined, undefined, undefined],
+      expected: undefined,
+    },
+  }
+
+  for (const [name, { models, expected }] of Object.entries(named)) {
+    test(name, async () => {
+      const { messages, calls, fitted } = prepared(2)
+      const outcome = await compact(
+        messages,
+        calls,
+        fitted,
+        fakeAsk({}, [], models).ask,
+        { ...SETTINGS, budget: { ...SETTINGS.budget, questions: 2 } },
+      )
+
+      expect(outcome.requests).toBe(3)
+      expect(outcome.reported.models).toEqual(expected)
+      expect('models' in outcome.reported).toBe(expected !== undefined)
+    })
+  }
+
+  test('success: the models are in batch order whichever reply comes back first', async () => {
+    const { messages, calls, fitted, settings } = oneCallARequest(3)
+    const modelOf: Record<string, string> = {
+      call_t1: 'jev-1.13',
+      call_t2: 'jev-1.14',
+      call_t3: 'jev-1.13',
+    }
+    const waiting = new Map<string, () => void>()
+    const ask: Ask = (_state, questions) =>
+      new Promise(resolve => {
+        const ids = Object.keys(questions)
+        const first = ids[0] ?? ''
+
+        waiting.set(first, () =>
+          resolve({
+            model: modelOf[first],
+            answers: Object.fromEntries(
+              ids.map(id => [id, { type: 'noul', noul: 0.9 }]),
+            ),
+            usage: {},
+          }),
+        )
+      })
+    const running = compact(messages, calls, fitted, ask, settings)
+
+    // The second batch answers first: arrival order would put jev-1.14
+    // ahead of jev-1.13.
+    await quiet()
+    waiting.get('call_t2')?.()
+    await quiet()
+    waiting.get('call_t3')?.()
+    await quiet()
+    waiting.get('call_t1')?.()
+
+    const outcome = await running
+
+    expect(outcome.reported.models).toEqual(['jev-1.13', 'jev-1.14'])
   })
 
   test('error: a reply that lacks one answer fails the compaction', async () => {

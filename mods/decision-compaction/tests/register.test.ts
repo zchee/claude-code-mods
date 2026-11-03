@@ -252,7 +252,8 @@ describe('session.compact', () => {
         `(${smaller}% smaller; tool calls: 1 left whole, 1 with the result ` +
         'cut short, 1 removed, 1 not judged; typesafe/jev-latest ' +
         `in 1 request; state about ${estimatedTokensOf(JSON.stringify(state))} ` +
-        'tokens estimated (whole), 1234 input tokens counted by the provider)'
+        'tokens estimated (whole), 1234 input tokens counted by the provider; ' +
+        'answered as jev-1.13.0)'
 
       expect(world.toasts).toEqual([said])
       expect(world.lines).toEqual([
@@ -668,7 +669,7 @@ describe('session.compact', () => {
     'error: decisions that remove too little fall back': {
       setup: { env: ENV, answer: () => 0.9 },
       requests: 1,
-      said: /^built-in summary used instead: the reduction is below the 25% minimum \(0% smaller; tool calls: 3 left whole, 1 not judged; typesafe\/jev-latest in 1 request; state about \d+ tokens estimated \(whole\), 1234 input tokens counted by the provider\)$/,
+      said: /^built-in summary used instead: the reduction is below the 25% minimum \(0% smaller; tool calls: 3 left whole, 1 not judged; typesafe\/jev-latest in 1 request; state about \d+ tokens estimated \(whole\), 1234 input tokens counted by the provider; answered as jev-1\.13\.0\)$/,
     },
     'error: results too short to cut are reported as left whole': {
       // Every result is to be cut, and none is 120 characters longer than

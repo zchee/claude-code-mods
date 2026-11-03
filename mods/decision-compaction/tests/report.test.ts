@@ -87,6 +87,43 @@ describe('summaryOf', () => {
     })
   }
 
+  const answered: Record<string, { models?: string[]; said?: string }> = {
+    'success: a model other than the configured one closes the line': {
+      models: ['jev-1.14'],
+      said: 'answered as jev-1.14',
+    },
+    'success: several models are named in the order they answered': {
+      models: ['jev-latest', 'jev-1.13'],
+      said: 'answered as jev-latest, jev-1.13',
+    },
+    'success: the configured model alone is not named again': {
+      models: ['jev-latest'],
+    },
+    'success: no model named by a reply leaves the line as it was': {},
+    'success: an empty list of models leaves the line as it was': {
+      models: [],
+    },
+  }
+
+  for (const [name, { models, said }] of Object.entries(answered)) {
+    test(name, () => {
+      const route = { provider: 'typesafe', model: 'jev-latest' } as const
+      const plain = summaryOf({ outcome: OUTCOME, route })
+      const line = summaryOf({
+        outcome: {
+          ...OUTCOME,
+          reported: {
+            ...OUTCOME.reported,
+            ...(models === undefined ? {} : { models }),
+          },
+        },
+        route,
+      })
+
+      expect(line).toBe(said === undefined ? plain : `${plain}; ${said}`)
+    })
+  }
+
   test('success: a compaction that asked nothing names no provider', () => {
     expect(
       summaryOf({

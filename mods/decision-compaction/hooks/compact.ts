@@ -63,6 +63,12 @@ type Reported = {
    */
   inputTokens?: number
   /**
+   * The models the batches said they were answered by, each once, in the
+   * order of the batches. An alias can be served by a release other than
+   * the one its name suggests, and only the reply says which.
+   */
+  models?: string[]
+  /**
    * The costs the batches reported, summed.
    */
   cost?: number
@@ -820,6 +826,13 @@ export async function compact(
 
     if (reply.usage.cost !== undefined) {
       reported.cost = (reported.cost ?? 0) + reply.usage.cost
+    }
+
+    if (
+      reply.model !== undefined &&
+      !(reported.models ?? []).includes(reply.model)
+    ) {
+      reported.models = [...(reported.models ?? []), reply.model]
     }
   }
 

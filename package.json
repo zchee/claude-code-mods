@@ -24,12 +24,14 @@
     "check": "pnpm run validate && pnpm run typecheck && pnpm run test",
     "live:decision-compaction": "bun scripts/decision-compaction-live.ts",
     "test": "bash scripts/each-mod.bash claude plugin test",
-    "typecheck": "tsc -p mods",
+    "typecheck": "tsc -p mods && tsc -p scripts",
     "types:sync": "bash scripts/sync-types.bash",
     "types:update": "bash scripts/update-types.bash",
     "validate": "claude plugin validate --strict . && bash scripts/each-mod.bash claude plugin validate --strict"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
+    "bun-types": "^1.4.4",
     "typescript": "^7.0.2"
   },
   "devEngines": {

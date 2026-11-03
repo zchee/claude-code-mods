@@ -62,7 +62,7 @@ pnpm run check   # validate + typecheck + test, every mod
 | Script | What it runs |
 | --- | --- |
 | `pnpm run validate` | `claude plugin validate --strict` on the marketplace and on every mod. |
-| `pnpm run typecheck` | `tsc -p mods`: every mod's hooks and tests against the plugin API snapshot in `mods/types`. |
+| `pnpm run typecheck` | `tsc -p mods`: every mod's hooks and tests against the plugin API snapshot in `mods/types`; then `tsc -p scripts`: the TypeScript scripts under `scripts/` against the same snapshot, with Bun's and Node's types, which only that project loads. |
 | `pnpm run test` | `claude plugin test` on every mod. Tests answer HTTP, the clock, files and settings from memory and never reach a network. |
 | `pnpm run types:update` | After a Claude Code upgrade: loads every mod so the installed version writes fresh declarations, runs `types:sync`, and updates the version in this README. |
 | `pnpm run types:sync` | Only the copy step: refreshes `mods/types` from the declarations a mod already loaded by the installed Claude Code holds. |

@@ -1,0 +1,7 @@
+{
+  "extends": "../mods/tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun-types", "node"]
+  },
+  "include": ["*.ts", "../mods/types"]
+}

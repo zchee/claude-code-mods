@@ -21,6 +21,7 @@ import {
 } from '../mods/decision-compaction/hooks/providers'
 import type {
   Credentials,
+  Environment,
   ProviderName,
 } from '../mods/decision-compaction/hooks/providers'
 import { choiceOf, noulOf } from '../mods/decision-compaction/hooks/systemone'
@@ -122,7 +123,7 @@ async function probe(
   }
 }
 
-const credentials = credentialsOf({}, process.env)
+const credentials = credentialsOf({}, process.env as Environment)
 const verdicts = await Promise.all(
   PROVIDERS.flatMap(provider =>
     modelsOf(provider).map(model => probe(provider, model, credentials)),

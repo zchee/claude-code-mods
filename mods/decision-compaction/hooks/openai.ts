@@ -1,4 +1,4 @@
-import { idsOf, isRecord } from './systemone'
+import { idsOf, isRecord, quoted } from './systemone'
 import type { Question, Questions, Wire } from './systemone'
 
 /**
@@ -13,29 +13,6 @@ type OpenAIQuestion =
       instructions: string
       choices: { value: string; description?: string }[]
     }
-
-/**
- * The longest JSON of a value OpenAI sent that an error quotes.
- */
-const QUOTED_CHARS = 64
-
-/**
- * A value OpenAI sent, made fit to quote in an error: its JSON, which
- * escapes every control character, when that is short, and only its length
- * otherwise. It is never cut: the message is redacted where it is shown,
- * and a credential cut short would no longer be found there.
- */
-function quoted(value: unknown): string {
-  const json = JSON.stringify(value)
-
-  if (json === undefined) {
-    return 'missing'
-  }
-
-  return json.length <= QUOTED_CHARS
-    ? json
-    : `a value of ${json.length} characters`
-}
 
 /**
  * A text made to end a sentence, so that two of them read as two sentences

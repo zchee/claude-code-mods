@@ -25,7 +25,7 @@ export type Questions = Record<string, Question>
 
 /**
  * What a provider reported a request cost. Every field is optional because
- * the eight providers do not report the same fields.
+ * the providers do not report the same fields.
  */
 type Usage = {
   input_tokens?: number
@@ -62,6 +62,32 @@ const QUESTION_ID = /^[A-Za-z0-9_.-]{1,100}$/
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The longest JSON of a value a provider sent that an error quotes.
+ */
+const QUOTED_CHARS = 64
+
+/**
+ * A value a provider sent, made fit to quote in an error: its JSON, which
+ * escapes every control character, when that is short, and only its length
+ * otherwise. It is never cut: the message is redacted where it is shown,
+ * and a credential cut short would no longer be found there.
+ *
+ * @param value the value
+ * @returns its JSON, `missing` for one that has none, or its length
+ */
+export function quoted(value: unknown): string {
+  const json = JSON.stringify(value)
+
+  if (json === undefined) {
+    return 'missing'
+  }
+
+  return json.length <= QUOTED_CHARS
+    ? json
+    : `a value of ${json.length} characters`
 }
 
 function numberOf(value: unknown): number | undefined {
@@ -125,6 +151,35 @@ export function idsOf(questions: Questions): string[] {
   }
 
   return ids
+}
+
+/**
+ * The name a question is sent under to a provider whose rule for question
+ * ids is stricter than the mod's: its place in the request, `q0`, `q1`, ….
+ *
+ * @param index the question's place, from 0
+ * @returns the name
+ */
+export function aliasOf(index: number): string {
+  return `q${index}`
+}
+
+/**
+ * The questions of one request, each under its place in place of its id.
+ * The ids are checked against the mod's own rule first, as for every
+ * provider; option names inside a `choice` are left as they are, since only
+ * question ids are restricted.
+ *
+ * @param questions the questions, by id
+ * @returns the same questions in the same order, by `aliasOf` their place
+ */
+export function aliasedOf(questions: Questions): Questions {
+  return Object.fromEntries(
+    idsOf(questions).map((id, index) => [
+      aliasOf(index),
+      questions[id] as Question,
+    ]),
+  )
 }
 
 /**

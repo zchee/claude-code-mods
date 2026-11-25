@@ -2,7 +2,15 @@ import type { HttpResponse, PluginOptions } from 'claude-code'
 
 import { decodeOpenAI, OPENAI } from './openai'
 import { headOf } from './state'
-import { BARE, bodyOf, bytesOf, idsOf, isRecord, replyOf } from './systemone'
+import {
+  aliasedOf,
+  aliasOf,
+  BARE,
+  bodyOf,
+  bytesOf,
+  isRecord,
+  replyOf,
+} from './systemone'
 import type { Question, Questions, Reply, Wire } from './systemone'
 
 /**
@@ -259,38 +267,21 @@ const RESELLER: Limits = {
 }
 
 /**
- * The question ids decisions-api.dev accepts: a letter first, then letters,
- * digits, `_` or `-`, 64 characters at most. The mod's ids may hold `.` and
- * run to 100 characters, so the request names each question by its place
- * instead.
+ * The longest alias a request to decisions-api.dev can carry: the one of
+ * the last place the question cap allows. A question is measured under it,
+ * whatever its own id, since the alias is what is sent.
  */
-const ALIAS_OF = (index: number) => `q${index}`
-
-/**
- * The longest alias a request can carry: the one of the last place the
- * question cap allows. A question is measured under it, whatever its own
- * id, since the alias is what is sent.
- */
-const LONGEST_ALIAS = ALIAS_OF(RESELLER_QUESTIONS - 1)
+const LONGEST_ALIAS = aliasOf(RESELLER_QUESTIONS - 1)
 
 /**
  * The System One body with every question id replaced by its place in the
- * request, `q0`, `q1`, …. The ids are checked against the mod's own rule
- * first, as for every provider; option names inside a `choice` are left as
- * they are, since only question ids are restricted.
+ * request, `q0`, `q1`, …. decisions-api.dev accepts a question id of a
+ * letter first, then letters, digits, `_` or `-`, 64 characters at most;
+ * the mod's ids may hold `.` and run to 100 characters.
  */
 const ALIASED: Wire = {
   encode: (model, state, questions) =>
-    bodyOf(
-      model,
-      state,
-      Object.fromEntries(
-        idsOf(questions).map((id, index) => [
-          ALIAS_OF(index),
-          questions[id] as Question,
-        ]),
-      ),
-    ),
+    bodyOf(model, state, aliasedOf(questions)),
   questionJsonOf: (_id, question) =>
     BARE.questionJsonOf(LONGEST_ALIAS, question),
   stateJsonOf: BARE.stateJsonOf,
@@ -603,19 +594,17 @@ function unwrapDataEnvelope(
 }
 
 /**
- * Reads a decisions-api.dev response: out of its envelope, and with every
- * answer back under the id of the question asked in that place. An answer
- * under a name that was not sent is refused: it answers nothing that was
- * asked. Both maps have no prototype, so an id or a name such as
+ * A reply whose questions were sent by their place (`aliasedOf`), with
+ * every answer back under the id of the question asked in that place. An
+ * answer under a name that was not sent is refused: it answers nothing that
+ * was asked. Both maps have no prototype, so an id or a name such as
  * `__proto__` is an ordinary key.
  */
-function unwrapAliased(
-  payload: unknown,
+function unaliased(
+  result: Record<string, unknown>,
   credentials: Credentials,
   asked: Questions,
 ): unknown {
-  const result = unwrapDataEnvelope(payload, credentials)
-
   if (!isRecord(result.answers)) {
     return result
   }
@@ -624,7 +613,7 @@ function unwrapAliased(
   const answers: Record<string, unknown> = Object.create(null)
 
   Object.keys(asked).forEach((id, index) => {
-    idOf[ALIAS_OF(index)] = id
+    idOf[aliasOf(index)] = id
   })
 
   for (const [alias, answer] of Object.entries(result.answers)) {
@@ -838,7 +827,8 @@ const TABLE: Record<ProviderName, Descriptor> = {
     urlOf: () => 'https://decisions-api.dev/v1/systemone',
     tokenOf: credentials => credentials.decisionsApiKey,
     wire: ALIASED,
-    unwrap: unwrapAliased,
+    unwrap: (payload, credentials, asked) =>
+      unaliased(unwrapDataEnvelope(payload, credentials), credentials, asked),
   },
   // decisionapi.net states "1–8 questions per request and a JSON request
   // body of at most 32 KiB, including state and questions". It documents

@@ -26,6 +26,7 @@ export const DIRECT_VENDORS: readonly string[] = [
   'perplexity',
   'openai',
   'codiv',
+  'google',
 ]
 
 /**

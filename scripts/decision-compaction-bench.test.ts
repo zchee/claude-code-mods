@@ -1313,6 +1313,9 @@ describe('dry run', () => {
           route: { provider: 'openai', model: 'gpt-6-luna' },
         },
         {
+          route: { provider: 'google', model: 'gemini-decision-1' },
+        },
+        {
           route: { provider: 'typesafe', model: 'jev-latest' },
           skip: 'TYPESAFE_API_KEY unset',
         },
@@ -1325,12 +1328,13 @@ describe('dry run', () => {
         credentials: {
           openrouterApiKey: 'test-openrouter-key',
           openaiApiKey: 'test-openai-key',
+          geminiApiKey: 'test-gemini-key',
         },
       },
     )
 
     expect(counter.entries).toBe(0)
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(3)
 
     for (const row of rows) {
       expect(row.failure).toBeUndefined()
@@ -1344,9 +1348,10 @@ describe('dry run', () => {
 
     const table = dryTableOf(rows)
 
-    expect(table.split('\n')).toHaveLength(3)
+    expect(table.split('\n')).toHaveLength(4)
     expect(table).toContain('openrouter/~typesafe/jev-latest | small |')
     expect(table).toContain('openai/gpt-6-luna | small |')
+    expect(table).toContain('google/gemini-decision-1 | small |')
   })
 
   test("success: the corpus's fix-test goes through the real run() to the sentinel", async () => {
@@ -1504,6 +1509,19 @@ describe('firstRequestOf', () => {
     const first = firstRequestOf(body)
 
     expect(first.questions).toBe(3)
+    expect(first.stateBytes).toBe(new TextEncoder().encode(input).length)
+  })
+
+  test("success: Google's body, state as a string and questions by place", () => {
+    const input = JSON.stringify({ conversation: ['héllo'] })
+    const body = JSON.stringify({
+      model: 'gemini-decision-1',
+      input,
+      questions: { q0: { type: 'noul' }, q1: { type: 'noul' } },
+    })
+    const first = firstRequestOf(body)
+
+    expect(first.questions).toBe(2)
     expect(first.stateBytes).toBe(new TextEncoder().encode(input).length)
   })
 })
@@ -1942,6 +1960,58 @@ describe('main', () => {
       'error: --state head:300 needs --questions current: the other ' +
         'wordings describe a state without result heads\n\nusage: ',
     )
+  })
+
+  // The script resolves its keys as the mod does, so Google's is read as
+  // GOOGLE_API_KEY first and GEMINI_API_KEY second, and either alone will do.
+  const googleKeys: Record<string, Record<string, string>> = {
+    'success: a dry run over google takes its key from GOOGLE_API_KEY': {
+      GOOGLE_API_KEY: 'test-google-key',
+    },
+    'success: a dry run over google takes its key from GEMINI_API_KEY': {
+      GEMINI_API_KEY: 'test-gemini-key',
+    },
+  }
+
+  for (const [name, env] of Object.entries(googleKeys)) {
+    test(name, async () => {
+      const counter = countGlobalFetch()
+      const lines: string[] = []
+      const status = await main(
+        ['--provider', 'google', '--scenario', 'fix-test', '--dry-run'],
+        ioWith(lines, { env }),
+      )
+      const printed = lines.join('\n')
+
+      expect(status).toBe(0)
+      expect(counter.entries).toBe(0)
+      expect(printed).toContain('google/gemini-decision-1 | fix-test |')
+      expect(printed).not.toContain('would fail')
+      expect(printed).not.toContain('unset')
+    })
+  }
+
+  test('success: a dry run over google without either variable names both', async () => {
+    const lines: string[] = []
+    const status = await main(
+      ['--provider', 'google', '--scenario', 'fix-test', '--dry-run'],
+      ioWith(lines, { env: {} }),
+    )
+
+    expect(status).toBe(0)
+    expect(lines.join('\n')).toContain('GOOGLE_API_KEY or GEMINI_API_KEY unset')
+  })
+
+  test('error: a usage error that repeats the GOOGLE_API_KEY the script read prints it redacted', async () => {
+    const lines: string[] = []
+    const status = await main(
+      ['--scenario', 'test-google-planted-key'],
+      ioWith(lines, { env: { GOOGLE_API_KEY: 'test-google-planted-key' } }),
+    )
+
+    expect(status).toBe(2)
+    expect(lines.join('\n')).toContain('--scenario [redacted] is none of')
+    expect(lines.join('\n')).not.toContain('test-google-planted-key')
   })
 
   test('error: an interrupt during a dry run stops it and exits 130', async () => {

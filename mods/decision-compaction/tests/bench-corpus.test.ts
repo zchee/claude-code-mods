@@ -962,6 +962,12 @@ const EXCERPT = {
       pricing: { prompt: '0.00000001' },
     },
     {
+      id: 'google/gemini-decision-1',
+      context_length: 262_144,
+      architecture: { output_modalities: ['decisions'] },
+      pricing: { prompt: '0.0000001' },
+    },
+    {
       id: 'example/text-model',
       context_length: 131_072,
       architecture: { output_modalities: ['text'] },
@@ -1034,6 +1040,7 @@ describe('openrouter catalog', () => {
     expect([...DIRECT_VENDORS].sort()).toEqual([
       'cloudflare',
       'codiv',
+      'google',
       'openai',
       'perplexity',
       'typesafe',

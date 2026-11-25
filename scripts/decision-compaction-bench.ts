@@ -683,8 +683,8 @@ export type DryRow = {
 
 /**
  * Sizes a request body as the route's wire format wrote it: the state is
- * `state` in the System One body and the string `input` in OpenAI's, and
- * the questions a map by id or a list.
+ * `state` in the System One body and the string `input` in OpenAI's and
+ * Google's, and the questions a map by id or by place, or a list.
  *
  * @param body the request body
  * @returns its bytes, the state's bytes and estimated tokens, the questions

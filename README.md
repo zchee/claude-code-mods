@@ -19,7 +19,7 @@ extend, with every event, API namespace and render site, is written up in
 
 | Mod | What it does |
 | --- | --- |
-| [decision-compaction](mods/decision-compaction/README.md) | Answers `session.compact` with the conversation itself, less the tool calls and results a System One decision model (TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, or Jev through OpenRouter, decisions-api.dev or decisionapi.net) judges no longer needed. Falls back to the built-in summary on any failure. |
+| [decision-compaction](mods/decision-compaction/README.md) | Answers `session.compact` with the conversation itself, less the tool calls and results a System One decision model (TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, Google Gemini Decision 1, or Jev through OpenRouter, decisions-api.dev or decisionapi.net) judges no longer needed. Falls back to the built-in summary on any failure. |
 | [gateway-switch](mods/gateway-switch/README.md) | Switches a running session between `api.anthropic.com` and a local Model Gateway: onto the gateway once Remote Control has registered, on `/gateway on`, or as each session starts after `/gateway setup`, and back whenever the gateway stops answering. |
 
 Each mod has its own README with its options, limits and the data it sends

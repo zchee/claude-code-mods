@@ -7,21 +7,24 @@ without. What you and the assistant wrote stays word for word.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
 [![Plugin API: Claude Code 2.1.292](https://img.shields.io/badge/plugin%20API-Claude%20Code%202.1.292-8A2BE2.svg)](../types/claude-code/index.d.ts)
-[![Providers: 8](https://img.shields.io/badge/providers-8-success.svg)](#providers)
+[![Providers: 9](https://img.shields.io/badge/providers-9-success.svg)](#providers)
 
 > [!WARNING]
 > **The conversation text and the tool inputs are sent to the selected
 > third-party API** (TypeSafe, Cloudflare, OpenRouter, Codiv, Perplexity,
-> decisions-api.dev, decisionapi.net or OpenAI) on every compaction.
+> decisions-api.dev, decisionapi.net, OpenAI or Google) on every compaction.
 > They are sent as they are: a secret you pasted into a prompt, or one that
 > appears in a tool input such as a shell command, goes with them. Tool
 > outputs are not sent: each is replaced by a note of its status and length.
+> Google's pricing page states that what is sent on its free tier is "used
+> to improve our products", and on its paid tier is not.
 >
 > **With `providerDecision` on, a second provider can receive data in the
-> same compaction.** Every provider in `decisionProviders` (all eight by
+> same compaction.** Every provider in `decisionProviders` (all nine by
 > default) whose credentials resolve is a candidate to decide it, so a key
 > you exported for another tool, `OPENAI_API_KEY` for example, makes that
-> vendor eligible to receive the conversation. `decisionProviders` is the
+> vendor eligible to receive the conversation. `GOOGLE_API_KEY` and
+> `GEMINI_API_KEY`, which Google's own SDKs read, do so for `google`. `decisionProviders` is the
 > setting that narrows the set. The routing question, when there is a
 > choice to make, goes to Cloudflare only when `cloudflare` is one of the
 > providers considered (the configured provider, and those in
@@ -208,8 +211,9 @@ that fails, stop nothing.
 | `decisions-api-dev` | `https://decisions-api.dev/v1/systemone` | `jev-latest` (Jev 1.13, through this gateway; `typesafe/jev-1.14` is Jev 1.14) | `DECISIONS_API_KEY` | 32 KiB a request body, counted in bytes, so text that is not ASCII uses more of it; 8 questions a request |
 | `decisionapi-net` | `https://decisionapi.net/v1/systemone` | `jev-latest` (Jev 1.14 as documented, through this gateway) | `DECISIONAPI_API_KEY` | 32 KiB a request body, state and questions together, counted in bytes; 8 questions a request |
 | `openai` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | 1 to 200 questions a request; no token limit documented for the Decisions API, so the mod holds a request to 272,000 tokens, where the price doubles |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/decisions` | `gemini-decision-1` (Gemini Decision 1) | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | 262,144 tokens for the input and every question together, the input counted once a request; 1 to 1,000 questions a request |
 
-The `provider` option takes exactly these eight names. Any other value is
+The `provider` option takes exactly these nine names. Any other value is
 not replaced by the default: nothing is sent anywhere, and every compaction
 uses the built-in summary with a line naming the value. Only an option left
 unset or empty means `typesafe`. For that reason `/config` shows the option
@@ -262,6 +266,26 @@ What differs between the providers beyond the table:
   (the line reads `openai: refused to answer <question id>`), or answers in
   a shape the mod does not read, the compaction ends with the built-in
   summary and the line names the question or the field.
+- `google` serves Gemini Decision 1 alone, on the Gemini Developer API
+  (`v1beta`), and takes its key in the `x-goog-api-key` header, not as a
+  bearer token. The state goes as one JSON string in `input`, and the
+  questions by their place (`q0`, `q1`, …), since Google takes a question
+  key of letters, digits, `_` and `-`, 64 characters at most (on
+  2026-11-25 it refused a key with a `.` with HTTP 400). A yes/no
+  question's criteria are sent as `true_description` and
+  `false_description`, and an option without a description as `""`, the
+  form Google documents. The reply names no model and no cost; its
+  `usage.total_input_tokens` is the count of input tokens, and its answers
+  came back in the reverse of the order asked, so none is read by its
+  place in the reply. Google counted about 74 input tokens a question
+  where the mod estimates about 59, so the size estimate adds 15 a
+  question. An answer whose type is not that of the question asked in its
+  place is refused, naming the question. An input Google's
+  filters block is documented two ways: in the guide as an HTTP 400 with
+  an `error` message, and in the API reference as a reply whose
+  `prompt_feedback.block_reason` is set and whose `answers` is empty. The
+  mod handles both: the compaction ends with the built-in summary and the
+  line quotes the reason.
 
 `~typesafe/jev-latest` is OpenRouter's alias for the newest Jev;
 `typesafe/jev-1.14` and `typesafe/jev-1.13` pin a release. OpenRouter also
@@ -315,8 +339,16 @@ environment, at the time of the compaction. The `env` block of the settings
 is read only when a credential a provider in play needs is still missing;
 if the settings cannot be read, that is logged and the compaction goes on
 with what it has. With `providerDecision` on and `decisionProviders` at
-its default of all eight providers, some key is usually unset, so the
+its default of all nine providers, some key is usually unset, so the
 settings are read on most compactions.
+
+Google's key has two variables, as in Google's own SDKs, which document
+that `GOOGLE_API_KEY` "takes precedence" when both are set. The order is:
+the `geminiApiKey` option, then `GOOGLE_API_KEY` and then `GEMINI_API_KEY`
+in the environment, then `GOOGLE_API_KEY` and then `GEMINI_API_KEY` in the
+settings. Either variable in the environment wins over both in the
+settings, so a key in the settings never replaces one exported in the
+shell. A line that names the key as unset names both variables.
 
 ### Redaction
 
@@ -328,7 +360,8 @@ is replaced with `[redacted]`, and so is the token after the word `Bearer`,
 whether it follows a space, a colon or an equals sign. A resolved value
 shorter than eight characters is not replaced where it stands on its own,
 since no provider issues a key that short and replacing it would garble
-ordinary words.
+ordinary words. Of Google's two variables only the value used is redacted:
+the other is never sent, so no provider can echo it back.
 
 ## Options
 
@@ -337,7 +370,7 @@ ordinary words.
 | `provider` | `typesafe` | Which provider decides; any other name sends nothing. |
 | `model` | provider default | Model name for the configured provider. |
 | `providerDecision` | `false` | Decide the provider per compaction; see [`providerDecision`](#providerdecision). |
-| `decisionProviders` | all eight providers | With `providerDecision` on, the providers that may be compared and so may receive the conversation: a list of provider names, or one text of names separated by commas. The configured provider is always considered. See [`providerDecision`](#providerdecision). |
+| `decisionProviders` | all nine providers | With `providerDecision` on, the providers that may be compared and so may receive the conversation: a list of provider names, or one text of names separated by commas. The configured provider is always considered. See [`providerDecision`](#providerdecision). |
 | `typesafeApiKey` | unset | TypeSafe API key (stored as a secret). |
 | `openrouterApiKey` | unset | OpenRouter API key (stored as a secret). |
 | `cloudflareApiToken` | unset | Cloudflare API token allowed to run Workers AI (stored as a secret). |
@@ -347,6 +380,7 @@ ordinary words.
 | `decisionsApiKey` | unset | decisions-api.dev API key (stored as a secret). |
 | `decisionapiApiKey` | unset | decisionapi.net API key (stored as a secret). |
 | `openaiApiKey` | unset | OpenAI API key (stored as a secret). |
+| `geminiApiKey` | unset | Gemini Developer API key (stored as a secret); unset, `GOOGLE_API_KEY` and then `GEMINI_API_KEY` are read (see [Credentials](#credentials)). |
 | `keepThreshold` | `0.5` | Probability from which a call, or its full result, is kept. |
 | `preserveRecentMessages` | `6` | Newest messages that are never changed. |
 | `compactAtPercent` | `60` | Context usage at which a compaction is requested; `0` turns the trigger off. |
@@ -367,8 +401,9 @@ The bounds below are fixed; they are not options.
   54,400 on `cloudflare` `clef` and `clef-omni` and 20,400 on
   `clef-flash`, 222,822 on `openrouter`'s Jev (13,926 on its `clef` and
   `clef-flash`, 54,400 on its `clef-omni` and 27,200 on any other model
-  it forwards), 231,200 on `openai`, 51,000 for the state plus the longest
-  question (85% of the 60,000 the vendor advises) and 55,705 a request on
+  it forwards), 231,200 on `openai`, 222,822 on `google`, 51,000 for the
+  state plus the longest question (85% of the 60,000 the vendor advises)
+  and 55,705 a request on
   `codiv`, 222,821 on `perplexity`, and 27,200 for the state plus the
   longest question and 54,400 a request on `decisions-api-dev` and
   `decisionapi-net`. Both serve TypeSafe's Jev and state their own limit
@@ -378,7 +413,9 @@ The bounds below are fixed; they are not options.
   On 2026-10-11 it answered a state of 300,000 tokens in under two
   seconds; a request over "272K" input tokens is billed at twice the
   rate, so it is held to 272,000 tokens and 200 questions before the
-  margin. `codiv` documents no question limit but
+  margin. `google` documents a window of 262,144 tokens "across shared
+  input and all questions" and 1 to 1,000 questions a request, and is held
+  to both. `codiv` documents no question limit but
   refused 300 questions (at most 256 a request), so it is held to 256.
   A budget you set is held to these figures, and so is the one a route
   asks for when you set none (see [Budgets by route](#budgets-by-route)).
@@ -421,7 +458,10 @@ The bounds below are fixed; they are not options.
   Jev's own 64,000 tokens, which a body within 32 KiB does not reach. On
   `openai` it is the 272,000 where the price doubles: OpenAI refuses a
   request too long rather than cutting it, so a reply counting that many
-  is one whose estimate drifted, and is discarded all the same.
+  is one whose estimate drifted, and is discarded all the same. On
+  `google` it is its 262,144-token window: Google documents an HTTP 400 for
+  a request over a limit, which was not measured, so a reply counting the
+  whole window is discarded too.
   `perplexity` counts the state again for every question of
   a request, so its count is divided by the number of questions before it
   is held to the limit: 128 questions on a 12,000-token state report about
@@ -470,6 +510,16 @@ question (`perplexity`) or once a chunk of about thirteen questions
 state and the questions of 16 calls beside it. The margin above then
 holds both, as it does a budget you set.
 
+`google` is the exception: its budgets are sized to Google's rate limit,
+not to the deadline, which does not bind at them. They are a conservative
+first choice that keeps the 16 requests a compaction may send, at 54,400
+tokens each (870,400 in all), within the 1,000,000 input tokens a minute
+Google documents for its first paid tier, far below what its window
+allows. The mod's estimate runs above Google's own count: a state
+estimated at 25,001 tokens was counted as 16,741 with its 32 questions,
+and on 2026-11-25 the estimate of a state was 1.74 to 1.92 times what
+Google counted. States larger than that were not measured.
+
 | Route | `maxStateTokens` | `maxRequestTokens` | Measured with 32 questions |
 | --- | --- | --- | --- |
 | `typesafe` (`jev-latest`, Jev 1.13, and `jev-1.14.0`) | 27,000 | 54,400 | a 23,000-token state in 0.4 s (2026-10-11); 27,000 in 0.36 s on both releases, and 1,500 questions on 24,000 in 0.85 s on Jev 1.14 (2026-10-16); a state over 32,000 is refused, not cut |
@@ -482,6 +532,7 @@ holds both, as it does a budget you set.
 | `perplexity` | 10,000 | 14,000 | 15,000 tokens in 6.3 s; 8 questions on 30,000 in 3.1 s |
 | `decisions-api-dev`, `decisionapi-net` | 27,000 | 54,400 | not measured; the 32 KiB byte cap binds first |
 | `openai` | 200,000 | 231,200 | 225,000 tokens in 1.6 s; costs $0.10 per million input tokens for every request |
+| `google` | 27,000 | 54,400 | a state estimated at 25,001 tokens (16,741 counted) in 0.78 s and 0.46 s (2026-11-25); larger states not measured; sized to Google's documented rate limit, not to its speed; costs $0.10 per million input tokens on the paid tier |
 
 A budget you set applies to every route alike. With `providerDecision` on
 and the budgets unset, each route is held to its own, so a route that
@@ -516,6 +567,15 @@ tighter than anything they document:
   tier: on the lowest, 2,000,000 tokens a minute, a compaction of more
   than eight requests at the default 231,200 tokens each can be answered
   HTTP 429. Lower `maxRequestTokens` if you see that.
+- Google documents 1 to 1,000 questions a request, the shared input
+  counted once a request whatever the number of questions, and advises
+  sending only the fields the questions need, since unrelated content
+  lowers accuracy. Its rate limits are per tier, read on 2026-11-25:
+  50,000 input tokens a minute on the free tier, 1,000,000 on Tier 1,
+  4,000,000 on Tier 2 and 10,000,000 on Tier 3. The defaults above fit
+  Tier 1; on the free tier a compaction of more than one request at the
+  default budgets can be answered HTTP 429, which is retried twice and
+  then ends the compaction with the built-in summary.
 
 ### How large a conversation can be decided
 
@@ -545,8 +605,8 @@ Longer tool inputs and longer tool names lower these numbers. Raising
 above.
 
 The table has no rows for `openrouter`, `codiv`, `perplexity`,
-`decisions-api-dev`, `decisionapi-net` and `openai`; it was not measured
-on them.
+`decisions-api-dev`, `decisionapi-net`, `openai` and `google`; it was not
+measured on them.
 `decisions-api-dev` and `decisionapi-net` take 8 questions and 32 KiB a
 request, so of a long conversation the model sees only what is left once
 the state is shrunk to the cap. The cap counts bytes, so text that is not
@@ -560,7 +620,7 @@ Off by default: the configured provider is always used, and no other
 provider is sent anything.
 
 When on, the providers considered are the configured one and those in
-`decisionProviders`. Unset, that option is every provider, all eight. It
+`decisionProviders`. Unset, that option is every provider, all nine. It
 takes a list of names, or one text of names separated by commas; a cleared
 field (an empty text) or an empty list names none, so only the configured
 provider is considered.
@@ -750,7 +810,10 @@ and OpenAI ones the mod reaches directly; the rest run as models of the
 four that do not take System One's request (`NOT_SYSTEM_ONE`): Respan's
 `respan/span-01`, `span-01-lite` and `span-01-lite:free` and ScaleDown's
 `scaledown/classify-1` answered HTTP 400 to every request on 2026-11-03,
-since they take a state of another shape. The sixteen left are:
+since they take a state of another shape. Google's
+`google/gemini-decision-1`, which the listing held on 2026-11-25, the mod
+reaches directly as well (`DIRECT_VENDORS`), so `--openrouter-catalog
+live` leaves it out. The sixteen left are:
 
 | Vendor | Model ids | Context (tokens) | Price (per million input) |
 | --- | --- | --- | --- |

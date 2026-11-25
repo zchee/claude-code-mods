@@ -1,5 +1,6 @@
 import type { HttpResponse, PluginOptions } from 'claude-code'
 
+import { decodeGoogle, GOOGLE, GOOGLE_QUESTIONS } from './google'
 import { decodeOpenAI, OPENAI } from './openai'
 import { headOf } from './state'
 import {
@@ -27,6 +28,7 @@ export const PROVIDERS = [
   'decisions-api-dev',
   'decisionapi-net',
   'openai',
+  'google',
 ] as const
 
 export type ProviderName = (typeof PROVIDERS)[number]
@@ -99,25 +101,29 @@ export type Credentials = {
   decisionsApiKey?: string
   decisionapiApiKey?: string
   openaiApiKey?: string
+  geminiApiKey?: string
 }
 
 /**
- * The environment variable each credential falls back to when its plugin
- * option is unset.
+ * The environment variables each credential falls back to when its plugin
+ * option is unset, the one read first first. Google's SDKs take its key as
+ * `GOOGLE_API_KEY` or `GEMINI_API_KEY` and document that `GOOGLE_API_KEY`
+ * "takes precedence" when both are set, so the same order holds here.
  */
 const ENV_NAMES = {
-  typesafeApiKey: 'TYPESAFE_API_KEY',
-  openrouterApiKey: 'OPENROUTER_API_KEY',
-  cloudflareApiToken: 'CLOUDFLARE_API_TOKEN',
-  cloudflareAccountId: 'CLOUDFLARE_ACCOUNT_ID',
-  codivApiKey: 'CODIV_API_KEY',
-  perplexityApiKey: 'PERPLEXITY_API_KEY',
-  decisionsApiKey: 'DECISIONS_API_KEY',
-  decisionapiApiKey: 'DECISIONAPI_API_KEY',
-  openaiApiKey: 'OPENAI_API_KEY',
-} as const satisfies Record<keyof Credentials, string>
+  typesafeApiKey: ['TYPESAFE_API_KEY'],
+  openrouterApiKey: ['OPENROUTER_API_KEY'],
+  cloudflareApiToken: ['CLOUDFLARE_API_TOKEN'],
+  cloudflareAccountId: ['CLOUDFLARE_ACCOUNT_ID'],
+  codivApiKey: ['CODIV_API_KEY'],
+  perplexityApiKey: ['PERPLEXITY_API_KEY'],
+  decisionsApiKey: ['DECISIONS_API_KEY'],
+  decisionapiApiKey: ['DECISIONAPI_API_KEY'],
+  openaiApiKey: ['OPENAI_API_KEY'],
+  geminiApiKey: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+} as const satisfies Record<keyof Credentials, readonly [string, ...string[]]>
 
-type EnvName = (typeof ENV_NAMES)[keyof Credentials]
+type EnvName = (typeof ENV_NAMES)[keyof Credentials][number]
 
 /**
  * The values of the credential variables as one source holds them.
@@ -192,6 +198,12 @@ type Descriptor = {
   bodyModelOf: (model: string) => string
   urlOf: (model: string, credentials: Credentials) => string
   tokenOf: (credentials: Credentials) => string | undefined
+  /**
+   * The header the credential is sent in as it is, for a provider that
+   * takes its key in a header of its own; any other provider is sent
+   * `authorization: Bearer` and the credential.
+   */
+  keyHeader?: string
   wire: Wire
   /**
    * Takes the response out of whatever the provider wraps it in and into
@@ -671,6 +683,23 @@ const OPENROUTER_OTHER_WANTED: Wanted = {
   maxRequestTokens: 27_200,
 }
 
+/**
+ * What Gemini Decision 1 is asked for. The deadline does not bind here: on
+ * 2026-11-25 a state the mod estimated at 25,001 tokens, with 32
+ * questions, was answered in 0.78 and 0.46 seconds; larger states were not
+ * measured. What binds is Google's rate limit. These keep the requests of
+ * one compaction, at most `MAX_REQUESTS` (16) of them, within the
+ * 1,000,000 input tokens a minute Google documents for its first paid
+ * tier, 16 requests of 54,400 tokens being 870,400 by the mod's estimate,
+ * which runs above Google's own count. Its free tier allows 50,000 a
+ * minute, which one compaction of more than one request can exceed
+ * (HTTP 429).
+ */
+const GOOGLE_WANTED: Wanted = {
+  maxStateTokens: 27_000,
+  maxRequestTokens: 54_400,
+}
+
 const TABLE: Record<ProviderName, Descriptor> = {
   // TypeSafe documents Jev 1.13 and Jev 1.14 alike: a request within 64,000
   // tokens, the state with any one question within 32,000, and no cap on
@@ -877,6 +906,39 @@ const TABLE: Record<ProviderName, Descriptor> = {
     wire: OPENAI,
     unwrap: (payload, _credentials, asked) => decodeOpenAI(payload, asked),
   },
+  // Google's Decisions API serves Gemini Decision 1 alone, on the Gemini
+  // Developer API. It takes the key in `x-goog-api-key`, the state as text
+  // in `input`, and question keys of letters, digits, `_` and `-`, so its
+  // requests name questions by their place. It documents a window of
+  // 262,144 tokens "across shared input and all questions", 1 to 1,000
+  // questions a request, the shared input counted once a request whatever
+  // the number of questions, and an HTTP 400 for a request over a limit.
+  // That a request too long is refused and never cut is documented, not
+  // measured, so a reply that counts the whole window is still discarded.
+  // On 2026-11-25 it refused a dotted question key with HTTP 400, and the
+  // mod's estimate of a state was 1.74 to 1.92 times what it counted
+  // (25,001 estimated, 16,741 counted with 32 questions).
+  google: {
+    title: 'Google',
+    defaultModel: 'gemini-decision-1',
+    models: ['gemini-decision-1'],
+    family: model => model,
+    isGateway: false,
+    limits: {
+      maxStateTokens: 262_144,
+      maxRequestTokens: 262_144,
+      maxQuestions: GOOGLE_QUESTIONS,
+    },
+    wanted: GOOGLE_WANTED,
+    needs: ['geminiApiKey'],
+    bodyModelOf: TRIMMED,
+    urlOf: () => 'https://generativelanguage.googleapis.com/v1beta/decisions',
+    tokenOf: credentials => credentials.geminiApiKey,
+    keyHeader: 'x-goog-api-key',
+    wire: GOOGLE,
+    unwrap: (payload, credentials, asked) =>
+      unaliased(decodeGoogle(payload, asked), credentials, asked),
+  },
 }
 
 /**
@@ -1022,7 +1084,9 @@ export function routeOf(provider: ProviderName, model?: string): Route {
 
 /**
  * Names the environment variables of the credentials a provider needs and
- * does not have. The names are safe to show; the values never are.
+ * does not have, one entry a credential: its variable, or its variables
+ * joined by `or` where any one of them would do. The names are safe to
+ * show; the values never are.
  *
  * @param provider the provider
  * @param credentials what was resolved
@@ -1031,10 +1095,10 @@ export function routeOf(provider: ProviderName, model?: string): Route {
 export function missingOf(
   provider: ProviderName,
   credentials: Credentials,
-): EnvName[] {
+): string[] {
   return TABLE[provider].needs
     .filter(need => credentials[need] === undefined)
-    .map(need => ENV_NAMES[need])
+    .map(need => ENV_NAMES[need].join(' or '))
 }
 
 /**
@@ -1073,7 +1137,7 @@ export function unresolvedOf(
   providers: readonly ProviderName[],
   options: PluginOptions,
   read: Environment,
-): EnvName[] {
+): string[] {
   const credentials = credentialsOf(options, read)
 
   return [
@@ -1109,9 +1173,13 @@ export function credentialsFor(
 }
 
 /**
- * Lays one source of the credential variables under another: a value the
- * first source holds wins, and the `env` block of the settings fills the
- * rest. The block is read as untyped data, since settings are a plain object.
+ * Lays one source of the credential variables under another: a credential
+ * the first source holds wins, and the `env` block of the settings fills the
+ * rest. A credential is taken whole from one source: where the process
+ * holds any of its variables, the settings hold none of them, so a variable
+ * read later in the process does not lose to one read earlier in the
+ * settings. The block is read as untyped data, since settings are a plain
+ * object.
  *
  * @param read the variables as the process environment holds them
  * @param settingsEnv the `env` key of the merged settings
@@ -1124,16 +1192,24 @@ export function environmentOf(
   const fallback = isRecord(settingsEnv) ? settingsEnv : {}
   const merged: Environment = {}
 
-  for (const name of Object.values(ENV_NAMES)) {
-    merged[name] = textOf(read[name]) ?? textOf(fallback[name])
+  for (const names of Object.values(ENV_NAMES)) {
+    const source: Record<string, unknown> = names.some(
+      name => textOf(read[name]) !== undefined,
+    )
+      ? read
+      : fallback
+
+    for (const name of names) {
+      merged[name] = textOf(source[name])
+    }
   }
 
   return merged
 }
 
 /**
- * Resolves each credential: the plugin option when it is set, the
- * environment otherwise.
+ * Resolves each credential: the plugin option when it is set, the first of
+ * its environment variables that has a value otherwise.
  *
  * @param options the plugin's options
  * @param environment the credential variables, already merged over settings
@@ -1145,8 +1221,10 @@ export function credentialsOf(
 ): Credentials {
   const credentials: Credentials = {}
 
-  for (const [key, name] of Object.entries(ENV_NAMES)) {
-    const value = textOf(options[key]) ?? textOf(environment[name])
+  for (const [key, names] of Object.entries(ENV_NAMES)) {
+    const value =
+      textOf(options[key]) ??
+      names.map(name => textOf(environment[name])).find(Boolean)
 
     if (value !== undefined) {
       credentials[key as keyof Credentials] = value
@@ -1242,8 +1320,8 @@ export function messageOf(error: unknown): string {
 
 /**
  * Builds the request for one batch of questions. The credential goes into
- * the `authorization` header and nowhere else, so nothing built from the
- * returned URL or body can leak it.
+ * one header and nowhere else, so nothing built from the returned URL or
+ * body can leak it: `authorization`, or the provider's own key header.
  *
  * @param route which provider and model
  * @param credentials the resolved credentials
@@ -1269,7 +1347,9 @@ export function exchangeOf(
     init: {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${token}`,
+        ...(described.keyHeader === undefined
+          ? { authorization: `Bearer ${token}` }
+          : { [described.keyHeader]: token }),
         'content-type': 'application/json',
       },
       body: described.wire.encode(model, state, questions),

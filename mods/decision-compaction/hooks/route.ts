@@ -103,6 +103,10 @@ const ABOUT: Record<string, string> = {
   'gpt-6-luna':
     'GPT-6 Luna, which OpenAI describes as its most efficient model for ' +
     'focused, high-volume tasks, served through its Decisions API.',
+  'gemini-decision-1':
+    'Gemini Decision 1, which Google describes as a specialized ' +
+    'multimodal model built for its Decisions API. It reads text, images, ' +
+    'video, audio and PDFs and returns calibrated probabilities.',
 }
 
 const PROFILE_CONTEXT =

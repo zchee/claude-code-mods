@@ -569,6 +569,7 @@ const ADDED_KEYS: Credentials = {
   decisionsApiKey: 'test-decisions-key',
   decisionapiApiKey: 'test-decisionapi-key',
   openaiApiKey: 'test-openai-key',
+  geminiApiKey: 'test-gemini-key',
 }
 
 const ALL_KEYS: Credentials = {
@@ -591,6 +592,7 @@ describe('candidatesOf, over every provider', () => {
       'codiv.openjev-latest',
       'perplexity.pplx-decider-v1.1-27b',
       'openai.gpt-6-luna',
+      'google.gemini-decision-1',
     ])
     expect(found.refused).toEqual([
       'openrouter/~typesafe/jev-latest: the same model as typesafe/jev-1.14.0',

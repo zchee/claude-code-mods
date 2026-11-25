@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { GOOGLE } from '../hooks/google'
 import { OPENAI } from '../hooks/openai'
 import {
   credentialsFor,
@@ -47,9 +48,10 @@ const ALL: Credentials = {
   decisionsApiKey: 'test-decisions-key',
   decisionapiApiKey: 'test-decisionapi-key',
   openaiApiKey: 'test-openai-key',
+  geminiApiKey: 'test-gemini-key',
 }
 
-const QUESTIONS = { call_t1: { type: 'noul', instructions: 'Is it?' } } as const
+const QUESTIONS ={ call_t1: { type: 'noul', instructions: 'Is it?' } } as const
 
 function response(status: number, payload: unknown) {
   return {
@@ -252,6 +254,39 @@ describe('exchangeOf', () => {
     })
   }
 
+  test('success: google is sent its key in x-goog-api-key and the state as text, each question by its place', () => {
+    const exchange = exchangeOf(routeOf('google'), ALL, STATE, ASKED)
+
+    expect(exchange).toEqual({
+      url: 'https://generativelanguage.googleapis.com/v1beta/decisions',
+      init: {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': 'test-gemini-key',
+          'content-type': 'application/json',
+        },
+        body:
+          '{"model":"gemini-decision-1",' +
+          '"input":"{\\"goal\\":\\"g\\",\\"conversation\\":' +
+          '[{\\"at\\":0,\\"text\\":\\"a \\\\\\"b\\\\\\"\\"}]}",' +
+          '"questions":{' +
+          '"q0":{"type":"noul","instructions":"Is it?"},' +
+          '"q1":{"type":"choice","instructions":"Which?","criteria":' +
+          '{"codiv.openjev-latest":"Open Jev.","openai.gpt-6-luna":""}}}}',
+      },
+    })
+    expect('authorization' in exchange.init.headers).toBe(false)
+
+    for (const secret of Object.values(ALL)) {
+      if (secret !== 'test-account') {
+        expect(
+          `${exchange.url} ${exchange.init.body}`.includes(secret),
+          `${secret} is in the URL or the body`,
+        ).toBe(false)
+      }
+    }
+  })
+
   const unconfigured: Record<
     string,
     { route: Route; has: Credentials; message: string }
@@ -302,6 +337,12 @@ describe('exchangeOf', () => {
       has: CREDENTIALS,
       message: 'openai is not configured: OPENAI_API_KEY is unset',
     },
+    'error: google without a key names both variables either of which would do': {
+      route: routeOf('google'),
+      has: CREDENTIALS,
+      message:
+        'google is not configured: GOOGLE_API_KEY or GEMINI_API_KEY is unset',
+    },
   }
 
   for (const [name, { route, has, message }] of Object.entries(unconfigured)) {
@@ -310,8 +351,9 @@ describe('exchangeOf', () => {
     })
   }
 
-  test('success: only openai and decisions-api.dev write the body their own way', () => {
+  test('success: only openai, google and decisions-api.dev write the body their own way', () => {
     expect(wireOf(routeOf('openai'))).toBe(OPENAI)
+    expect(wireOf(routeOf('google'))).toBe(GOOGLE)
     expect(wireOf(routeOf('decisions-api-dev'))).not.toBe(BARE)
 
     for (const provider of [
@@ -447,6 +489,16 @@ describe('wantedOf', () => {
     }
   })
 
+  test('success: gemini decision 1 asks for what keeps a compaction within one minute of the first paid tier', () => {
+    const wanted = wantedOf(routeOf('google'))
+
+    expect(wanted).toEqual({ maxStateTokens: 27_000, maxRequestTokens: 54_400 })
+    expect(
+      16 * wanted.maxRequestTokens,
+      'sixteen requests of the request budget, against 1,000,000 a minute',
+    ).toBeLessThan(1_000_000)
+  })
+
   test('success: a model openrouter forwards that is not jev asks for no byte cap', () => {
     expect(wantedOf(routeOf('openrouter', 'cloudflare/clef-omni'))).toEqual({
       maxStateTokens: 27_000,
@@ -546,6 +598,14 @@ describe('limits', () => {
           maxStateTokens: 272000,
           maxRequestTokens: 272000,
           maxQuestions: 200,
+        },
+      },
+      'success: google holds its 262,144-token window and 1,000 questions': {
+        provider: 'google',
+        expected: {
+          maxStateTokens: 262144,
+          maxRequestTokens: 262144,
+          maxQuestions: 1000,
         },
       },
     }
@@ -653,6 +713,7 @@ describe('limits', () => {
     expect(modelsOf('codiv')).toEqual(['openjev-latest'])
     expect(modelsOf('perplexity')).toEqual(['pplx-decider-v1.1-27b'])
     expect(modelsOf('openai')).toEqual(['gpt-6-luna'])
+    expect(modelsOf('google')).toEqual(['gemini-decision-1'])
   })
 
   test('success: only a listed name is a provider', () => {
@@ -671,6 +732,7 @@ describe('limits', () => {
       'decisions-api-dev',
       'decisionapi-net',
       'openai',
+      'google',
     ]) {
       expect(providerOf(name)).toBe(name)
     }
@@ -869,6 +931,29 @@ describe('replyFrom', () => {
         model: 'gpt-6-luna',
         usage: { input_tokens: 318 },
       },
+    },
+    // In the shape Google answered on 2026-11-25: answers in the reverse
+    // of the order asked, no model, and the usage fields below.
+    'success: a google reply in its measured shape is read back by id': {
+      provider: 'google',
+      payload: {
+        answers: {
+          q1: {
+            type: 'choice',
+            choice: 'weather',
+            probabilities: { code: 0.02, cooking: 0.03, weather: 0.95 },
+            confidence: 0.95,
+          },
+          q0: { type: 'noul', noul: 0.97, confidence: 0.97 },
+        },
+        usage: {
+          total_tokens: 1115,
+          total_input_tokens: 1115,
+          input_tokens_by_modality: [{ modality: 'text', tokens: 1115 }],
+          total_output_tokens: 0,
+        },
+      },
+      expected: { usage: { input_tokens: 1115 } },
     },
   }
 
@@ -1191,6 +1276,77 @@ describe('replyFrom', () => {
       },
       message: "perplexity answered HTTP 400: Invalid model 'jev-latest'.",
     },
+    // The guide documents a blocked input as an HTTP 400 with an `error`
+    // object; the reference documents a 200 whose `prompt_feedback` names
+    // the block and whose `answers` is empty. Both fall back.
+    'error: a google input blocked with HTTP 400 is quoted by its message': {
+      route: routeOf('google'),
+      status: 400,
+      payload: {
+        error: {
+          code: 'safety',
+          message:
+            'Request blocked due to safety violations (harmful content). ' +
+            'Please modify your input and retry.',
+        },
+      },
+      message:
+        'google answered HTTP 400: Request blocked due to safety violations ' +
+        '(harmful content). Please modify your input and retry.',
+    },
+    'error: a google input blocked in prompt_feedback names the reason': {
+      route: routeOf('google'),
+      status: 200,
+      payload: {
+        answers: {},
+        prompt_feedback: {
+          block_reason: 'blocklist',
+          block_reason_message: 'Terms from the blocklist.',
+        },
+      },
+      message:
+        'google: the input was blocked: blocklist: Terms from the blocklist.',
+    },
+    'error: a google answer under a place that was not asked is refused': {
+      route: routeOf('google'),
+      status: 200,
+      payload: { answers: { q0: { type: 'noul', noul: 0.9 }, q7: {} } },
+      message: 'google: answered q7, which was not asked',
+    },
+    'error: a google answer of the wrong type is refused, naming the question': {
+      route: routeOf('google'),
+      status: 200,
+      payload: {
+        answers: {
+          q0: { type: 'noul', noul: 0.9 },
+          q1: { type: 'score', score: 1.2 },
+        },
+      },
+      message: 'google: the answer to topic is of type "score", not choice',
+    },
+    'error: a google body without answers is refused': {
+      route: routeOf('google'),
+      status: 200,
+      payload: { usage: { total_input_tokens: 10 } },
+      message: 'google: the response holds no answers object',
+    },
+    // The body Google answered a dotted question key with on 2026-11-25.
+    'error: the recorded google refusal of a key is quoted on one line': {
+      route: routeOf('google'),
+      status: 400,
+      payload: {
+        error: {
+          message:
+            '* CreateDecisionRequest.questions[call_toolu.01]: question IDs ' +
+            'must be 1-64 characters matching [A-Za-z0-9_-]+\n',
+          code: 'invalid_request',
+        },
+      },
+      message:
+        'google answered HTTP 400: * CreateDecisionRequest.questions' +
+        '[call_toolu.01]: question IDs must be 1-64 characters matching ' +
+        '[A-Za-z0-9_-]+',
+    },
   }
 
   for (const [name, { route, status, payload, message }] of Object.entries(
@@ -1332,6 +1488,26 @@ describe('replyFrom', () => {
     expect(message.endsWith('r…')).toBe(true)
   })
 
+  test('error: a google key echoed in an error body or a block message is redacted', () => {
+    const header = `x-goog-api-key: ${ALL.geminiApiKey}\n\u001b[31m`
+    const refused = failureOf('google', 403, {
+      error: { code: 403, message: `${header}API key not valid` },
+    })
+    const blocked = failureOf('google', 200, {
+      answers: {},
+      prompt_feedback: { block_reason: 'other', block_reason_message: header },
+    })
+
+    expectQuotable(refused, 'google answered HTTP 403: ')
+    expect(refused).toBe(
+      'google answered HTTP 403: x-goog-api-key: [redacted] [31mAPI key not valid',
+    )
+    expectQuotable(blocked, 'google: ')
+    expect(blocked).toBe(
+      'google: the input was blocked: other: x-goog-api-key: [redacted] [31m',
+    )
+  })
+
   test('error: an error body with control characters and a key is one short redacted line', () => {
     const message = failureOf('openai', 400, { error: { message: echoed } })
 
@@ -1380,6 +1556,20 @@ describe('replyFrom', () => {
       window: 272000,
       answers: [{ type: 'predicate', name: 'call_t1', probability: 0.25 }],
       wrap: bare,
+    },
+    'error: google counting its whole window is discarded': {
+      provider: 'google',
+      window: 262144,
+      answers: { q0: ANSWERS.call_t1 },
+      // Google names its count `total_input_tokens`.
+      wrap: body => {
+        const { answers, usage } = body as {
+          answers: object
+          usage: { input_tokens: number }
+        }
+
+        return { answers, usage: { total_input_tokens: usage.input_tokens } }
+      },
     },
   }
 
@@ -1688,12 +1878,13 @@ describe('redacted', () => {
       redacted(
         'test-codiv-key test-perplexity-key test-decisions-key ' +
           'test-decisionapi-key test-openai-key test-typesafe-key ' +
+          'x-goog-api-key: test-gemini-key ' +
           'Authorization: Bearer sk-anything',
         ALL,
       ),
     ).toBe(
       '[redacted] [redacted] [redacted] [redacted] [redacted] [redacted] ' +
-        'Authorization: [redacted]',
+        'x-goog-api-key: [redacted] Authorization: [redacted]',
     )
   })
 })
@@ -1758,7 +1949,7 @@ describe('credentials', () => {
     ).toEqual([])
   })
 
-  test('success: all nine variables are read from the environment and the settings', () => {
+  test('success: all eleven variables are read from the environment and the settings', () => {
     const environment = environmentOf(
       {
         CODIV_API_KEY: 'test-codiv-env',
@@ -1769,6 +1960,7 @@ describe('credentials', () => {
         DECISIONS_API_KEY: 'test-decisions-settings',
         DECISIONAPI_API_KEY: 'test-decisionapi-settings',
         OPENAI_API_KEY: 'test-openai-settings',
+        GEMINI_API_KEY: 'test-gemini-settings',
       },
     )
 
@@ -1778,6 +1970,8 @@ describe('credentials', () => {
       'CODIV_API_KEY',
       'DECISIONAPI_API_KEY',
       'DECISIONS_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
       'OPENAI_API_KEY',
       'OPENROUTER_API_KEY',
       'PERPLEXITY_API_KEY',
@@ -1791,7 +1985,111 @@ describe('credentials', () => {
       decisionsApiKey: 'test-decisions-option',
       decisionapiApiKey: 'test-decisionapi-settings',
       openaiApiKey: 'test-openai-env',
+      geminiApiKey: 'test-gemini-settings',
     })
+  })
+
+  // Google's SDKs read GOOGLE_API_KEY before GEMINI_API_KEY. The process
+  // environment is one source and the settings another: a key the process
+  // holds under either name is never replaced by one the settings hold.
+  const gemini: Record<
+    string,
+    {
+      options?: Record<string, string>
+      read: Record<string, string>
+      settings: Record<string, string>
+      expected: string | undefined
+    }
+  > = {
+    'success: the option wins over both variables in both sources': {
+      options: { geminiApiKey: 'test-gemini-option' },
+      read: { GOOGLE_API_KEY: 'test-google-env', GEMINI_API_KEY: 'test-gemini-env' },
+      settings: { GOOGLE_API_KEY: 'test-google-settings' },
+      expected: 'test-gemini-option',
+    },
+    'success: GOOGLE_API_KEY wins over GEMINI_API_KEY in the environment': {
+      read: { GOOGLE_API_KEY: 'test-google-env', GEMINI_API_KEY: 'test-gemini-env' },
+      settings: {},
+      expected: 'test-google-env',
+    },
+    'success: GEMINI_API_KEY in the environment wins over GOOGLE_API_KEY in the settings':
+      {
+        read: { GEMINI_API_KEY: 'test-gemini-env' },
+        settings: { GOOGLE_API_KEY: 'test-google-settings' },
+        expected: 'test-gemini-env',
+      },
+    'success: GOOGLE_API_KEY wins over GEMINI_API_KEY in the settings': {
+      read: {},
+      settings: {
+        GEMINI_API_KEY: 'test-gemini-settings',
+        GOOGLE_API_KEY: 'test-google-settings',
+      },
+      expected: 'test-google-settings',
+    },
+    'success: a blank GOOGLE_API_KEY in the environment gives way to GEMINI_API_KEY there':
+      {
+        read: { GOOGLE_API_KEY: '  ', GEMINI_API_KEY: 'test-gemini-env' },
+        settings: { GOOGLE_API_KEY: 'test-google-settings' },
+        expected: 'test-gemini-env',
+      },
+    'success: blanks in the environment give way to the settings': {
+      read: { GOOGLE_API_KEY: '', GEMINI_API_KEY: ' ' },
+      settings: { GEMINI_API_KEY: 'test-gemini-settings' },
+      expected: 'test-gemini-settings',
+    },
+    'success: a blank option gives way to the environment': {
+      options: { geminiApiKey: '  ' },
+      read: { GEMINI_API_KEY: 'test-gemini-env' },
+      settings: {},
+      expected: 'test-gemini-env',
+    },
+    'success: nothing anywhere is no key': {
+      read: {},
+      settings: { GEMINI_API_KEY: '' },
+      expected: undefined,
+    },
+  }
+
+  for (const [name, { options = {}, read, settings, expected }] of Object.entries(
+    gemini,
+  )) {
+    test(name, () => {
+      const credentials = credentialsOf(options, environmentOf(read, settings))
+
+      expect(credentials.geminiApiKey).toBe(expected)
+      expect(missingOf('google', credentials)).toEqual(
+        expected === undefined ? ['GOOGLE_API_KEY or GEMINI_API_KEY'] : [],
+      )
+    })
+  }
+
+  test('success: a raw environment such as the scripts pass reads GOOGLE_API_KEY first', () => {
+    expect(
+      credentialsOf(
+        {},
+        { GEMINI_API_KEY: 'test-gemini-env', GOOGLE_API_KEY: 'test-google-env' },
+      ).geminiApiKey,
+    ).toBe('test-google-env')
+    expect(
+      credentialsOf({}, { GEMINI_API_KEY: 'test-gemini-env' }).geminiApiKey,
+    ).toBe('test-gemini-env')
+  })
+
+  test('success: the key google sends is the one resolved, and the one it shadows is never sent', () => {
+    const credentials = credentialsOf(
+      {},
+      environmentOf(
+        { GOOGLE_API_KEY: 'test-google-env', GEMINI_API_KEY: 'test-gemini-env' },
+        undefined,
+      ),
+    )
+    const exchange = exchangeOf(routeOf('google'), credentials, 's', QUESTIONS)
+
+    expect(exchange.init.headers['x-goog-api-key']).toBe('test-google-env')
+    expect(JSON.stringify(exchange).includes('test-gemini-env')).toBe(false)
+    expect(redacted('echo test-google-env', credentials)).toBe(
+      'echo [redacted]',
+    )
   })
 
   test('success: only the credentials of the providers that may be called are kept', () => {
@@ -1836,6 +2134,19 @@ describe('credentials', () => {
       options: {},
       read: { TYPESAFE_API_KEY: 'test-typesafe-key' },
       expected: [],
+    },
+    'success: either google variable in the environment leaves nothing to look for':
+      {
+        providers: ['google'],
+        options: {},
+        read: { GEMINI_API_KEY: 'test-gemini-env' },
+        expected: [],
+      },
+    'success: google with neither variable is looked for under both names': {
+      providers: ['google'],
+      options: {},
+      read: {},
+      expected: ['GOOGLE_API_KEY or GEMINI_API_KEY'],
     },
     'success: the key of the one provider in play is named when absent': {
       providers: ['openrouter'],

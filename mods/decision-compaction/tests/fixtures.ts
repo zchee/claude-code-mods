@@ -27,8 +27,9 @@ export const ENV = {
 } as const
 
 /**
- * The keys of the five providers added after the first three, as obvious
- * fakes as the others.
+ * The keys of the six providers added after the first three, as obvious
+ * fakes as the others. Google's key is set under `GEMINI_API_KEY`, the
+ * name its documentation uses; `GOOGLE_KEY` is the other name's value.
  */
 export const ADDED_ENV = {
   CODIV_API_KEY: 'test-codiv-key',
@@ -36,7 +37,14 @@ export const ADDED_ENV = {
   DECISIONS_API_KEY: 'test-decisions-key',
   DECISIONAPI_API_KEY: 'test-decisionapi-key',
   OPENAI_API_KEY: 'test-openai-key',
+  GEMINI_API_KEY: 'test-gemini-key',
 } as const
+
+/**
+ * A Gemini key set under `GOOGLE_API_KEY`, different from the one under
+ * `GEMINI_API_KEY`, so a test can tell which of the two was sent.
+ */
+export const GOOGLE_KEY = 'test-google-key'
 
 /**
  * Every credential variable the mod reads, each with a value.
@@ -52,13 +60,15 @@ export const PERPLEXITY_URL = 'https://api.perplexity.ai/v1/decisions'
 export const DECISIONS_URL = 'https://decisions-api.dev/v1/systemone'
 export const DECISIONAPI_URL = 'https://decisionapi.net/v1/systemone'
 export const OPENAI_URL = 'https://api.openai.com/v1/decisions'
+export const GOOGLE_URL =
+  'https://generativelanguage.googleapis.com/v1beta/decisions'
 
 /**
- * Where each provider other than Cloudflare is called, and the variable its
- * bearer comes from. Cloudflare's URL carries the account and the model, so
- * it is matched by its prefix instead.
+ * Where each provider other than Cloudflare is called, and the keys it
+ * accepts. Cloudflare's URL carries the account and the model, so it is
+ * matched by its prefix instead.
  */
-const ENDPOINTS: readonly [string, ProviderName, string][] = [
+const ENDPOINTS: readonly [string, ProviderName, ...string[]][] = [
   [TYPESAFE_URL, 'typesafe', ENV.TYPESAFE_API_KEY],
   [OPENROUTER_URL, 'openrouter', ENV.OPENROUTER_API_KEY],
   [CODIV_URL, 'codiv', ADDED_ENV.CODIV_API_KEY],
@@ -66,7 +76,16 @@ const ENDPOINTS: readonly [string, ProviderName, string][] = [
   [DECISIONS_URL, 'decisions-api-dev', ADDED_ENV.DECISIONS_API_KEY],
   [DECISIONAPI_URL, 'decisionapi-net', ADDED_ENV.DECISIONAPI_API_KEY],
   [OPENAI_URL, 'openai', ADDED_ENV.OPENAI_API_KEY],
+  [GOOGLE_URL, 'google', ADDED_ENV.GEMINI_API_KEY, GOOGLE_KEY],
 ]
+
+/**
+ * The header each provider takes its key in, where it is not
+ * `authorization: Bearer`; the key then stands in it as it is.
+ */
+const KEY_HEADERS: Partial<Record<ProviderName, string>> = {
+  google: 'x-goog-api-key',
+}
 
 /**
  * What the stub standing for the engine's own compaction answers with.
@@ -87,13 +106,15 @@ type AskedQuestion = {
 }
 
 /**
- * One request the fake provider received, decoded. A request in OpenAI's
- * form is read back into the System One shape, so that a test asks the same
- * of every provider; `body` keeps it as it was sent.
+ * One request the fake provider received, decoded. A request in OpenAI's or
+ * Google's form is read back into the System One shape, so that a test asks
+ * the same of every provider; `body` keeps it as it was sent, and `key` is
+ * the credential it carried.
  */
 type Seen = {
   url: string
   provider: ProviderName
+  key: string
   model: string
   state: unknown
   questions: Record<string, AskedQuestion>
@@ -323,22 +344,129 @@ function openAIQuestionsOf(
 }
 
 /**
+ * The question keys Google's Decisions API accepts: "1 to 64 ASCII
+ * characters matching `[A-Za-z0-9_-]+`".
+ */
+const GOOGLE_QUESTION_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Reads the questions of a Google body back into the System One map by id,
+ * or says what is wrong with them, by the rules Google documents: `input`
+ * text, at most 1,000 questions, a `noul` question's criteria named
+ * `true_description` and `false_description`, and every `choice` option
+ * described by a string.
+ */
+function googleQuestionsOf(
+  body: Record<string, unknown>,
+): { state: unknown; questions: Record<string, AskedQuestion> } | string {
+  if ('state' in body) {
+    return 'google: the body has a state field, which Google does not take'
+  }
+
+  if (typeof body.input !== 'string' || body.input === '') {
+    return 'google: input must be a non-empty string here'
+  }
+
+  if (!isRecord(body.questions)) {
+    return 'google: no questions'
+  }
+
+  const entries = Object.entries(body.questions)
+
+  if (entries.length > 1000) {
+    return `google: ${entries.length} questions, more than 1000`
+  }
+
+  const questions: Record<string, AskedQuestion> = {}
+
+  for (const [id, question] of entries) {
+    if (!GOOGLE_QUESTION_ID.test(id)) {
+      return `google: question key ${id} is not valid`
+    }
+
+    if (!isRecord(question) || typeof question.instructions !== 'string') {
+      return `google: the question ${id} has no instructions`
+    }
+
+    if (question.type === 'noul') {
+      const criteria = question.criteria
+      const asked: AskedQuestion = {
+        type: 'noul',
+        instructions: question.instructions,
+      }
+
+      if (criteria !== undefined) {
+        if (
+          !isRecord(criteria) ||
+          Object.keys(criteria).some(
+            name => name !== 'true_description' && name !== 'false_description',
+          ) ||
+          Object.values(criteria).some(value => typeof value !== 'string')
+        ) {
+          return (
+            `google: the criteria of ${id} are not ` +
+            'true_description and false_description'
+          )
+        }
+
+        asked.criteria = {
+          ...(criteria.true_description === undefined
+            ? {}
+            : { true: criteria.true_description }),
+          ...(criteria.false_description === undefined
+            ? {}
+            : { false: criteria.false_description }),
+        }
+      }
+
+      questions[id] = asked
+    } else if (question.type === 'choice' && isRecord(question.criteria)) {
+      if (
+        Object.values(question.criteria).some(value => typeof value !== 'string')
+      ) {
+        return `google: an option of ${id} is not described by a string`
+      }
+
+      questions[id] = {
+        type: 'choice',
+        instructions: question.instructions,
+        criteria: question.criteria,
+      }
+    } else {
+      return `google: the question ${id} is of no known type`
+    }
+  }
+
+  let state: unknown
+
+  try {
+    state = JSON.parse(body.input)
+  } catch {
+    return 'google: the input is not the JSON of a state'
+  }
+
+  return { state, questions }
+}
+
+/**
  * Checks a request the way the real endpoints would and decodes it, or says
  * what is wrong with it.
  */
 function decode(e: Args<'http.fetch'>): Seen | string {
   const headers = e.init?.headers ?? {}
   let provider: Seen['provider']
-  let bearer: string
+  let keys: readonly string[]
   let urlModel: string | undefined
   const endpoint = ENDPOINTS.find(([url]) => url === e.url)
 
   if (endpoint !== undefined) {
-    provider = endpoint[1]
-    bearer = endpoint[2]
+    const [, named, ...accepted] = endpoint
+
+    provider = named
+    keys = accepted
   } else if (e.url.startsWith(CLOUDFLARE_URL)) {
     provider = 'cloudflare'
-    bearer = ENV.CLOUDFLARE_API_TOKEN
+    keys = [ENV.CLOUDFLARE_API_TOKEN]
     urlModel = e.url.slice(CLOUDFLARE_URL.length)
   } else {
     return `unknown URL ${e.url}`
@@ -348,8 +476,25 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     return `method is ${String(e.init?.method)}, not POST`
   }
 
-  if (headers.authorization !== `Bearer ${bearer}`) {
-    return `${provider}: the authorization header is not the expected bearer`
+  const keyHeader = KEY_HEADERS[provider]
+  let key: string | undefined
+
+  if (keyHeader === undefined) {
+    key = keys.find(known => headers.authorization === `Bearer ${known}`)
+
+    if (key === undefined) {
+      return `${provider}: the authorization header is not the expected bearer`
+    }
+  } else {
+    key = keys.find(known => headers[keyHeader] === known)
+
+    if (key === undefined) {
+      return `${provider}: the ${keyHeader} header is not the expected key`
+    }
+
+    if ('authorization' in headers) {
+      return `${provider}: the key is sent in ${keyHeader}, not authorization`
+    }
   }
 
   if (headers['content-type'] !== 'application/json') {
@@ -377,6 +522,15 @@ function decode(e: Args<'http.fetch'>): Seen | string {
     }
 
     const read = openAIQuestionsOf(body)
+
+    if (typeof read === 'string') {
+      return read
+    }
+
+    state = read.state
+    questions = read.questions
+  } else if (provider === 'google') {
+    const read = googleQuestionsOf(body)
 
     if (typeof read === 'string') {
       return read
@@ -449,6 +603,7 @@ function decode(e: Args<'http.fetch'>): Seen | string {
   return {
     url: e.url,
     provider,
+    key,
     model: body.model,
     state,
     questions,
@@ -501,6 +656,44 @@ function answerOf(seen: Seen, answer: Answerer): HttpResponse {
         input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
         output_tokens_details: { reasoning_tokens: 0 },
         total_tokens: usage.input_tokens + usage.output_tokens,
+      },
+    })
+  }
+
+  // Google names no model and no cost, counts its input once a request,
+  // gives each answer its type and a confidence, and answered in the
+  // reverse of the order asked when it was measured.
+  if (seen.provider === 'google') {
+    return responseOf(200, {
+      answers: Object.fromEntries(
+        Object.entries(seen.questions).reverse().map(([id, question]) => {
+          const said = answer(id, question, seen)
+
+          return [
+            id,
+            question.type === 'choice'
+              ? {
+                  type: 'choice',
+                  choice: said,
+                  confidence: 0.75,
+                  probabilities: { [String(said)]: 0.75 },
+                }
+              : {
+                  type: 'noul',
+                  noul: said,
+                  confidence:
+                    typeof said === 'number' ? Math.max(said, 1 - said) : said,
+                },
+          ]
+        }),
+      ),
+      usage: {
+        total_tokens: usage.input_tokens,
+        total_input_tokens: usage.input_tokens,
+        input_tokens_by_modality: [
+          { modality: 'text', tokens: usage.input_tokens },
+        ],
+        total_output_tokens: 0,
       },
     })
   }

@@ -6,7 +6,7 @@ import { PROVIDERS } from '../hooks/providers'
 
 const NONE_OF =
   'typesafe, cloudflare, openrouter, codiv, perplexity, ' +
-  'decisions-api-dev, decisionapi-net, openai'
+  'decisions-api-dev, decisionapi-net, openai, google'
 
 describe('configOf', () => {
   test('success: unset options read as the documented defaults, and unset budgets stay absent for the route to fill', () => {

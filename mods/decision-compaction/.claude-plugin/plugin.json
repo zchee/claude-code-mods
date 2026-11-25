@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "decision-compaction",
   "version": "0.1.0",
-  "description": "Hands back the conversation itself in place of a compaction summary, less the tool calls and results a System One decision model judges no longer needed. The model can be TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, or Jev through OpenRouter, decisions-api.dev or decisionapi.net.",
+  "description": "Hands back the conversation itself in place of a compaction summary, less the tool calls and results a System One decision model judges no longer needed. The model can be TypeSafe Jev, Cloudflare Clef, Codiv OpenJev, Perplexity pplx-decider, OpenAI GPT-6 Luna, Google Gemini Decision 1, or Jev through OpenRouter, decisions-api.dev or decisionapi.net.",
   "author": {
     "name": "Koichi Shiraishi"
   },
@@ -11,24 +11,24 @@
     "provider": {
       "type": "string",
       "title": "Provider",
-      "description": "Which System One provider decides: \"typesafe\" (Jev, the default), \"cloudflare\" (Clef on Workers AI), \"openrouter\" (Jev through the OpenRouter gateway), \"codiv\" (OpenJev), \"perplexity\" (pplx-decider), \"decisions-api-dev\" (Jev through decisions-api.dev), \"decisionapi-net\" (Jev through decisionapi.net) or \"openai\" (GPT-6 Luna). The conversation text and tool inputs are sent to it. Any other value sends nothing anywhere: every compaction then uses the built-in summary and says why.",
+      "description": "Which System One provider decides: \"typesafe\" (Jev, the default), \"cloudflare\" (Clef on Workers AI), \"openrouter\" (Jev through the OpenRouter gateway), \"codiv\" (OpenJev), \"perplexity\" (pplx-decider), \"decisions-api-dev\" (Jev through decisions-api.dev), \"decisionapi-net\" (Jev through decisionapi.net), \"openai\" (GPT-6 Luna) or \"google\" (Gemini Decision 1). The conversation text and tool inputs are sent to it. Any other value sends nothing anywhere: every compaction then uses the built-in summary and says why.",
       "default": "typesafe"
     },
     "model": {
       "type": "string",
       "title": "Model",
-      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe; jev-1.14.0 names Jev 1.14), clef (cloudflare; clef-flash and clef-omni are the others), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev, where typesafe/jev-1.14 names Jev 1.14, and decisionapi-net), gpt-6-luna (openai)."
+      "description": "Model name for the configured provider. Leave unset for its default: jev-latest (typesafe; jev-1.14.0 names Jev 1.14), clef (cloudflare; clef-flash and clef-omni are the others), ~typesafe/jev-latest (openrouter, which also takes a bare jev id such as jev-latest), openjev-latest (codiv), pplx-decider-v1.1-27b (perplexity), jev-latest (decisions-api-dev, where typesafe/jev-1.14 names Jev 1.14, and decisionapi-net), gpt-6-luna (openai), gemini-decision-1 (google)."
     },
     "providerDecision": {
       "type": "boolean",
       "title": "Decide the provider per compaction",
-      "description": "When on, the providers that have credentials and can hold the conversation are compared, each with the models it offers, and if more than one model remains a single routing question picks which decides this compaction. TypeSafe offers two, Jev 1.13 (jev-latest) and Jev 1.14 (jev-1.14.0), so with its key set that question is asked even when no other provider has one; set model to one release to offer only it. A provider is a candidate as soon as its credentials resolve, so a key you exported for another tool (OPENAI_API_KEY, for example) makes that vendor eligible to receive the conversation; decisionProviders narrows the set. The routing question goes to Cloudflare only when cloudflare is among the providers considered and its credentials are set, otherwise to the configured provider; it carries a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
+      "description": "When on, the providers that have credentials and can hold the conversation are compared, each with the models it offers, and if more than one model remains a single routing question picks which decides this compaction. TypeSafe offers two, Jev 1.13 (jev-latest) and Jev 1.14 (jev-1.14.0), so with its key set that question is asked even when no other provider has one; set model to one release to offer only it. A provider is a candidate as soon as its credentials resolve, so a key you exported for another tool (OPENAI_API_KEY, for example) makes that vendor eligible to receive the conversation, and GOOGLE_API_KEY or GEMINI_API_KEY does so for google; decisionProviders narrows the set. The routing question goes to Cloudflare only when cloudflare is among the providers considered and its credentials are set, otherwise to the configured provider; it carries a profile of the job that includes up to 2,000 characters of your prompts, so a second provider can receive data. Off: always the configured provider.",
       "default": false
     },
     "decisionProviders": {
       "type": "string",
       "title": "Providers the decision may consider",
-      "description": "With providerDecision on, the providers that may be compared and so may receive the conversation. Default: all eight (typesafe, cloudflare, openrouter, codiv, perplexity, decisions-api-dev, decisionapi-net, openai). The configured provider is always considered. Takes a list, or one text of names separated by commas. Unset means all eight; a cleared field or an empty list names none, so only the configured provider is considered. A name that is no provider is dropped and named in one transcript line; the compaction goes on. No effect while providerDecision is off.",
+      "description": "With providerDecision on, the providers that may be compared and so may receive the conversation. Default: all nine (typesafe, cloudflare, openrouter, codiv, perplexity, decisions-api-dev, decisionapi-net, openai, google). The configured provider is always considered. Takes a list, or one text of names separated by commas. Unset means all nine; a cleared field or an empty list names none, so only the configured provider is considered. A name that is no provider is dropped and named in one transcript line; the compaction goes on. No effect while providerDecision is off.",
       "multiple": true,
       "default": [
         "typesafe",
@@ -38,7 +38,8 @@
         "perplexity",
         "decisions-api-dev",
         "decisionapi-net",
-        "openai"
+        "openai",
+        "google"
       ]
     },
     "typesafeApiKey": {
@@ -94,6 +95,12 @@
       "description": "Stored as a secret. When empty, the OPENAI_API_KEY variable is read, from the environment first and the settings env block second.",
       "sensitive": true
     },
+    "geminiApiKey": {
+      "type": "string",
+      "title": "Gemini API key",
+      "description": "A Gemini Developer API key, stored as a secret. When empty, GOOGLE_API_KEY and then GEMINI_API_KEY are read from the environment, and only when the environment holds neither, GOOGLE_API_KEY and then GEMINI_API_KEY from the settings env block. GOOGLE_API_KEY comes first, as in Google's own SDKs.",
+      "sensitive": true
+    },
     "keepThreshold": {
       "type": "number",
       "title": "Probability to keep",
@@ -128,13 +135,13 @@
     "maxStateTokens": {
       "type": "number",
       "title": "State budget (tokens)",
-      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Leave unset for the route's own, sized so that every request of a compaction is answered before its 30-second deadline: 27000 (typesafe, openrouter, decisions-api-dev, decisionapi-net), 30000 (cloudflare clef), 14000 (clef-flash), 45000 (clef-omni), 25000 (codiv), 10000 (perplexity), 200000 (openai). Held to 85% of the provider's limit, and to what the request budget leaves beside the questions of 16 tool calls. For a provider whose limit is stated in bytes the description is also shrunk until it fits that cap beside one request's questions; see Limits in the README. A fraction is rounded down.",
+      "description": "Most estimated tokens the description of the conversation may take; it goes out with every request. Leave unset for the route's own, sized so that every request of a compaction is answered before its 30-second deadline: 27000 (typesafe, openrouter, decisions-api-dev, decisionapi-net), 30000 (cloudflare clef), 14000 (clef-flash), 45000 (clef-omni), 25000 (codiv), 10000 (perplexity), 200000 (openai), 27000 (google, sized to Google's documented tokens-a-minute limit rather than its speed). Held to 85% of the provider's limit, and to what the request budget leaves beside the questions of 16 tool calls. For a provider whose limit is stated in bytes the description is also shrunk until it fits that cap beside one request's questions; see Limits in the README. A fraction is rounded down.",
       "min": 1
     },
     "maxRequestTokens": {
       "type": "number",
       "title": "Request budget (tokens)",
-      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Leave unset for the route's own: 54400 (typesafe, cloudflare clef and clef-omni, openrouter's Jev, decisions-api-dev, decisionapi-net), 27200 (any other openrouter model), 20400 (clef-flash), 30000 (codiv), 14000 (perplexity), 231200 (openai). Held to 85% of the provider's limit and, for a provider whose limit is stated in bytes, to its byte cap as well. Left unset, openrouter's Jev is also asked to keep a request body within 27200 bytes, the size OpenRouter keeps out of TypeSafe's long-context mode, while the conversation fits them; setting this drops that. See Limits in the README. A fraction is rounded down.",
+      "description": "Most estimated tokens one request may take, the description of the conversation and its questions together. Leave unset for the route's own: 54400 (typesafe, cloudflare clef and clef-omni, openrouter's Jev, decisions-api-dev, decisionapi-net), 27200 (any other openrouter model), 20400 (clef-flash), 30000 (codiv), 14000 (perplexity), 231200 (openai), 54400 (google, sized the same way). Held to 85% of the provider's limit and, for a provider whose limit is stated in bytes, to its byte cap as well. Left unset, openrouter's Jev is also asked to keep a request body within 27200 bytes, the size OpenRouter keeps out of TypeSafe's long-context mode, while the conversation fits them; setting this drops that. See Limits in the README. A fraction is rounded down.",
       "min": 1
     },
     "truncateHeadChars": {

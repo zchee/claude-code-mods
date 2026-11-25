@@ -70,6 +70,8 @@ async function readEnvironment(
     DECISIONS_API_KEY: await $.env.get('DECISIONS_API_KEY'),
     DECISIONAPI_API_KEY: await $.env.get('DECISIONAPI_API_KEY'),
     OPENAI_API_KEY: await $.env.get('OPENAI_API_KEY'),
+    GOOGLE_API_KEY: await $.env.get('GOOGLE_API_KEY'),
+    GEMINI_API_KEY: await $.env.get('GEMINI_API_KEY'),
   }
 
   if (unresolvedOf(providers, options, read).length === 0) {

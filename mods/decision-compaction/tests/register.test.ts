@@ -14,6 +14,8 @@ import {
   DECISIONS_URL,
   ENGINE_MESSAGES,
   ENV,
+  GOOGLE_KEY,
+  GOOGLE_URL,
   OPENAI_URL,
   OPENROUTER_URL,
   PASSING_OVER,
@@ -94,9 +96,10 @@ const CUT_READ =
   'this tool output; run the tool again if they are needed]'
 
 /**
- * Why codiv, perplexity, decisions-api-dev, decisionapi-net and openai are
- * each ruled out when none of their keys is set, as a list of refusals
- * spells them and in the order they are considered.
+ * Why codiv, perplexity, decisions-api-dev, decisionapi-net, openai and
+ * google are each ruled out when none of their keys is set, as a list of
+ * refusals spells them and in the order they are considered. Google's key
+ * is named by both its variables, since either would do.
  */
 const ADDED_UNSET =
   'codiv/openjev-latest: CODIV_API_KEY unset; ' +
@@ -104,7 +107,8 @@ const ADDED_UNSET =
   'decisions-api-dev/jev-latest: DECISIONS_API_KEY unset; ' +
   'decisions-api-dev/typesafe/jev-1.14: DECISIONS_API_KEY unset; ' +
   'decisionapi-net/jev-latest: DECISIONAPI_API_KEY unset; ' +
-  'openai/gpt-6-luna: OPENAI_API_KEY unset'
+  'openai/gpt-6-luna: OPENAI_API_KEY unset; ' +
+  'google/gemini-decision-1: GOOGLE_API_KEY or GEMINI_API_KEY unset'
 
 /**
  * Ordinary English prose of about `chars` characters: words of a few
@@ -160,6 +164,7 @@ function expectNoSecret(world: World) {
       ENV.OPENROUTER_API_KEY,
       ENV.CLOUDFLARE_API_TOKEN,
       ...Object.values(ADDED_ENV),
+      GOOGLE_KEY,
       'bearer',
     ]) {
       expect(
@@ -1259,7 +1264,7 @@ describe('the bounds on one compaction', () => {
         'built-in summary used instead: the provider option is ' +
           '"cloud-flare", which is none of typesafe, cloudflare, ' +
           'openrouter, codiv, perplexity, decisions-api-dev, ' +
-          'decisionapi-net, openai',
+          'decisionapi-net, openai, google',
       ])
     },
   )
@@ -1757,6 +1762,12 @@ describe('session.compact, provider by provider', () => {
       model: 'gpt-6-luna',
       reports: 'openai/gpt-6-luna in 1 request',
     },
+    'success: google decides a compaction asked by place in its own form': {
+      provider: 'google',
+      url: GOOGLE_URL,
+      model: 'gemini-decision-1',
+      reports: 'google/gemini-decision-1 in 1 request',
+    },
   }
 
   for (const [name, { provider, url, model, reports }] of Object.entries(
@@ -1775,7 +1786,7 @@ describe('session.compact, provider by provider', () => {
         world.requests.map(request => [request.url, request.model]),
       ).toEqual([[url, model]])
       expect(Object.keys(seen?.questions ?? {})).toEqual(
-        provider === 'decisions-api-dev'
+        provider === 'decisions-api-dev' || provider === 'google'
           ? ['q0', 'q1', 'q2', 'q3', 'q4', 'q5']
           : [
               'call_t1',
@@ -1861,6 +1872,8 @@ describe('session.compact, provider by provider', () => {
         'CODIV_API_KEY',
         'DECISIONAPI_API_KEY',
         'DECISIONS_API_KEY',
+        'GEMINI_API_KEY',
+        'GOOGLE_API_KEY',
         'OPENAI_API_KEY',
         'OPENROUTER_API_KEY',
         'PERPLEXITY_API_KEY',
@@ -2024,6 +2037,7 @@ describe('provider decision over every provider', () => {
         'codiv.openjev-latest',
         'perplexity.pplx-decider-v1.1-27b',
         'openai.gpt-6-luna',
+        'google.gemini-decision-1',
       ])
       expect(Object.keys(deciding?.questions ?? {})).toHaveLength(6)
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
@@ -2302,7 +2316,7 @@ describe('provider decision over every provider', () => {
       expect(said).toEqual([
         'the decisionProviders option names "nope", "[redacted]", which ' +
           'are none of typesafe, cloudflare, openrouter, codiv, perplexity, ' +
-          'decisions-api-dev, decisionapi-net, openai; ignored',
+          'decisions-api-dev, decisionapi-net, openai, google; ignored',
       ])
       expect(world.requests.map(seen => seen.url)).toEqual([TYPESAFE_URL])
       expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
@@ -2332,7 +2346,7 @@ describe('provider decision over every provider', () => {
       ).toEqual([
         `the decisionProviders option names "${'x'.repeat(159)}…, which ` +
           'is none of typesafe, cloudflare, openrouter, codiv, perplexity, ' +
-          'decisions-api-dev, decisionapi-net, openai; ignored',
+          'decisions-api-dev, decisionapi-net, openai, google; ignored',
       ])
     },
   )
@@ -2739,6 +2753,240 @@ describe('turn.complete', () => {
       await first
 
       expect(world.builtIn).toHaveLength(1)
+    },
+  )
+})
+
+describe('session.compact over google', () => {
+  const GOOGLE_OPTIONS = { ...OPTIONS, provider: 'google' }
+
+  // Google's key is read as GOOGLE_API_KEY first and GEMINI_API_KEY second,
+  // from the process environment and only then from the settings, and the
+  // key that wins is the one the request carries.
+  const keys: Record<
+    string,
+    {
+      env: Record<string, string>
+      settingsEnv?: Record<string, string>
+      options?: Record<string, string>
+      sent: string
+      settingsReads: number
+    }
+  > = {
+    'success: GOOGLE_API_KEY in the environment wins over GEMINI_API_KEY there':
+      {
+        env: { GOOGLE_API_KEY: GOOGLE_KEY, GEMINI_API_KEY: ADDED_ENV.GEMINI_API_KEY },
+        sent: GOOGLE_KEY,
+        settingsReads: 0,
+      },
+    'success: GEMINI_API_KEY in the environment is not replaced by GOOGLE_API_KEY in the settings':
+      {
+        env: { GEMINI_API_KEY: ADDED_ENV.GEMINI_API_KEY },
+        settingsEnv: { GOOGLE_API_KEY: GOOGLE_KEY },
+        sent: ADDED_ENV.GEMINI_API_KEY,
+        settingsReads: 0,
+      },
+    'success: GOOGLE_API_KEY in the settings is used when the environment holds neither':
+      {
+        env: {},
+        settingsEnv: {
+          GEMINI_API_KEY: ADDED_ENV.GEMINI_API_KEY,
+          GOOGLE_API_KEY: GOOGLE_KEY,
+        },
+        sent: GOOGLE_KEY,
+        settingsReads: 1,
+      },
+    'success: the geminiApiKey option wins over both variables': {
+      env: { GOOGLE_API_KEY: GOOGLE_KEY },
+      options: { geminiApiKey: ADDED_ENV.GEMINI_API_KEY },
+      sent: ADDED_ENV.GEMINI_API_KEY,
+      settingsReads: 0,
+    },
+  }
+
+  for (const [name, { env, settingsEnv, options, sent, settingsReads }] of Object.entries(
+    keys,
+  )) {
+    test(name, { options: { ...GOOGLE_OPTIONS, ...options } }, async ($, on) => {
+      const world = worldOf(on, {
+        env,
+        ...(settingsEnv === undefined ? {} : { settingsEnv }),
+        answer: DECIDED_BY_TEXT,
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.map(seen => [seen.url, seen.key])).toEqual([
+        [GOOGLE_URL, sent],
+      ])
+      expect(world.settingsReads).toBe(settingsReads)
+      expect(world.envReads).toContain('GOOGLE_API_KEY')
+      expect(world.envReads).toContain('GEMINI_API_KEY')
+      expect(handlesOf(out.messages)).toEqual(DECIDED_HANDLES)
+      expectNoSecret(world)
+    })
+  }
+
+  test(
+    'error: google with neither variable set falls back naming both and sends nothing',
+    { options: GOOGLE_OPTIONS },
+    async ($, on) => {
+      const world = worldOf(on, { env: ENV, settingsEnv: { GEMINI_API_KEY: '' } })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.fetches).toBe(0)
+      expect(world.settingsReads).toBe(1)
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.toasts).toEqual([
+        'built-in summary used instead: google is not configured: ' +
+          'GOOGLE_API_KEY or GEMINI_API_KEY is unset',
+      ])
+    },
+  )
+
+  const blocked: Record<
+    string,
+    { status: number; payload: unknown; reason: string }
+  > = {
+    'error: an input google blocks with HTTP 400 falls back with its reason': {
+      status: 400,
+      payload: {
+        error: {
+          code: 'safety',
+          message: `Request blocked due to safety violations; key ${GOOGLE_KEY}`,
+        },
+      },
+      reason:
+        'google answered HTTP 400: Request blocked due to safety ' +
+        'violations; key [redacted]',
+    },
+    'error: an input google blocks in prompt_feedback falls back with its reason':
+      {
+        status: 200,
+        payload: {
+          answers: {},
+          prompt_feedback: {
+            block_reason: 'prohibited_content',
+            block_reason_message: `Blocked; key ${GOOGLE_KEY}`,
+          },
+        },
+        reason:
+          'google: the input was blocked: prohibited_content: Blocked; key ' +
+          '[redacted]',
+      },
+  }
+
+  for (const [name, { status, payload, reason }] of Object.entries(blocked)) {
+    test(name, { options: GOOGLE_OPTIONS }, async ($, on) => {
+      const world = worldOf(on, {
+        env: { GOOGLE_API_KEY: GOOGLE_KEY, ...ALL_ENV },
+        intercept: () => responseOf(status, payload),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(world.problems).toEqual([])
+      expect(world.fetches, 'a 4xx is not retried').toBe(1)
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.builtIn).toHaveLength(1)
+      expect(world.toasts).toEqual([`built-in summary used instead: ${reason}`])
+      expectNoSecret(world)
+    })
+  }
+
+  test(
+    'error: an answer of the wrong type falls back, naming the question it was for',
+    { options: GOOGLE_OPTIONS },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        intercept: seen =>
+          responseOf(200, {
+            answers: Object.fromEntries(
+              Object.keys(seen.questions).map(id => [
+                id,
+                { type: 'score', score: 1.5, confidence: 0.6 },
+              ]),
+            ),
+            usage: { total_input_tokens: 99 },
+          }),
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: sessionOf(),
+      })
+
+      expect(out.messages).toEqual([SUMMARY])
+      expect(world.toasts).toEqual([
+        'built-in summary used instead: google: the answer to call_t1 is of ' +
+          'type "score", not noul',
+      ])
+    },
+  )
+
+  test(
+    'success: forty calls go out in one request of eighty questions named from q0, the state sent once',
+    { options: { provider: 'google', preserveRecentMessages: 0 } },
+    async ($, on) => {
+      const world = worldOf(on, {
+        env: ALL_ENV,
+        answer: (_id, question) =>
+          Number(/tool call t(\d+) /.exec(question.instructions)?.[1]) % 2 ===
+          1
+            ? 0.9
+            : 0.1,
+      })
+      const out = await $.session.compact({
+        trigger: 'manual',
+        messages: readsOf(40),
+      })
+      const [seen] = world.requests
+
+      expect(world.problems).toEqual([])
+      expect(world.requests).toHaveLength(1)
+      expect(Object.keys(seen?.questions ?? {})).toEqual(
+        Array.from({ length: 80 }, (_, index) => `q${index}`),
+      )
+      expect(typeof seen?.body.input).toBe('string')
+      expect(handlesOf(out.messages)).toHaveLength(2 + 40)
+      expect(world.builtIn).toEqual([])
+      expect(world.toasts[0]).toContain('google/gemini-decision-1 in 1 request')
+    },
+  )
+
+  test(
+    'success: a request budget that holds a few calls splits them into several requests within the hook cap',
+    {
+      options: {
+        provider: 'google',
+        preserveRecentMessages: 0,
+        maxRequestTokens: 6000,
+        maxStateTokens: 4000,
+      },
+    },
+    async ($, on) => {
+      const world = worldOf(on, { env: ALL_ENV })
+      await $.session.compact({ trigger: 'manual', messages: readsOf(30) })
+
+      expect(world.problems).toEqual([])
+      expect(world.requests.length, world.toasts.join('\n')).toBeGreaterThan(1)
+      expect(world.requests.length).toBeLessThanOrEqual(16)
+      expect(
+        world.requests.flatMap(seen => Object.keys(seen.questions)).length,
+        'every call is asked about twice, once in one request',
+      ).toBe(60)
+
+      for (const seen of world.requests) {
+        expect(Object.keys(seen.questions)[0]).toBe('q0')
+      }
     },
   )
 })
